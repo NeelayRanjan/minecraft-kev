@@ -44,6 +44,7 @@ const tick = setInterval(() => log(`tick y ${bot.entity.position.y.toFixed(1)} m
 const obs = summarize(bot, mcData, mem, { t: 0, current: null, last: null })
 log(`start ${subtask} mode ${mode}; blocks: ${obs.blocks.map(b => `${b.name} ${b.dist.toFixed(0)}m`).join(', ')}`)
 for (const st of subtask.split(',')) {
+  if (st.startsWith('give:')) { const [, item, n] = st.split(':'); bot.chat(`/give kev_smoke ${item} ${n ?? 1}`); await bot.waitForTicks(10); log(`gave ${n ?? 1} ${item}`); continue }
   const o = summarize(bot, mcData, mem, { t: 0, current: null, last: null })
   let r
   if (st === 'craft_pkt') {

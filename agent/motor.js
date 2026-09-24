@@ -438,10 +438,11 @@ export class Motor {
         await b.equip(blockItem(), 'hand')
         await b.lookAt(feet.offset(0.5, -1, 0.5), true)
         b.setControlState('jump', true)
-        await sleep(120)
+        const y0 = b.entity.position.y, tj = Date.now()
+        while (b.entity.position.y < y0 + 1.0 && Date.now() - tj < 500) await sleep(20)   // wait for the jump apex (~1.25 blocks)
         try { await b.placeBlock(below, new Vec3(0, 1, 0)); placed++ } catch (e) { this.log(`pillar: ${e.message}`) }
         b.setControlState('jump', false)
-        await sleep(400)
+        await sleep(500)
       }
       return placed > 0 ? ok(`+${placed} blocks`) : fail('failed', 'placed nothing')
     },
