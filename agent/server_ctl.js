@@ -23,14 +23,29 @@ export function javaBin() {
   return jdk ? path.join(tools, jdk, 'bin', 'java') : 'java'
 }
 
+// A previous run that crashed leaves its (detached) server alive; server.pid lets the next start on this port reclaim it.
+export function killStale(dir, log = () => {}) {
+  const pidFile = path.join(dir, 'server.pid')
+  if (!fs.existsSync(pidFile)) return
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+  try { process.kill(pid, 0) } catch { fs.rmSync(pidFile, { force: true }); return }
+  log(`killing stale server pid ${pid} in ${dir}`)
+  try { process.kill(pid, 'SIGKILL') } catch {}
+  const t0 = Date.now()
+  while (Date.now() - t0 < 5000) { try { process.kill(pid, 0) } catch { break } }
+  fs.rmSync(pidFile, { force: true })
+}
+
 export async function startServer({ port, seed, dir = path.join(ROOT, 'servers', String(port)), javaArgs = ['-Xms1G', '-Xmx2G'], timeoutMs = 120_000, log = () => {} }) {
   fs.mkdirSync(dir, { recursive: true })
+  killStale(dir, log)
   for (const f of [JAR, 'eula.txt', 'ops.json']) fs.copyFileSync(path.join(TEMPLATE_DIR, f), path.join(dir, f))
   for (const w of fs.readdirSync(dir).filter(d => d.startsWith('world'))) fs.rmSync(path.join(dir, w), { recursive: true, force: true })
   fs.writeFileSync(path.join(dir, 'server.properties'), renderProperties(fs.readFileSync(path.join(TEMPLATE_DIR, 'server.properties'), 'utf8'), { port, seed }))
   const outPath = path.join(dir, 'server.out')
   const out = fs.openSync(outPath, 'w')
   const proc = spawn(javaBin(), [...javaArgs, '-jar', JAR, '--nogui'], { cwd: dir, stdio: ['pipe', out, out], detached: true })
+  fs.writeFileSync(path.join(dir, 'server.pid'), String(proc.pid))
   await new Promise((resolve, reject) => {
     const t0 = Date.now()
     const timer = setInterval(() => {

@@ -81,7 +81,7 @@ export function options(obs) {
   const h = obs.nearestHostile
   if (h && h.dist <= HOSTILE_RANGE) {
     add('fight', 'threat'); add('flee', 'threat')
-    if (c.blocks >= 3 && h.dist <= 8) add('pillar_up')
+    if (c.blocks >= 3 && h.dist <= 8 && !obs.inWater) add('pillar_up')
   }
   if (seen(obs, isLog, 48)) add('gather_wood')
   if (c.hasPickaxe && seen(obs, isStone, 16)) add('mine_stone')
