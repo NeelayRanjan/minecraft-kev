@@ -116,6 +116,25 @@ Everything below was run on the 8 GB laptop and passed unless marked otherwise. 
 - **Night does not render dark.** Mean luma 138 at day vs 139 at midnight; the frames are identical apart from grass. prismarine-viewer has no sky or block lighting. Consequence for experiment 2: arms B and C cannot see night or cave darkness unless we add it ourselves. Options, in order of honesty: (1) post-process darkening from `bot.time.timeOfDay` and the block light at the camera (a curve, applied identically at data generation and play); (2) skip `survive_until_morning` from the pixel arms and say so. The HUD overlay for arm C is also ours to draw, as expected.
 - **Not yet tested.** `/tick sprint`, several bots on one server, mineflayer-pvp and auto-eat, kev-format logging. `bot.health` is undefined at the `spawn` event and fills in a tick later; read vitals after `waitForChunksToLoad`.
 
+## Status (2026-09-23 evening): experiment 1 built, data collection and training running overnight
+
+Everything in the "Experiment 1" section below is implemented (plan: `docs/superpowers/plans/2026-09-23-experiment-1.md`). Layout:
+
+```
+agent/   subtasks.js (option list + preconditions)  teacher.js (tech-tree teacher, threat teacher)  serialize.js (state text)
+         questions.js (schema + post-hoc labelers)   summary.js (bot -> obs, memory)   motor.js (Mineflayer executors)
+         policy.js (choose/interrupt)  logger.js (log + kev records)  kev_client.js  recorder.js (2 fps video)
+         server_ctl.js (Paper per port/seed)  run_episode.mjs (one episode)  gen_data.mjs (parallel episodes)
+tests/   node --test tests/*.test.mjs (51 unit tests); tests/integration/motor_check.mjs and mem_probe.mjs need no GPU, start their own server
+scripts/ collect_mc1.sh -> overnight_mc1.sh (split, train mc-v1, eval, drive 20 unseen seeds kev vs teacher, reliability) -> dagger_mc1.sh (mc-v2)
+viewer/  python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays out/<name>.mp4 with the probability bars from out/<name>.json
+```
+
+- **Motor layer findings (all fixed in `agent/motor.js`, keep them):** mineflayer-collectblock + mineflayer-tool recurse forever (4 GB heap in a minute) when asked to collect a block the held item cannot harvest; pathfinder `searchRadius` must be bounded (64) or A* with digging allocates without limit on a buried goal; never call `bot.pathfinder.stop()` when no path exists (the flag survives and kills the next goto); collectblock replaces the pathfinder Movements on every call and its `cancelTask` sets that flag; Paper answers every window click with a full inventory resync and mineflayer shares one state id across windows, so 3x3 crafts failed ~60% until clicks were serialised behind the server's reply (`clickWindow` wrapper); `bot.craft` also needs an inventory-settle wait before reading counts.
+- **First episode (seed 1, teacher, 3 min):** iron pickaxe at 164 s; 178 decisions logged at 1 Hz, 166 records; states ~265 tokens median (337 max) so `--max_state 512` is safe. Video recorded at 2 fps with `agent/recorder.js` (the stock `headless()` loop renders as fast as it can).
+- **Data collection (running, `data/gen.log`):** 40 training seeds (0-39) + 12 holdout seeds (1000-1011), 20 in-game minutes, eps 0.1, thin 8, 5 servers in parallel (server tick lag of several seconds under load; the bots' physics tolerate it). Marker `data/mc1.done`, then `scripts/overnight_mc1.sh` (log `data/pipeline_mc1.log`) trains `mc-v1`, evaluates, drives seeds 1000-1019 with kev (video on) and the teacher, and writes `reports/mc-v1/` (reliability diagrams with accuracy, base rate, ECE and censoring). Smoke base rates on 2 short seeds: `subgoal_succeeds_60s` 51% true overall (step 1 19%, steps 3-5 80-100%).
+- **Next morning:** read `reports/mc-v1/reliability.md`, `reports/mc-v1/drive.txt`, then launch `scripts/dagger_mc1.sh` for the DAgger round (`mc-v2`), and pick a kev-driven run for the clip (`out/drive_mc-v1_kev_s*.mp4`).
+
 ## Experiment 1: iron pickaxe from spawn (text)
 
 - **Scope:** fixed subgoal, no LLM planner. Scripted tech-tree teacher (wood, planks, crafting table, wooden pickaxe, cobblestone, stone pickaxe, find iron, furnace and fuel, smelt, iron pickaxe). kev drives `next_subtask` and emits the forecasts.
