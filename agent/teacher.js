@@ -1,6 +1,6 @@
 // The scripted tech-tree teacher: labels for next_subtask and threat_response, and the driver during data collection.
 // Deterministic function of obs (lesson 1: choice labels from a script saturate; they are for driving).
-import { counts, options, optionId, tableNear, furnaceNear, hasFuel, isLog, isStone, isCoal, isIron } from './subtasks.js'
+import { counts, options, optionId, tableNear, furnaceNear, hasFuel, isLog, isStone, isCoal, isIron, TABLE_NEAR } from './subtasks.js'
 
 export const WOOD_NEEDED = 5   // logs (or planks/4): table 1, wooden pickaxe ~1.25, sticks, spare fuel and a spare table
 export const STEPS = ['gather wood', 'craft a crafting table', 'craft a wooden pickaxe', 'craft a stone pickaxe',
@@ -51,7 +51,7 @@ function pick(obs) {
   const wood = () => has(obs, isLog, 48) ? 'gather_wood' : 'explore_toward(surface)'
   const craft = item => optionId('craft', item)
   const needTable = item => (tableNear(obs) || c.table >= 1) ? craft(item) : c.planks >= 4 ? craft('crafting_table')
-    : (obs.base?.crafting_table && obs.base.crafting_table.dist > 8) ? 'return_to_base' : c.logs >= 1 ? craft('planks') : wood()
+    : (obs.base?.crafting_table && obs.base.crafting_table.dist > TABLE_NEAR) ? 'return_to_base' : c.logs >= 1 ? craft('planks') : wood()
   const sticks = () => c.planks >= 2 ? craft('sticks') : c.logs >= 1 ? craft('planks') : wood()
   const dig = () => c.hasPickaxe && obs.pos.y > 14 ? 'explore_toward(down)' : 'explore_toward(surface)'
   const stone = () => has(obs, isStone, 16) ? 'mine_stone' : dig()

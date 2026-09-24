@@ -212,8 +212,31 @@ export class Motor {
     }
   }
 
+  // A crafting table or furnace the bot can use: one in reach, else the remembered one if it is within 32 m (walk
+  // there and re-check; forget it if it is gone). Returns the block, positioned within reach, or null.
+  async findStation(blockName, memKey) {
+    const id = this.md.blocksByName[blockName].id
+    let block = this.bot.findBlock({ matching: id, maxDistance: 8 })
+    const remembered = this.mem.base[memKey]
+    if (!block && remembered && this.bot.entity.position.distanceTo(new Vec3(remembered.x, remembered.y, remembered.z)) <= 32) {
+      try { await this.goto(new goals.GoalNear(remembered.x, remembered.y, remembered.z, 2)) } catch (e) { if (e instanceof Abort) throw e; this.log(`${blockName}: cannot reach the remembered one (${e?.name})`) }
+      this.check()
+      block = this.bot.findBlock({ matching: id, maxDistance: 6 })
+      if (!block) { this.mem.setBase(memKey, null); this.log(`${blockName}: remembered one is gone`) }
+    }
+    if (block && this.bot.entity.position.distanceTo(block.position) > 3.5) { await this.goto(new goals.GoalNear(block.position.x, block.position.y, block.position.z, 2)); this.check() }
+    return block
+  }
+
   // Place `itemName` from the inventory on a solid block with air above, within 3 m; returns the placed block or null.
+  // In a tunnel with no free cell it makes one: digs a solid block at feet level and places on the block under it.
   async placeNear(itemName) {
+    const placed = await this.placeNearPass(itemName, false)
+    if (placed) return placed
+    return this.placeNearPass(itemName, true)
+  }
+
+  async placeNearPass(itemName, makeRoom) {
     const it = this.item(itemName)
     if (!it) return null
     const feet = this.bot.entity.position.floored()
@@ -226,12 +249,15 @@ export class Motor {
     const isLiquid = b => b.name === 'water' || b.name === 'lava'
     let tried = 0
     for (const [dx, dy, dz] of offsets) {
+      if (makeRoom && (dy !== 0 || Math.abs(dx) + Math.abs(dz) !== 1)) continue   // room is only made in the four adjacent cells at feet level
       const target = feet.offset(dx, dy, dz)
       const ref = this.bot.blockAt(target.offset(0, -1, 0)), at = this.bot.blockAt(target)
-      if (!ref || !at || ref.boundingBox !== 'block' || at.boundingBox !== 'empty' || isLiquid(at) || isLiquid(ref)) continue
+      if (!ref || !at || ref.boundingBox !== 'block' || isLiquid(at) || isLiquid(ref)) continue
+      if (makeRoom ? (at.boundingBox !== 'block' || !this.bot.canDigBlock(at) || at.name === 'crafting_table' || at.name === 'furnace') : at.boundingBox !== 'empty') continue
       tried++
       try {
-        if (at.name !== 'air' && at.name !== 'cave_air') { await this.digSafe(at); await this.bot.waitForTicks(2) }   // grass, flowers: clear first
+        if (makeRoom) { await this.equipBestPickaxe(); await this.digSafe(at); await this.bot.waitForTicks(4); this.check() }
+        else if (at.name !== 'air' && at.name !== 'cave_air') { await this.digSafe(at); await this.bot.waitForTicks(2) }   // grass, flowers: clear first
         await this.bot.equip(it, 'hand')
         await this.bot.placeBlock(ref, new Vec3(0, 1, 0))
         await this.bot.waitForTicks(2)
@@ -241,7 +267,7 @@ export class Motor {
       this.check()
       if (tried >= 6) break
     }
-    this.log(`placeNear ${itemName}: no spot (${tried} tried) around ${feet}`)
+    this.log(`placeNear ${itemName}${makeRoom ? ' (making room)' : ''}: no spot (${tried} tried) around ${feet}`)
     return null
   }
 
@@ -299,11 +325,10 @@ export class Motor {
       if (id == null) return fail('failed', `unknown item ${target}`)
       let table = null
       if (TABLE_ITEMS.has(item)) {
-        table = this.bot.findBlock({ matching: md.blocksByName.crafting_table.id, maxDistance: 8 })
+        table = await this.findStation('crafting_table', 'table')
         if (!table) table = await this.placeNear('crafting_table')
         if (!table) return fail('no_table')
         this.mem.setBase('table', table.position)
-        if (this.bot.entity.position.distanceTo(table.position) > 3.5) { await this.goto(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2)); this.check() }
       }
       await this.settleInventory()
       const recipes = this.bot.recipesFor(id, null, 1, table)
@@ -331,11 +356,10 @@ export class Motor {
       if (item !== 'iron_ingot') return fail('failed', `cannot smelt ${item}`)
       const raw = this.count('raw_iron')
       if (raw === 0) return fail('no_materials', 'no raw iron')
-      let furnace = this.bot.findBlock({ matching: md.blocksByName.furnace.id, maxDistance: 8 })
+      let furnace = await this.findStation('furnace', 'furnace')
       if (!furnace) furnace = await this.placeNear('furnace')
       if (!furnace) return fail('no_furnace')
       this.mem.setBase('furnace', furnace.position)
-      if (this.bot.entity.position.distanceTo(furnace.position) > 3.5) { await this.goto(new goals.GoalNear(furnace.position.x, furnace.position.y, furnace.position.z, 2)); this.check() }
       const fuel = this.count('coal') ? ['coal', Math.ceil(raw / 8)] : this.countBy(n => n.endsWith('_planks')) >= 2 ? [this.bot.inventory.items().find(i => i.name.endsWith('_planks')).name, Math.ceil(raw / 1.5)]
         : this.countBy(n => n.endsWith('_log')) ? [this.bot.inventory.items().find(i => i.name.endsWith('_log')).name, Math.ceil(raw / 1.5)] : null
       if (!fuel) return fail('no_materials', 'no fuel')

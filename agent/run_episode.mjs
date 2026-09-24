@@ -89,10 +89,11 @@ function startSubtask(id, source, obs) {
   subtaskStartHealth = bot.health
   elog.event({ t: now(), kind: 'subtask_start', id, source })
   motor.run(id, obs).then(r => {
-    lastResult = { id, result: r.result }
+    const repeats = lastResult && lastResult.id === id && lastResult.result === r.result ? lastResult.repeats + 1 : 1
+    lastResult = { id, result: r.result, repeats }
     elog.event({ t: now(), kind: 'subtask_done', id, result: r.result, detail: r.detail ?? null })
     log(`${id} -> ${r.result}${r.detail ? ` (${r.detail})` : ''}`)
-  }).catch(e => { lastResult = { id, result: 'failed' }; elog.event({ t: now(), kind: 'subtask_error', id, error: String(e?.message || e) }) })
+  }).catch(e => { lastResult = { id, result: 'failed', repeats: 1 }; elog.event({ t: now(), kind: 'subtask_error', id, error: String(e?.message || e) }) })
 }
 
 // The 1 Hz tick is synchronous (sample, frame, interrupts, end conditions) so a slow kev request can never stall the

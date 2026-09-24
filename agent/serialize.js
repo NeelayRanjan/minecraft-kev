@@ -84,7 +84,8 @@ function describeEntities(obs) {
 function describeSubtask(obs) {
   const c = obs.current
   const cur = c ? `${pretty(c.name)}${c.arg ? ` ${pretty(c.arg)}` : ''}, ${Math.round(c.elapsedS)} s so far${c.progress != null ? `, ${Math.round(c.progress * 100)}% of the way` : ''}` : 'none'
-  const last = obs.last ? ` last subtask result: ${pretty(obs.last.id)} ${pretty(obs.last.result)}.` : ''
+  const rep = obs.last && obs.last.result !== 'ok' && (obs.last.repeats || 0) >= 2 ? `, ${obs.last.repeats} times in a row` : ''
+  const last = obs.last ? ` last subtask result: ${pretty(obs.last.id)} ${pretty(obs.last.result)}${rep}.` : ''
   return `current subtask: ${cur}.${last}`
 }
 

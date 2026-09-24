@@ -1,0 +1,62 @@
+[
+ {
+  "question": "damage_next_20s",
+  "type": "score",
+  "n": 14223,
+  "accuracy": 0.9871335161358363,
+  "base_rate": 0.98446178724601,
+  "ece": 0.13034064135609125,
+  "censoring": 0.015103338632750398,
+  "mean_conf": 0.8568756123438138
+ },
+ {
+  "question": "iron_found_3min",
+  "type": "noul",
+  "n": 73,
+  "accuracy": 1.0,
+  "base_rate": 0.9726027397260274,
+  "ece": 0.10806863552053889,
+  "censoring": 0.0,
+  "mean_conf": 0.8885475978008657
+ },
+ {
+  "question": "next_subtask",
+  "type": "choice",
+  "n": 13216,
+  "accuracy": 0.7939618644067796,
+  "base_rate": 0.4658746973365617,
+  "ece": 0.15083549311804434,
+  "censoring": null,
+  "mean_conf": 0.8988804213941598
+ },
+ {
+  "question": "subgoal_succeeds_60s",
+  "type": "noul",
+  "n": 13401,
+  "accuracy": 0.6524139989553018,
+  "base_rate": 0.0468621744645922,
+  "ece": 0.403626638449204,
+  "censoring": 0.04452784728014086,
+  "mean_conf": 0.4504888129137963
+ },
+ {
+  "question": "survive_until_morning",
+  "type": "noul",
+  "n": 7287,
+  "accuracy": 0.76904075751338,
+  "base_rate": 0.8801976121860848,
+  "ece": 0.19928374038428467,
+  "censoring": 0.0,
+  "mean_conf": 0.6809138718018015
+ },
+ {
+  "question": "threat_response",
+  "type": "choice",
+  "n": 1320,
+  "accuracy": 0.7901515151515152,
+  "base_rate": 0.4159090909090909,
+  "ece": 0.17928649216985174,
+  "censoring": null,
+  "mean_conf": 0.6720399073374727
+ }
+]

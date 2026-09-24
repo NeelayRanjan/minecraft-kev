@@ -1,0 +1,14 @@
+7948 records; state chars mean 912 max 1234
+  damage_next_20s: n=7885 0=7200 (91%), 3=352 (4%), 2=241 (3%), 1=92 (1%)
+  iron_found_3min: n=529 True=320 (60%), False=209 (40%)
+  next_subtask: n=3061 wait=602 (20%), explore_toward(surface)=366 (12%), gather_wood=298 (10%), flee(threat)=262 (9%), mine_iron=226 (7%), craft(furnace)=196 (6%), craft(planks)=176 (6%), mine_stone=148 (5%), craft(stone_pickaxe)=147 (5%), craft(crafting_table)=121 (4%), craft(sticks)=113 (4%), fight(threat)=106 (3%), craft(wooden_pickaxe)=84 (3%), smelt(iron_ingot)=84 (3%), return_to_base=62 (2%), craft(iron_pickaxe)=41 (1%), build_shelter=16 (1%), mine_coal=9 (0%), pillar_up=3 (0%), explore_toward(down)=1 (0%)
+  subgoal_succeeds_60s: n=4848 False=2605 (54%), True=2243 (46%)
+  threat_response: n=609 flee=262 (43%), ignore=238 (39%), fight=106 (17%), pillar_up=3 (0%)
+  subgoal_succeeds_60s by step:
+    step 1: n=911 true=348 (38%)
+    step 2: n=160 true=160 (100%)
+    step 3: n=1260 true=396 (31%)
+    step 4: n=525 true=399 (76%)
+    step 5: n=755 true=376 (50%)
+    step 6: n=1050 true=399 (38%)
+    step 7: n=187 true=165 (88%)

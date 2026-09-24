@@ -1,0 +1,5 @@
+Driving evaluation, run mc-v1, seeds 1000-1019 (unseen), success = iron pickaxe within 15 in-game minutes
+kev      episodes 20/20  iron pickaxe within 15 min: 2/20 (10%)  ever: 3/20  median time 3.0 min
+         deaths total 14; per seed: 1000:no 1001:no 1002:no 1003:no 1004:no 1005:no 1006:no 1007:918s 1008:no 1009:no 1010:no 1011:no 1012:184s 1013:no 1014:no 1015:no 1016:no 1017:no 1018:178s 1019:no
+teacher  episodes 20/20  iron pickaxe within 15 min: 7/20 (35%)  ever: 9/20  median time 2.6 min
+         deaths total 29; per seed: 1000:177s 1001:no 1002:157s 1003:no 1004:no 1005:159s 1006:no 1007:no 1008:no 1009:no 1010:170s 1011:1142s 1012:no 1013:no 1014:no 1015:no 1016:1019s 1017:177s 1018:128s 1019:157s
