@@ -1,0 +1,10 @@
+node_modules/
+server/world*/
+server/cache/
+server/logs/
+server/libraries/
+server/versions/
+server/plugins/
+server/*.jar
+tools/
+out/
