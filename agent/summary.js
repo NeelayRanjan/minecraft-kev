@@ -30,6 +30,16 @@ export class EpisodeMemory {
   setBase(kind, pos) { this.base[kind] = pos ? { x: pos.x, y: pos.y, z: pos.z } : null }
 }
 
+export function biomeName(bot, mcData, pos) {
+  try {
+    const id = bot.world.getBiome?.(pos)
+    const byId = id != null && (mcData.biomes?.[id]?.name || mcData.biomesArray?.find(b => b.id === id)?.name)
+    if (byId) return byId
+  } catch {}
+  const b = bot.blockAt(pos)?.biome
+  return (b && b.name && b.name !== 'unknown') ? b.name : 'unknown'
+}
+
 const KIND_SCAN = md => [
   ['log', md.blocksArray.filter(b => b.name.endsWith('_log')).map(b => b.id), 48],
   ['stone', ['stone', 'deepslate', 'cobblestone'].map(n => md.blocksByName[n].id), 16],
@@ -77,7 +87,7 @@ export function summarize(bot, mcData, mem, ctx) {
   const ironSeen = mem.ironSeen ? { ...relTo(me, mem.ironSeen.pos), agoS: ctx.t - mem.ironSeen.t, where: mem.ironSeen.where, pos: mem.ironSeen.pos } : null
   return {
     t: ctx.t, day: Number(bot.time.day), timeOfDay: bot.time.timeOfDay, phase, secondsToDusk, secondsToMorning, weather,
-    biome: bot.blockAt(me.floored())?.biome?.name || 'unknown', pos: { x: me.x, y: me.y, z: me.z }, standingOn: below?.name || 'air',
+    biome: biomeName(bot, mcData, me.floored()), pos: { x: me.x, y: me.y, z: me.z }, standingOn: below?.name || 'air',
     skyLight, blockLight, underground: skyLight < 4, inWater: !!bot.entity.isInWater,
     health: bot.health ?? 20, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
     base, memory: { ironSeen, lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading },
