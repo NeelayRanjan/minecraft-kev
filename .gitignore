@@ -8,3 +8,7 @@ server/plugins/
 server/*.jar
 tools/
 out/
+.superpowers/
+servers/
+data/
+media/
