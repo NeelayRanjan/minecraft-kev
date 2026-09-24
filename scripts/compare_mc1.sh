@@ -13,6 +13,7 @@ mkdir -p "reports/$run"
 say() { echo "[$(date '+%F %T')] compare $run: $*"; }
 pkill -f '[p]aper-1.20.4-499.jar' 2>/dev/null; pkill -f '[k]ev.serve' 2>/dev/null; sleep 2
 curl -s -m 5 http://127.0.0.1:11434/api/tags > /dev/null || { say "ollama is not reachable on 11434"; exit 1; }
+ollama stop "$model" 2>/dev/null; sleep 3   # a model loaded while the GPU was crowded keeps its CPU split; reload it with the GPU free
 curl -s -m 300 http://127.0.0.1:11434/api/generate -d "{\"model\":\"$model\",\"prompt\":\"ok\",\"stream\":false,\"think\":false,\"options\":{\"num_ctx\":2048,\"num_predict\":4},\"keep_alive\":\"60m\"}" > /dev/null
 say "LLM leader ($model): $(ollama ps | tail -1 | tr -s ' ')"
 node agent/gen_data.mjs --policy llm --llm-url http://127.0.0.1:11434 --llm-model "$model" --seeds "$seeds" --seed0 "$seed0" --procs 5 --minutes "$minutes" --thin 8 \

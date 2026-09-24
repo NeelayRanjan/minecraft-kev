@@ -4,8 +4,25 @@
 
 export const SYSTEM = `You lead a Minecraft survival bot. Its goal is an iron pickaxe, then surviving the night.
 Each turn you get the bot's state, what it did recently and how that went, its own forecasts, and the subtasks it can do right now.
-Pick exactly one subtask id from the offered list. Rules: if a subtask keeps failing the same way, do something different that changes the situation (move, make room, go back to the table, gather what is missing). Prefer progress on the tech tree; flee creepers; fight weak mobs only at good health.
+Pick exactly one subtask id from the offered list.
+
+Tech tree and exact quantities (do not gather more than needed):
+1. gather_wood until you hold 5 logs in total (logs + planks/4). 1 log -> 4 planks. 2 planks -> 4 sticks.
+2. craft(planks), then craft(crafting_table) (4 planks).
+3. craft(sticks), then craft(wooden_pickaxe) (3 planks + 2 sticks, at a table).
+4. mine_stone until 11 cobblestone, then craft(stone_pickaxe) (3 cobblestone + 2 sticks).
+5. mine_iron until 3 raw iron (iron ore needs a stone pickaxe). explore_toward(down) or explore_toward(cave) if no iron is known; mine_coal for fuel if coal is close.
+6. craft(furnace) (8 cobblestone), then smelt(iron_ingot) (needs raw iron and fuel: coal, planks or logs).
+7. craft(iron_pickaxe) (3 iron ingots + 2 sticks).
+The state's "step k of 7" line says which step is next; follow it unless a threat or a repeated failure calls for something else.
+Rules: if a subtask keeps failing the same way, do something different that changes the situation (move, go back to the table, gather what is missing). Flee creepers; fight weak mobs only at good health; at night underground is safer than the surface.
 Answer with JSON only: {"subtask": "<id from the list>", "why": "<one short sentence>"}`
+
+export const answerSchema = options => ({
+  type: 'object',
+  properties: { subtask: { type: 'string', enum: options.map(o => o.id) }, why: { type: 'string' } },
+  required: ['subtask'],
+})
 
 export function buildPlannerMessages({ stateText, options, history = [], forecasts = {} }) {
   const hist = history.slice(-12).map(e => {
@@ -44,7 +61,9 @@ export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen
   const t0 = Date.now()
   const res = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, messages: buildPlannerMessages(ctx), stream: false, format: 'json', think: false, options: { temperature: 0.2, num_predict: 160, num_ctx: 2048 }, keep_alive: '30m' }),   // 2048 ctx keeps the 4B model at ~2.7 GB so it fits beside kev.serve and the desktop on the 8 GB GPU
+    // format = JSON schema: Ollama constrains decoding so "subtask" is always one of the offered ids (a small model given
+    // the whole state otherwise often echoes the state back as JSON). 2048 ctx keeps the 4B model at ~2.9 GB on the GPU.
+    body: JSON.stringify({ model, messages: buildPlannerMessages(ctx), stream: false, format: answerSchema(ctx.options), think: false, options: { temperature: 0.2, num_predict: 120, num_ctx: 2048 }, keep_alive: '60m' }),
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`planner ${res.status}: ${(await res.text()).slice(0, 200)}`)
