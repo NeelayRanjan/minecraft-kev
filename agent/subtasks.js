@@ -86,10 +86,13 @@ export function options(obs) {
     add('fight', 'threat'); add('flee', 'threat')
     if (c.blocks >= 3 && h.dist <= 8 && !obs.inWater) add('pillar_up')
   }
-  if (seen(obs, isLog, 48)) add('gather_wood')
-  if (c.hasPickaxe && seen(obs, isStone, 16)) add('mine_stone')
+  // Gathering caps: more than the tech tree can use is never offered (a leader without arithmetic would hoard forever).
+  const done = !!obs.inventory?.iron_pickaxe
+  const woodEq = c.logs + Math.floor(c.planks / 4)
+  if (seen(obs, isLog, 48) && (done || woodEq < 12)) add('gather_wood')
+  if (c.hasPickaxe && seen(obs, isStone, 16) && (done || c.cobble < 32)) add('mine_stone')
   if (c.hasPickaxe && seen(obs, isCoal, 32)) add('mine_coal')
-  if (c.hasStonePickaxe && (seen(obs, isIron, 32) || obs.memory?.ironSeen)) add('mine_iron')
+  if (c.hasStonePickaxe && (seen(obs, isIron, 32) || obs.memory?.ironSeen) && (done || c.rawIron + c.ingots < 6)) add('mine_iron')
   for (const item of CRAFTABLE) {
     if (!canCraft(item, c)) continue
     if (TABLE_ITEMS.has(item) && !tableNear(obs) && c.table === 0) continue

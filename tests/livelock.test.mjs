@@ -37,6 +37,18 @@ test('the state text says how many times in a row the last subtask failed', () =
   assert.match(serialize(baseObs({ last: { id: 'wait', result: 'ok', repeats: 3 } })), /last subtask result: wait ok\./)
 })
 
+test('gathering is capped: no gather_wood past 12 logs, no mine_stone past 32 cobblestone, no mine_iron past 6 iron before the pickaxe', () => {
+  const log = { name: 'oak_log', dist: 5, dir: 'north', dy: 0, reachable: true }, stone = { name: 'stone', dist: 3, dir: 'south', dy: 0, reachable: true }
+  const iron = { name: 'iron_ore', dist: 6, dir: 'west', dy: 0, reachable: true }
+  assert.ok(ids(baseObs({ blocks: [log], inventory: { oak_log: 11 } })).includes('gather_wood'))
+  assert.ok(!ids(baseObs({ blocks: [log], inventory: { oak_log: 8, oak_planks: 16 } })).includes('gather_wood'))
+  assert.ok(ids(baseObs({ blocks: [stone], inventory: { wooden_pickaxe: 1, cobblestone: 31 } })).includes('mine_stone'))
+  assert.ok(!ids(baseObs({ blocks: [stone], inventory: { wooden_pickaxe: 1, cobblestone: 32 } })).includes('mine_stone'))
+  assert.ok(ids(baseObs({ blocks: [iron], inventory: { stone_pickaxe: 1, raw_iron: 5 } })).includes('mine_iron'))
+  assert.ok(!ids(baseObs({ blocks: [iron], inventory: { stone_pickaxe: 1, raw_iron: 3, iron_ingot: 3 } })).includes('mine_iron'))
+  assert.ok(ids(baseObs({ blocks: [iron], inventory: { iron_pickaxe: 1, raw_iron: 9 } })).includes('mine_iron'))   // after the goal, mining is unrestricted
+})
+
 test('table crafts are offered when the remembered table is within 16 m, and the teacher walks back when it is farther', () => {
   const inv = { oak_planks: 3, stick: 2 }
   assert.ok(ids(baseObs({ inventory: inv, base: { crafting_table: { dist: 14, dir: 'east', dy: 6 }, furnace: null } })).includes('craft(wooden_pickaxe)'))

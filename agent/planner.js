@@ -15,6 +15,7 @@ Tech tree and exact quantities (do not gather more than needed):
 6. craft(furnace) (8 cobblestone), then smelt(iron_ingot) (needs raw iron and fuel: coal, planks or logs).
 7. craft(iron_pickaxe) (3 iron ingots + 2 sticks).
 The state's "step k of 7" line says which step is next; follow it unless a threat or a repeated failure calls for something else.
+The offered list already excludes gathering that is not needed: if gather_wood is offered, more wood is still needed; if it is not offered, you have enough.
 Rules: if a subtask keeps failing the same way, do something different that changes the situation (move, go back to the table, gather what is missing). Flee creepers; fight weak mobs only at good health; at night underground is safer than the surface.
 Answer with JSON only: {"subtask": "<id from the list>", "why": "<one short sentence>"}`
 
