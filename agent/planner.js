@@ -44,7 +44,7 @@ export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen
   const t0 = Date.now()
   const res = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, messages: buildPlannerMessages(ctx), stream: false, format: 'json', think: false, options: { temperature: 0.2, num_predict: 160 }, keep_alive: '30m' }),
+    body: JSON.stringify({ model, messages: buildPlannerMessages(ctx), stream: false, format: 'json', think: false, options: { temperature: 0.2, num_predict: 160, num_ctx: 2048 }, keep_alive: '30m' }),   // 2048 ctx keeps the 4B model at ~2.7 GB so it fits beside kev.serve and the desktop on the 8 GB GPU
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`planner ${res.status}: ${(await res.text()).slice(0, 200)}`)
