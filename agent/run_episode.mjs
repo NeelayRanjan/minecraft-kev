@@ -5,7 +5,7 @@
 //        [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--no-server] [--difficulty normal] [--quiet]
 //
 // Writes out/<name>.json (meta / frames / decisions / events / timeline), out/<name>.jsonl (kev records with _meta),
-// and out/<name>.mp4 with --video (2 fps first-person; frame k <-> t = k/2 s).
+// and out/<name>.mp4 with --video (first-person at --fps, default 5; frame k <-> t = k/fps s).
 import fs from 'node:fs'
 import path from 'node:path'
 import { createBot } from 'mineflayer'
@@ -31,7 +31,7 @@ const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 && !argv
 const flag = k => argv.includes(`--${k}`)
 const seed = opt('seed', '1'), port = Number(opt('port', 25580)), policy = opt('policy', 'teacher'), kevUrl = opt('kev-url', null)
 const epsAction = Number(opt('eps-action', 0)), minutes = Number(opt('minutes', 20)), successMin = Number(opt('success-minutes', 15))
-const name = opt('out', `${policy}_s${seed}`), video = flag('video'), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
+const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Number(opt('fps', 5)), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
 if (policy === 'kev' && !kevUrl) { console.error('--policy kev needs --kev-url'); process.exit(2) }
 fs.mkdirSync('out', { recursive: true })
 const T0 = Date.now()
@@ -72,9 +72,9 @@ const mcData = mcDataFor(bot.version)
 const mem = new EpisodeMemory()
 const motor = new Motor(bot, mcData, mem, { log: s => log(`motor: ${s}`) })
 const elog = new EpisodeLog({ seed, policy, eps_action: epsAction, minutes, kev_url: kevUrl, model: policy === 'kev' ? 'kev' : null, username: me, version: bot.version,
-  difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps: 2 } : null })
+  difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps } : null })
 let recorder = null
-if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps: 2, log }) }
+if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
 
 // ---- state ------------------------------------------------------------------------------------------------------
 const t0 = Date.now()

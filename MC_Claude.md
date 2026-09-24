@@ -123,7 +123,7 @@ Everything in the "Experiment 1" section below is implemented (plan: `docs/super
 ```
 agent/   subtasks.js (option list + preconditions)  teacher.js (tech-tree teacher, threat teacher)  serialize.js (state text)
          questions.js (schema + post-hoc labelers)   summary.js (bot -> obs, memory)   motor.js (Mineflayer executors)
-         policy.js (choose/interrupt)  logger.js (log + kev records)  kev_client.js  recorder.js (2 fps video)
+         policy.js (choose/interrupt)  logger.js (log + kev records)  kev_client.js  recorder.js (5 fps video)
          server_ctl.js (Paper per port/seed)  run_episode.mjs (one episode)  gen_data.mjs (parallel episodes)
 tests/   node --test tests/*.test.mjs (51 unit tests); tests/integration/motor_check.mjs and mem_probe.mjs need no GPU, start their own server
 scripts/ collect_mc1.sh -> overnight_mc1.sh (split, train mc-v1, eval, drive 20 unseen seeds kev vs teacher, reliability) -> dagger_mc1.sh (mc-v2)
@@ -131,7 +131,7 @@ viewer/  python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays 
 ```
 
 - **Motor layer findings (all fixed in `agent/motor.js`, keep them):** mineflayer-collectblock + mineflayer-tool recurse forever (4 GB heap in a minute) when asked to collect a block the held item cannot harvest; pathfinder `searchRadius` must be bounded (64) or A* with digging allocates without limit on a buried goal; never call `bot.pathfinder.stop()` when no path exists (the flag survives and kills the next goto); collectblock replaces the pathfinder Movements on every call and its `cancelTask` sets that flag; Paper answers every window click with a full inventory resync and mineflayer shares one state id across windows, so 3x3 crafts failed ~60% until clicks were serialised behind the server's reply (`clickWindow` wrapper); `bot.craft` also needs an inventory-settle wait before reading counts.
-- **First episode (seed 1, teacher, 3 min):** iron pickaxe at 164 s; 178 decisions logged at 1 Hz, 166 records; states ~265 tokens median (337 max) so `--max_state 512` is safe. Video recorded at 2 fps with `agent/recorder.js` (the stock `headless()` loop renders as fast as it can).
+- **First episode (seed 1, teacher, 3 min):** iron pickaxe at 164 s; 178 decisions logged at 1 Hz, 166 records; states ~265 tokens median (337 max) so `--max_state 512` is safe. Video recorded with `agent/recorder.js` (5 fps default, --fps) (the stock `headless()` loop renders as fast as it can).
 - **Data collection (running, `data/gen.log`):** 40 training seeds (0-39) + 12 holdout seeds (1000-1011), 20 in-game minutes, eps 0.1, thin 8, 5 servers in parallel (server tick lag of several seconds under load; the bots' physics tolerate it). Marker `data/mc1.done`, then `scripts/overnight_mc1.sh` (log `data/pipeline_mc1.log`) trains `mc-v1`, evaluates, drives seeds 1000-1019 with kev (video on) and the teacher, and writes `reports/mc-v1/` (reliability diagrams with accuracy, base rate, ECE and censoring). Smoke base rates on 2 short seeds: `subgoal_succeeds_60s` 51% true overall (step 1 19%, steps 3-5 80-100%).
 - **Next morning:** read `reports/mc-v1/reliability.md`, `reports/mc-v1/drive.txt`, then launch `scripts/dagger_mc1.sh` for the DAgger round (`mc-v2`), and pick a kev-driven run for the clip (`out/drive_mc-v1_kev_s*.mp4`).
 

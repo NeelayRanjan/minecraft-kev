@@ -1,11 +1,11 @@
 // Low-rate first-person video recorder built on prismarine-viewer's headless internals: renders on a fixed timer
-// (default 2 fps) instead of the stock headless() loop that renders as fast as it can, and pipes JPEG frames to ffmpeg.
+// (default 5 fps) instead of the stock headless() loop that renders as fast as it can, and pipes JPEG frames to ffmpeg.
 // Frame k of the output corresponds to episode time k / fps (the recorder starts at the runner's t0).
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
-export function startRecorder(bot, { output, fps = 2, width = 448, height = 448, viewDistance = 4, log = () => {} }) {
+export function startRecorder(bot, { output, fps = 5, width = 448, height = 448, viewDistance = 4, log = () => {} }) {
   const { createCanvas } = require('node-canvas-webgl/lib')
   global.THREE = require('three')
   global.Worker = require('worker_threads').Worker
