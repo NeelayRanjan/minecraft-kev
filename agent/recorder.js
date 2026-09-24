@@ -15,8 +15,11 @@ export function startRecorder(bot, { output, fps = 5, width = 448, height = 448,
   const viewer = new Viewer(renderer)
   if (!viewer.setVersion(bot.version)) throw new Error(`prismarine-viewer does not support ${bot.version}`)
   const updateEntity = viewer.updateEntity.bind(viewer)
-  const SKIP = new Set(['item', 'experience_orb', 'arrow', 'falling_block'])   // the viewer has no mesh for these and logs a stack trace before throwing
-  viewer.updateEntity = e => { if (SKIP.has(e?.name)) return; try { updateEntity(e) } catch {} }
+  // The viewer only has meshes/textures for a subset of entities; anything else throws, sometimes asynchronously from
+  // a texture load (a witch's splash potion crashed an episode). Render a whitelist of common mobs and players only.
+  const RENDER = new Set(['player', 'zombie', 'skeleton', 'creeper', 'spider', 'cave_spider', 'enderman', 'witch', 'slime', 'husk', 'drowned', 'stray',
+    'zombie_villager', 'pillager', 'cow', 'pig', 'sheep', 'chicken', 'horse', 'donkey', 'wolf', 'cat', 'ocelot', 'rabbit', 'squid', 'bat', 'villager', 'iron_golem', 'fox', 'goat', 'bee'])
+  viewer.updateEntity = e => { if (!RENDER.has(e?.name)) return; try { updateEntity(e) } catch {} }
   const cam = () => { viewer.setFirstPersonCamera(bot.entity.position, bot.entity.yaw, bot.entity.pitch); worldView.updatePosition(bot.entity.position) }
   const worldView = new WorldView(bot.world, viewDistance, bot.entity.position)
   viewer.listen(worldView)
