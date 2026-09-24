@@ -135,6 +135,24 @@ viewer/  python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays 
 - **Data collection (running, `data/gen.log`):** 40 training seeds (0-39) + 12 holdout seeds (1000-1011), 20 in-game minutes, eps 0.1, thin 8, 5 servers in parallel (server tick lag of several seconds under load; the bots' physics tolerate it). Marker `data/mc1.done`, then `scripts/overnight_mc1.sh` (log `data/pipeline_mc1.log`) trains `mc-v1`, evaluates, drives seeds 1000-1019 with kev (video on) and the teacher, and writes `reports/mc-v1/` (reliability diagrams with accuracy, base rate, ECE and censoring). Smoke base rates on 2 short seeds: `subgoal_succeeds_60s` 51% true overall (step 1 19%, steps 3-5 80-100%).
 - **Next morning:** read `reports/mc-v1/reliability.md`, `reports/mc-v1/drive.txt`, then launch `scripts/dagger_mc1.sh` for the DAgger round (`mc-v2`), and pick a kev-driven run for the clip (`out/drive_mc-v1_kev_s*.mp4`).
 
+### Results (2026-09-24)
+
+**mc-v1** (kev-0.8b fine-tuned on 7,948 records from 40 teacher-driven seeds; `reports/mc-v1/`): held-out dev (12 unseen seeds) overall acc 0.80 / ECE 0.09 vs baseline 0.68 / 0.21. Per question: `next_subtask` 0.95 (majority 0.42); `damage_next_20s` 0.89 vs 0.88 none-rate (rare-label problem, as predicted); `subgoal_succeeds_60s` 0.56, ECE 0.28 with one overconfident bin (states where the bot was stuck in a livelock: text says the ingredients are present, so it forecasts success). `survive_until_morning` was dropped from this round: 20-minute episodes never reach sunrise, so survivors were all censored.
+
+**The first drive evaluation (night of 09-23) found the motor bug that dominated everything:** three instantly-failing subtasks repeated ~1,000 times per episode (smelt with no furnace in a 1-wide tunnel, craft at a table remembered at 8 m but searched within 8 blocks, gather wood with no path). Teacher 7/20, kev 2/20 on seeds 1000-1019. Fixed in `agent/subtasks.js` (livelock breaker: an option that failed the same way 3 times in a row is withheld, and the count is in the state text; gathering caps) and `agent/motor.js` (make-room placement, walk to a remembered station within 32 m).
+
+**Three drivers on the same 20 unseen seeds (1000-1019), 22-minute episodes, after the fixes (`reports/mc-v1/compare.txt`):**
+
+| driver | iron pickaxe within 15 min | ever | median time | deaths | subtasks failing |
+|---|---|---|---|---|---|
+| LLM leader (local Qwen3 4B via Ollama, `--policy llm`) | 0/20 | 1 | - | 69 | 36% |
+| kev mc-v1 alone (`--policy kev`) | **13/20 (65%)** | 13 | 3.1 min | 40 | 29% |
+| scripted teacher, no noise | 14/20 (70%) | 15 | 3.2 min | 47 | 15% |
+
+Definition-of-done item 1 is met: kev drives at the teacher's level on unseen seeds (same checkpoint that scored 2/20 before the motor fixes). The 4B leader never loops but plays badly (chases unreachable coal, gathers wood on the surface at night, agrees with the teacher on ~20% of decisions); its only advantage, breaking loops, is now provided by the option layer for every driver. Its records (`data/compare_mc-v1_llm.jsonl`, next_subtask labelled by the LLM; the scripted teacher's label is kept as `teacher_label` in the log) are LLM-teacher data of poor quality. kev scored offline on the leader's states: `subgoal_succeeds_60s` ECE 0.35 with a 0.19 true rate (off-distribution overconfidence; `reports/mc-v1/llm-led/`).
+
+**Next:** DAgger round on the kev-driven records with the fixed motor layer (`data/compare_mc-v1_kev.jsonl`, 5,148 records, teacher labels) -> `mc-v2` from `mc-v1`; recollect with 22-minute episodes so `survive_until_morning` gets labels; the breaker's window should count identical failures among the last few attempts, not only consecutive ones (the leader chased coal 51 times in one episode with other attempts in between).
+
 ## Experiment 1: iron pickaxe from spawn (text)
 
 - **Scope:** fixed subgoal, no LLM planner. Scripted tech-tree teacher (wood, planks, crafting table, wooden pickaxe, cobblestone, stone pickaxe, find iron, furnace and fuel, smelt, iron pickaxe). kev drives `next_subtask` and emits the forecasts.

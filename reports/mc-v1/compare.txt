@@ -1,0 +1,8 @@
+Driving evaluation on seeds 1000-1019 (unseen); success = iron pickaxe within 15 in-game minutes
+cmp_llm      episodes 20/20  pickaxe within 15 min:  0/20 (  0%)  ever  1  median -         deaths  69  subtasks failing 36%
+             per seed: 1000:no 1001:no 1002:no 1003:no 1004:no 1005:no 1006:no 1007:no 1008:no 1009:no 1010:no 1011:no 1012:no 1013:no 1014:no 1015:no 1016:no 1017:no 1018:1137s 1019:no
+             decision sources: {'llm': 1859, 'llm_fallback': 13}
+cmp_kev      episodes 20/20  pickaxe within 15 min: 13/20 ( 65%)  ever 13  median 3.1 min   deaths  40  subtasks failing 29%
+             per seed: 1000:151s 1001:228s 1002:no 1003:161s 1004:217s 1005:187s 1006:206s 1007:no 1008:no 1009:no 1010:146s 1011:no 1012:no 1013:789s 1014:no 1015:179s 1016:222s 1017:185s 1018:836s 1019:144s
+cmp_teacher  episodes 20/20  pickaxe within 15 min: 14/20 ( 70%)  ever 15  median 3.2 min   deaths  47  subtasks failing 15%
+             per seed: 1000:206s 1001:410s 1002:no 1003:196s 1004:178s 1005:no 1006:138s 1007:171s 1008:no 1009:no 1010:165s 1011:246s 1012:183s 1013:132s 1014:no 1015:760s 1016:184s 1017:286s 1018:277s 1019:1115s
