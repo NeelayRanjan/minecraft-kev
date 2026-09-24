@@ -24,7 +24,7 @@ const s = (t, over = {}) => ({ t, step: 1, rawIron: 0, ingots: 0, health: 20, de
 
 test('toRecords fills post-hoc labels, drops censored questions and empty records, keeps teacher labels', () => {
   const log = new EpisodeLog({ seed: 1, policy: 'teacher' })
-  log.sample(s(0)); log.sample(s(30)); log.sample(s(70, { step: 2 }))
+  log.sample(s(0)); log.sample(s(30)); log.sample(s(50, { step: 2 })); log.sample(s(70, { step: 2 }))
   log.decision({ t: 0, state_text: 's0', decision: true, qs: { next_subtask: { type: 'choice', instructions: 'q', criteria: { a: 'A', wait: 'W' } }, subgoal_succeeds_60s: { type: 'noul', instructions: 'q' }, damage_next_20s: { type: 'score', instructions: 'q', criteria: ['a', 'b', 'c', 'd'] } }, labels: { next_subtask: 'a', subgoal_succeeds_60s: null, damage_next_20s: null }, answers: {}, chosen: 'a', source: 'teacher' })
   log.decision({ t: 70, state_text: 's1', decision: false, qs: { subgoal_succeeds_60s: { type: 'noul', instructions: 'q' } }, labels: { subgoal_succeeds_60s: null }, answers: {} })  // horizon runs past the end: censored
   const recs = log.toRecords()
