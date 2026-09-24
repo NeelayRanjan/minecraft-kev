@@ -1,8 +1,134 @@
-# MC_Claude.md
+# CLAUDE.md
 
-Design of record for **minecraft-kev**: a Minecraft agent where an LLM planner sets typed goals, kev decides and forecasts with calibrated probabilities, and a scripted Mineflayer motor layer acts. Nothing here is built yet. This file is what a new session reads before writing code. When the project gets its own repo, this becomes that repo's CLAUDE.md.
+## What this is
 
-The acceptance criterion carries over unchanged from the Overcooked/air combat project: **every decision comes with a calibrated probability that can be displayed and checked.** Playing well is secondary. If a change makes the agent stronger but the probabilities less legible or less calibrated, it is the wrong change. What is new in Minecraft is that the probabilities are also *used*: the planner replans when kev forecasts failure. That is the thesis this project adds.
+**minecraft-kev**: a Minecraft survival agent where a scripted Mineflayer motor layer acts, **kev** (a 0.8b typed-decision model: Qwen3.5 base + LoRA + pointer head, upstream https://github.com/jaredpalmer/kev) picks the next subtask from a declared list and forecasts outcomes with calibrated probabilities, and a planner above it sets goals. Sister project of `overcooked-kev` (Overcooked and air-combat tracks); the lessons and recipe carry over from there.
+
+The acceptance criterion: **every decision comes with a calibrated probability that can be displayed and checked.** Playing well is secondary. If a change makes the agent stronger but the probabilities less legible or less calibrated, it is the wrong change. New here: the probabilities are meant to be *used*, a planner replans when kev forecasts failure (milestone 2).
+
+Repo: https://github.com/NeelayRanjan/minecraft-kev (private). Trained checkpoint and data are release assets, not in git (see Setup).
+
+## Status (2026-09-24, end of day 2)
+
+Experiment 1 (iron pickaxe from spawn, text state) is built, trained once, evaluated, and its definition-of-done item 1 is met. Everything runs on the 8 GB laptop; the next session should move to the 16 GB machine.
+
+- **Built:** option list with preconditions, tech-tree teacher, serializer (golden-text test), question schema with post-hoc labelers and censoring, Mineflayer motor layer with typed results, 1 Hz runner, parallel data generation on one Paper server per bot, video recorder, replay viewer, split/train/eval/drive/reliability pipeline, a local-LLM leader policy (Ollama). 70 unit tests (`npm test`).
+- **mc-v1** (kev-0.8b fine-tuned on 7,948 records, 40 teacher-driven seeds, 80 min on the laptop): held-out dev (12 unseen seeds) acc 0.80 / ECE 0.09 vs baseline 0.68 / 0.21. `next_subtask` 0.95. `subgoal_succeeds_60s` 0.56 acc, ECE 0.28: overconfident in states where the bot was stuck. `reports/mc-v1/`.
+- **Driving on 20 unseen seeds after the motor fixes** (`reports/mc-v1/compare.txt`): kev alone **13/20 (65%)** iron pickaxe within 15 min, teacher 14/20, a local Qwen3 4B leader 0/20. The same checkpoint scored 2/20 before the fixes: the gain was entirely the motor/option layer (livelock breaker, make-room placement, walk to a remembered table).
+- **Open:** the headline forecast is not yet calibrated on the states kev itself visits (DAgger round pending); `survive_until_morning` has no labels yet (20-minute episodes end before sunrise); the combined "LLM leader + kev forecasts in the prompt" mode exists but was never measured at scale (both models do not fit on 8 GB beside the desktop).
+
+Full results, the bugs found and why they mattered: see "Results (2026-09-24)" further down.
+
+## Repo layout
+
+```
+agent/
+  subtasks.js      declared subtask list, option ids "name(arg)", preconditions, gathering caps, livelock breaker   (pure)
+  teacher.js       techStep(obs) 1..8, teacherSubtask(obs), teacherThreat(obs)                                     (pure)
+  serialize.js     serialize(obs) -> the state text (tests/serialize.test.mjs holds the golden text)               (pure)
+  questions.js     questionFor(qid), buildQuestions(obs,{decision}), labelDecisions(decisions, timeline)          (pure)
+  summary.js       summarize(bot, mcData, mem, ctx) -> obs (the only Mineflayer reader); EpisodeMemory
+  motor.js         Motor.run(id, obs) -> {result, detail}; interrupt(reason); typed results; all the Mineflayer workarounds
+  policy.js        chooseAction (validates the choice against the offered list), interruptFor                     (pure)
+  logger.js        EpisodeLog (frames / decisions / events / timeline), oneHot, fromKev, toRecords, censoring     (pure)
+  relabel.js       injectDeaths, reconstructQs, rebuildRecords: kev records from a raw log with the current labelers
+  thin.js          record thinning shared by gen_data and rebuild_data
+  planner.js       LLM leader: buildPlannerMessages, answerSchema (JSON schema over the offered ids), askPlanner (Ollama)
+  kev_client.js    POST /v1/systemone
+  recorder.js      first-person video at a fixed fps over prismarine-viewer's headless internals (entity whitelist)
+  server_ctl.js    startServer({port, seed}) -> one Paper instance per bot (servers/<port>/, shared libraries)
+  run_episode.mjs  one episode; gen_data.mjs many in parallel; rebuild_data.mjs records from raw logs
+tests/             node --test tests/*.test.mjs ; tests/integration/{motor_check,mem_probe}.mjs start their own server (no GPU)
+scripts/           collect_mc1.sh, overnight_mc1.sh, split.sh, train_mc1.sh, eval_mc1.sh, bench_ctx.py, drive_eval.sh,
+                   compare_mc1.sh (3 drivers), dagger_mc1.sh, base_rates.py, reliability.py, drive_summary.py
+viewer/            python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays out/<name>.mp4 with the probability bars
+server/            Paper template: eula.txt, server.properties, ops.json, run.sh (the jar is downloaded, see Setup)
+reports/<run>/     dev reports, reliability diagrams + table, drive/compare tables (tracked)
+data/, out/, servers/, tools/, media/   gitignored (data and checkpoints travel as release assets)
+docs/superpowers/plans/2026-09-23-experiment-1.md   the plan that built experiment 1
+```
+
+## Setup on a new machine
+
+Tested on Fedora (laptop). The 16 GB machine is Windows 11: use **WSL2 Ubuntu** (CUDA works inside WSL2; Paper, Node, Ollama and the kev venv all run there). Git Bash is not enough: the scripts use `pkill`, `setsid`, `realpath` and symlinks.
+
+```bash
+# 1. system packages (Ubuntu/WSL2)          Fedora: dnf install libXi-devel mesa-libGL-devel pango-devel libjpeg-turbo-devel giflib-devel cairo-devel ffmpeg
+sudo apt install -y build-essential pkg-config ffmpeg libxi-dev libgl1-mesa-dev libpango1.0-dev libjpeg-dev libgif-dev libcairo2-dev libxext-dev libx11-dev curl git
+
+# 2. the parent project (for kev, its venv, split_data.py, and a python with matplotlib)
+git clone git@github.com:NeelayRanjan/overcooked-kev && cd overcooked-kev
+git clone https://github.com/jaredpalmer/kev && cd kev && uv sync --extra serve && uv pip install flash-linear-attention "triton>=3.7.1" && cd ..   # see overcooked-kev/CLAUDE.md
+cd client && uv venv --python 3.10 .venv && uv pip install --python .venv/bin/python matplotlib numpy requests && cd ../..
+# scripts default to KEV=../overcooked-kev/kev and CPY=../overcooked-kev/client/.venv/bin/python; export both if the layout differs
+
+# 3. this repo
+git clone git@github.com:NeelayRanjan/minecraft-kev && cd minecraft-kev
+npm install && npm install github:PrismarineJS/node-canvas-webgl      # native build: needs the packages from step 1
+mkdir -p tools && curl -sL "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk" | tar xz -C tools   # Java 21 (25 is untested with Paper 1.20.4)
+curl -sL -o server/paper-1.20.4-499.jar https://fill-data.papermc.io/v1/objects/e84aa4943cc51d7545b1c9b669bb1e0b143323d248ebb89012182f5554bc13d7/paper-1.20.4-499-mojang.jar
+sha256sum server/paper-1.20.4-499.jar   # e84aa4943cc51d7545b1c9b669bb1e0b143323d248ebb89012182f5554bc13d7
+(cd server && ../tools/jdk-21*/bin/java -Xmx2G -jar paper-1.20.4-499.jar --nogui)   # first start unpacks libraries/ versions/ cache/ (shared by every instance); stop it with "stop" once you see "Done"
+npm test                                             # 70 unit tests, no server needed
+node tests/integration/motor_check.mjs --seed motor-1   # ~4 min, starts its own server; must print PASS
+
+# 4. the LLM leader (optional): Ollama; on 16 GB use the 8B model
+curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen3:8b
+sudo mkdir -p /etc/systemd/system/ollama.service.d && printf '[Service]\nEnvironment="OLLAMA_CONTEXT_LENGTH=2048"\n' | sudo tee /etc/systemd/system/ollama.service.d/override.conf && sudo systemctl daemon-reload && sudo systemctl restart ollama
+
+# 5. checkpoint and data from the GitHub release (v0.1-mc-v1)
+gh release download v0.1-mc-v1 --repo NeelayRanjan/minecraft-kev --dir /tmp/mc-v1-assets
+tar xzf /tmp/mc-v1-assets/mc-v1-checkpoint.tar.gz -C ../overcooked-kev/kev/runs/     # -> runs/mc-v1
+tar xzf /tmp/mc-v1-assets/mc1-data.tar.gz -C .                                        # -> data/mc1.jsonl, mc1_holdout.jsonl, mc1_ep/, compare_*.jsonl
+```
+
+Disk: each Paper instance is ~60 MB plus its world; a 20-minute episode writes ~1.5 MB of logs and ~30 MB of video when recorded. The laptop ran out of disk once (Steam and model caches); check `df` before an overnight run.
+
+## How to run
+
+```bash
+npm run server / npm run server:stop            # the template server alone (smoke tests); every pipeline starts its own instances
+node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher --minutes 3 --out t7 --video     # one episode -> out/t7.{json,jsonl,mp4}
+node agent/run_episode.mjs --seed 7 --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --minutes 22 --out k7
+node agent/run_episode.mjs --seed 7 --port 25580 --policy llm --llm-model qwen3:8b --kev-url http://127.0.0.1:8009 --minutes 22 --out l7   # LLM leader, kev forecasts in its prompt
+node agent/gen_data.mjs --seeds 40 --seed0 0 --procs 5 --minutes 22 --eps-action 0.1 --thin 8 --out data/x.jsonl --prefix x [--video --video-seeds 3]
+node agent/rebuild_data.mjs --prefix x --seed0 0 --seeds 40 --thin 8 [--drop survive_until_morning] --out data/x.jsonl   # relabel from out/x_s*.json
+python3 scripts/base_rates.py data/x.jsonl       # every noul should sit between 20% and 80% true; rare labels teach nothing
+scripts/split.sh data/x.jsonl data/x_holdout.jsonl data/x_ep && scripts/train_mc1.sh <run> data/x_ep/train.jsonl [init] && scripts/eval_mc1.sh <run> data/x_ep
+scripts/drive_eval.sh <run> 20 1000 22           # kev vs teacher on seeds 1000-1019 ; scripts/compare_mc1.sh <run> adds the LLM leader
+../overcooked-kev/client/.venv/bin/python scripts/reliability.py $KEV/runs/<run>-dev/rows.json --censoring data/x_holdout.report.json --out reports/<run>
+python3 viewer/serve.py 8085                     # replay viewer (the parent project's viewer uses 8080)
+# long jobs: setsid nohup systemd-inhibit --what=sleep:idle --who=minecraft-kev --why=x --mode=block scripts/<x>.sh > data/<x>.log 2>&1 &   (drop systemd-inhibit where it does not exist)
+```
+
+Shell trap (bit us four times): `pkill -f pattern` kills the shell whose own command line contains the pattern, including a commit message. Use `pkill -f '[p]aper-1.20.4'` (bracketed first letter) and never put the pattern text elsewhere in the same command.
+
+## Next steps, in order (pick up here on the 16 GB machine)
+
+1. **Verify the setup** with `npm test` and `tests/integration/motor_check.mjs`, then one 3-minute teacher episode with `--video` and open it in the viewer.
+2. **DAgger round -> mc-v2** (the forecasts are the deliverable and they are uncalibrated on kev-driven states). Data with the fixed motor layer already exists: `data/compare_mc-v1_kev.jsonl` (5,148 records, kev drove seeds 1000-1019, teacher labels) and `data/compare_teacher.jsonl`. Those seeds are the holdout, so do NOT train on them; instead:
+   ```bash
+   scripts/dagger_mc1.sh            # serves mc-v1, kev drives seeds 2000-2023 (22 min, eps 0.05), merges with data/mc1.jsonl, re-splits against the same holdout, trains mc-v2 from runs/mc-v1, evaluates, drives 1000-1019
+   ```
+   It needs `data/mc1_pipeline.done` (touch it after restoring the assets). Read `reports/mc-v2/reliability.md`: the target is `subgoal_succeeds_60s` ECE well under 0.1 on the dev split *and* on the kev-driven records (`reports/<run>/driven`).
+3. **Widen the livelock breaker.** `agent/subtasks.js` withholds an option after `REPEAT_LIMIT` identical *consecutive* failures; the LLM leader chased unreachable coal 51 times in one episode with other attempts in between. Count identical (id, result) failures among the last ~6 attempts instead (the runner keeps `lastResult` only; keep a short history in the runner and pass it in `obs.last`). Test first in `tests/livelock.test.mjs`.
+4. **Recollect with 22-minute episodes** so `survive_until_morning` gets labels (`scripts/collect_mc1.sh` still says 20; the runner now ends at sunrise on its own). Then retrain with the question included.
+5. **Measure the combined mode**: LLM leader with kev's forecasts in its prompt. On 16 GB both fit (kev.serve ~2-4 GB under 5 bots, qwen3:8b ~6 GB). `scripts/compare_mc1.sh` currently runs the LLM batch *without* `--kev-url` (laptop GPU); on the big machine add `--kev-url http://127.0.0.1:8009` to that gen_data line and start kev.serve before it. Compare against kev alone and the teacher; the thesis question is whether the leader's replans on low forecasts beat the teacher.
+6. **Experiment 2 (vision)** needs a kev fork (image tokens through the processor; see "Experiment 2" below) and the 16 GB GPU; prismarine-viewer renders no day/night lighting, so pixel arms need our own darkening or must skip the night question. Not started.
+7. Housekeeping: `reports/` and the plan are tracked; raw episode logs (`out/`) are not, so archive interesting runs (videos) manually. The `.superpowers/` ledger of the build is local only.
+
+## Lessons from this project (add to the ones below)
+
+- **mineflayer-collectblock + mineflayer-tool** recurse forever (4 GB heap in a minute) when asked to collect a block the held item cannot harvest. `Motor.collectOne` refuses such blocks.
+- **mineflayer-pathfinder** with digging enabled and an unbounded `searchRadius` allocates without limit on a buried goal: keep `searchRadius` 64. Never call `bot.pathfinder.stop()` when no path exists (its flag survives and kills the next goto); `setGoal(null)` is the safe stop. collectblock replaces the Movements on every call and its `cancelTask` sets that flag.
+- **Paper + mineflayer crafting:** Paper answers every window click with a full inventory resync and mineflayer shares one state id across windows; 3x3 crafts failed ~60% until clicks were serialised behind the server's reply (`clickWindow` wrapper in `Motor`). Read inventory counts only after the packet burst settles (`settleInventory`).
+- **Livelocks are the enemy of both driving and calibration.** An instantly failing subtask repeated every second produces hundreds of identical states labelled "no progress" and a bot that never finishes; the option layer must withhold it (lesson 7 from Overcooked, again).
+- **The 1 Hz sampler never sees the death tick** (immediate respawn): deaths are injected from events before labelling (`relabel.injectDeaths`), otherwise damage and survival labels miss every death.
+- **A 4B local LLM is a poor leader** at this granularity: it needs a JSON schema over the offered ids to answer validly at all, cannot do the wood arithmetic (caps in the option list fix that for every driver), and still agrees with the scripted teacher on ~20% of decisions. Use it for what it does well, breaking loops, only after the option layer already does that.
+
+---
+
+The design of record follows (written before anything was built; "Results" and the status above supersede its estimates).
 
 ## Why this project, and when
 
@@ -105,37 +231,7 @@ Tune horizons until each noul sits between ~20% and ~80% true in the teacher dat
 - **Logging:** the air combat trajectory contract, adapted: `meta`; `frames` at 2-5 Hz (position, look direction, vitals, inventory deltas, entities); `decisions` (state text, image path in experiment 2, full distribution per question, labels filled post hoc); `events` (subgoal set/done/failed, damage, death, planner calls with prompt hash). The kev-format JSONL for training is written from the same run.
 - **Viewer:** prismarine-viewer for the bot's view. Record video during the run (**verify** its headless mode), then a small HTML page that plays the video and drives the probability panels from the log by timestamp, in the style of `viewer/index.html` and `airviewer/`.
 
-## Infrastructure status (smoke test, 2026-09-23)
-
-Everything below was run on the 8 GB laptop and passed unless marked otherwise. Scripts live in `smoke/`.
-
-- **Versions, pinned.** Paper 1.20.4 build 499 (`server/paper-1.20.4-499.jar`, sha256 verified), Temurin JDK 21.0.12.1 unpacked at `tools/jdk-21*` (Java 25 is the system default; the server has only been run on 21). mineflayer 4.39.0 lists 1.20.4 in `testedVersions`; minecraft-data 3.117.0 includes it. Plugins: pathfinder 2.4.5, collectblock 1.6.0, pvp 1.3.2, auto-eat 5.0.3, prismarine-viewer 1.33.0, node-canvas-webgl (github, native build; needed `dnf install libXi-devel mesa-libGL-devel pango-devel libjpeg-turbo-devel giflib-devel`).
-- **Server.** `server/run.sh` starts it detached-friendly (offline mode, seed `kev-smoke-1`, survival, normal difficulty, view distance 8, `allow-flight=true`). First start 11 s, restarts 6 s. `server/ops.json` ops `kev_smoke`, `kev_render`, `kev_0..3` by offline UUID so bots can run `/time set` etc. from chat. Stop with `pkill -f '[p]aper-1.20.4-499.jar'` (the bracket keeps pkill from matching its own shell).
-- **Motor layer.** `smoke/bot_smoke.mjs`: spawn, `waitForChunksToLoad`, `findBlock` for any `*_log` within 64 m, `collectBlock.collect`. Result: oak log 28.7 m away mined in 14 s wall clock from spawn, inventory 0 -> 1. Pathfinder and collectblock work out of the box on 1.20.4.
-- **Headless render.** `smoke/render_smoke.mjs day|midnight [frames] [size]` records first-person frames through prismarine-viewer's `headless()` into `out/render_<mode>.mp4`; `smoke/frame_stats.sh` extracts the last frame and prints mean luma. 30 frames at 448x448: 5.4 fps cold (world-mesh warmup), 8.8 fps warm. Rendering caps vision-arm collection at roughly 5-9 decisions/s per bot, fine for 1-2 Hz forecasts.
-- **Night does not render dark.** Mean luma 138 at day vs 139 at midnight; the frames are identical apart from grass. prismarine-viewer has no sky or block lighting. Consequence for experiment 2: arms B and C cannot see night or cave darkness unless we add it ourselves. Options, in order of honesty: (1) post-process darkening from `bot.time.timeOfDay` and the block light at the camera (a curve, applied identically at data generation and play); (2) skip `survive_until_morning` from the pixel arms and say so. The HUD overlay for arm C is also ours to draw, as expected.
-- **Not yet tested.** `/tick sprint`, several bots on one server, mineflayer-pvp and auto-eat, kev-format logging. `bot.health` is undefined at the `spawn` event and fills in a tick later; read vitals after `waitForChunksToLoad`.
-
-## Status (2026-09-23 evening): experiment 1 built, data collection and training running overnight
-
-Everything in the "Experiment 1" section below is implemented (plan: `docs/superpowers/plans/2026-09-23-experiment-1.md`). Layout:
-
-```
-agent/   subtasks.js (option list + preconditions)  teacher.js (tech-tree teacher, threat teacher)  serialize.js (state text)
-         questions.js (schema + post-hoc labelers)   summary.js (bot -> obs, memory)   motor.js (Mineflayer executors)
-         policy.js (choose/interrupt)  logger.js (log + kev records)  kev_client.js  recorder.js (5 fps video)
-         server_ctl.js (Paper per port/seed)  run_episode.mjs (one episode)  gen_data.mjs (parallel episodes)
-tests/   node --test tests/*.test.mjs (51 unit tests); tests/integration/motor_check.mjs and mem_probe.mjs need no GPU, start their own server
-scripts/ collect_mc1.sh -> overnight_mc1.sh (split, train mc-v1, eval, drive 20 unseen seeds kev vs teacher, reliability) -> dagger_mc1.sh (mc-v2)
-viewer/  python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays out/<name>.mp4 with the probability bars from out/<name>.json
-```
-
-- **Motor layer findings (all fixed in `agent/motor.js`, keep them):** mineflayer-collectblock + mineflayer-tool recurse forever (4 GB heap in a minute) when asked to collect a block the held item cannot harvest; pathfinder `searchRadius` must be bounded (64) or A* with digging allocates without limit on a buried goal; never call `bot.pathfinder.stop()` when no path exists (the flag survives and kills the next goto); collectblock replaces the pathfinder Movements on every call and its `cancelTask` sets that flag; Paper answers every window click with a full inventory resync and mineflayer shares one state id across windows, so 3x3 crafts failed ~60% until clicks were serialised behind the server's reply (`clickWindow` wrapper); `bot.craft` also needs an inventory-settle wait before reading counts.
-- **First episode (seed 1, teacher, 3 min):** iron pickaxe at 164 s; 178 decisions logged at 1 Hz, 166 records; states ~265 tokens median (337 max) so `--max_state 512` is safe. Video recorded with `agent/recorder.js` (5 fps default, --fps) (the stock `headless()` loop renders as fast as it can).
-- **Data collection (running, `data/gen.log`):** 40 training seeds (0-39) + 12 holdout seeds (1000-1011), 20 in-game minutes, eps 0.1, thin 8, 5 servers in parallel (server tick lag of several seconds under load; the bots' physics tolerate it). Marker `data/mc1.done`, then `scripts/overnight_mc1.sh` (log `data/pipeline_mc1.log`) trains `mc-v1`, evaluates, drives seeds 1000-1019 with kev (video on) and the teacher, and writes `reports/mc-v1/` (reliability diagrams with accuracy, base rate, ECE and censoring). Smoke base rates on 2 short seeds: `subgoal_succeeds_60s` 51% true overall (step 1 19%, steps 3-5 80-100%).
-- **Next morning:** read `reports/mc-v1/reliability.md`, `reports/mc-v1/drive.txt`, then launch `scripts/dagger_mc1.sh` for the DAgger round (`mc-v2`), and pick a kev-driven run for the clip (`out/drive_mc-v1_kev_s*.mp4`).
-
-### Results (2026-09-24)
+## Results (2026-09-24)
 
 **mc-v1** (kev-0.8b fine-tuned on 7,948 records from 40 teacher-driven seeds; `reports/mc-v1/`): held-out dev (12 unseen seeds) overall acc 0.80 / ECE 0.09 vs baseline 0.68 / 0.21. Per question: `next_subtask` 0.95 (majority 0.42); `damage_next_20s` 0.89 vs 0.88 none-rate (rare-label problem, as predicted); `subgoal_succeeds_60s` 0.56, ECE 0.28 with one overconfident bin (states where the bot was stuck in a livelock: text says the ingredients are present, so it forecasts success). `survive_until_morning` was dropped from this round: 20-minute episodes never reach sunrise, so survivors were all censored.
 

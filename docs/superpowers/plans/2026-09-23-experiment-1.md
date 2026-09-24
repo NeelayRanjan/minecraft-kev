@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node 24 (ESM, `node:test`), mineflayer 4.39, mineflayer-pathfinder 2.4.5, mineflayer-collectblock 1.6, mineflayer-pvp 1.3, prismarine-viewer 1.33 headless, Paper 1.20.4-499 on Temurin 21, kev (`../overcooked-kev/kev`, `.venv`), `split_data.py` from kev's fine-tune skill.
 
-**Spec:** `MC_Claude.md` (design of record; sections "Lessons", "Architecture", "Labels", "State serializer", "Question schema", "Infrastructure", "Experiment 1", "Conventions").
+**Spec:** `CLAUDE.md` (design of record, formerly MC_Claude.md; sections "Lessons", "Architecture", "Labels", "State serializer", "Question schema", "Infrastructure", "Experiment 1", "Conventions").
 
 ## Global Constraints
 

@@ -45,7 +45,9 @@ export async function startServer({ port, seed, dir = path.join(ROOT, 'servers',
     const src = path.join(TEMPLATE_DIR, d), dst = path.join(dir, d)
     if (!fs.existsSync(src)) continue
     if (fs.existsSync(dst) && !fs.lstatSync(dst).isSymbolicLink()) fs.rmSync(dst, { recursive: true, force: true })
-    if (!fs.existsSync(dst)) fs.symlinkSync(src, dst)
+    if (!fs.existsSync(dst)) {
+      try { fs.symlinkSync(src, dst) } catch { fs.cpSync(src, dst, { recursive: true }) }   // no symlinks (Windows without developer mode): copy
+    }
   }
   for (const w of fs.readdirSync(dir).filter(d => d.startsWith('world'))) fs.rmSync(path.join(dir, w), { recursive: true, force: true })
   fs.writeFileSync(path.join(dir, 'server.properties'), renderProperties(fs.readFileSync(path.join(TEMPLATE_DIR, 'server.properties'), 'utf8'), { port, seed }))
