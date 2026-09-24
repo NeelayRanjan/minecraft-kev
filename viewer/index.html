@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>minecraft-kev replay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#f7f6f2;--ink:#1e1e1e;--ink2:#666;--rule:#ddd;--neutral:#8aa;--kev:#2a6f97;--panel:#fff}
+@media (prefers-color-scheme: dark){:root{--bg:#15171a;--ink:#eee;--ink2:#aaa;--rule:#333;--panel:#1d2024}}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,sans-serif}
+header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--rule);flex-wrap:wrap}
+header select,header button{font:inherit;padding:4px 8px}
+main{display:grid;grid-template-columns:minmax(300px,448px) 1fr;gap:16px;padding:16px;max-width:1300px}
+@media (max-width:800px){main{grid-template-columns:1fr}}
+video{width:100%;background:#000;border-radius:6px}
+.state{white-space:pre-wrap;font:12px/1.35 ui-monospace,monospace;background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:10px;max-height:260px;overflow:auto}
+.q{margin:10px 0 14px}
+.q h3{margin:0 0 4px;font-size:13px;font-weight:600}
+.bar{display:grid;grid-template-columns:200px 1fr 48px;align-items:center;gap:10px;padding:2px 0;font-size:13px}
+.bar .name{color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar.top .name{color:var(--ink);font-weight:600}
+.bar .track{position:relative;height:10px;background:var(--rule);border-radius:5px}
+.bar .fill{position:absolute;left:0;top:0;height:100%;background:var(--kev);border-radius:5px;opacity:.55;transition:width .12s ease-out}
+.bar.top .fill{opacity:1}
+.bar .truth{position:absolute;top:-4px;width:2px;height:18px;background:var(--ink);display:none}
+.bar.label .truth{display:block}
+.bar .pct{text-align:right;color:var(--ink2)}
+.meta{color:var(--ink2);font-size:12px;margin:6px 0}
+.legend{font-size:12px;color:var(--ink2)}
+.legend i{display:inline-block;width:2px;height:12px;background:var(--ink);vertical-align:middle;margin-right:4px}
+</style>
+</head>
+<body>
+<header>
+  <strong>minecraft-kev</strong>
+  <label>run <select id="run"></select></label>
+  <button id="play">Play</button>
+  <label>speed <select id="speed"><option value="1">1x</option><option value="2">2x</option><option value="4">4x</option></select></label>
+  <span id="clock" class="meta"></span>
+  <span class="legend"><i></i> teacher's choice or the true outcome · bold bar: kev's answer</span>
+</header>
+<main>
+  <div>
+    <video id="video" controls muted playsinline></video>
+    <div class="meta" id="info"></div>
+    <div class="state" id="state"></div>
+  </div>
+  <div id="panels"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s)
+let traj = null, decisions = []
+const pretty = s => String(s).replace(/_/g, ' ')
+async function loadList () {
+  const list = await (await fetch('list.json')).json()
+  $('#run').innerHTML = list.map(n => `<option>${n}</option>`).join('')
+  const want = new URLSearchParams(location.search).get('run')
+  if (want && list.includes(want)) $('#run').value = want
+  if (list.length) load($('#run').value)
+}
+async function load (name) {
+  traj = await (await fetch(`runs/${name}.json`)).json()
+  decisions = traj.decisions
+  const v = $('#video'); v.src = `runs/${name}.mp4`; v.load()
+  $('#info').textContent = `seed ${traj.meta.seed} · policy ${traj.meta.policy} · end ${traj.meta.end_reason} at ${Math.round(traj.meta.ended_t)} s · goal ${traj.meta.goal_done_t != null ? Math.round(traj.meta.goal_done_t) + ' s' : 'not reached'} · deaths ${traj.meta.deaths}`
+  render(0)
+}
+function decisionAt (t) {
+  let lo = 0, hi = decisions.length - 1, best = 0
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (decisions[m].t <= t) { best = m; lo = m + 1 } else hi = m - 1 }
+  return decisions[best]
+}
+function bars (qid, d) {
+  const keys = d.type === 'noul' ? ['false', 'true'] : d.type === 'score' ? Object.keys(d.probabilities || {}).length ? Object.keys(d.probabilities) : d.options.map((_, i) => String(i)) : d.options
+  const names = d.type === 'score' ? d.options : keys
+  const probs = keys.map(k => d.probabilities ? (d.probabilities[k] ?? 0) : 0)
+  const top = d.probabilities ? probs.indexOf(Math.max(...probs)) : -1
+  const lab = d.label == null ? -1 : d.type === 'noul' ? (d.label ? 1 : 0) : d.type === 'score' ? Number(d.label) : keys.indexOf(d.label)
+  return `<div class="q"><h3>${pretty(qid)} <span class="meta">(${d.type}${d.confidence != null ? `, confidence ${Math.round(d.confidence * 100)}%` : ''})</span></h3>` +
+    keys.map((k, j) => `<div class="bar${j === top ? ' top' : ''}${j === lab ? ' label' : ''}"><span class="name" title="${names[j]}">${pretty(names[j])}</span><span class="track"><span class="fill" style="width:${(probs[j] * 100).toFixed(1)}%"></span><span class="truth"></span></span><span class="pct">${d.probabilities ? Math.round(probs[j] * 100) + '%' : ''}</span></div>`).join('') + '</div>'
+}
+function render (t) {
+  if (!traj) return
+  const d = decisionAt(t)
+  $('#clock').textContent = `t = ${Math.round(t)} s · decision at ${Math.round(d.t)} s${d.decision ? ` · chose ${pretty(d.chosen)} (${d.source})` : ''}`
+  $('#state').textContent = d.state_text
+  $('#panels').innerHTML = Object.entries(d.answers).map(([q, a]) => bars(q, a)).join('')
+}
+$('#video').addEventListener('timeupdate', () => render($('#video').currentTime))
+$('#run').addEventListener('change', e => load(e.target.value))
+$('#play').addEventListener('click', () => { const v = $('#video'); v.paused ? v.play() : v.pause() })
+$('#speed').addEventListener('change', e => { $('#video').playbackRate = +e.target.value })
+loadList()
+</script>
+</body>
+</html>
