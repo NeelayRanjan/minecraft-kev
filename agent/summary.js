@@ -1,0 +1,87 @@
+// bot -> obs: the one place that reads Mineflayer state for the decision layer, plus the episode memory.
+// Everything downstream (teacher, serializer, questions) is a pure function of the obs this returns.
+export function dirWord(dx, dz) {
+  const a = (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360   // 0 = north (-z), 90 = east (+x)
+  return ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][Math.round(a / 45) % 8]
+}
+export function relTo(from, p) {
+  const dx = p.x - from.x, dz = p.z - from.z, dy = p.y - from.y
+  return { dist: Math.hypot(dx, dy, dz), dir: dirWord(dx, dz), dy }
+}
+export function phaseOf(timeOfDay) {
+  const t = ((timeOfDay % 24000) + 24000) % 24000
+  const phase = t < 3000 ? 'morning' : t < 7000 ? 'midday' : t < 12000 ? 'afternoon' : t < 13500 ? 'dusk' : t < 23000 ? 'night' : 'dawn'
+  const secondsToDusk = t < 12000 ? Math.round((12000 - t) / 20) : null
+  const secondsToMorning = t >= 12000 ? Math.round((24000 - t) / 20) : null
+  return { phase, secondsToDusk, secondsToMorning }
+}
+export function classifyEntity(e, mcData) {
+  if (e.type === 'player') return 'player'
+  if (!e.name) return null
+  if (e.type === 'hostile') return 'hostile'
+  if (e.type === 'animal' || e.type === 'passive' || e.type === 'water_creature') return 'passive'
+  if (e.type !== 'mob') return null
+  const cat = mcData.entitiesByName[e.name]?.category
+  return cat === 'Hostile mobs' ? 'hostile' : cat === 'Passive mobs' ? 'passive' : null
+}
+export class EpisodeMemory {
+  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null } }
+  sawIron(pos, t, where = null) { this.ironSeen = { pos: { x: pos.x, y: pos.y, z: pos.z }, t, where } }
+  setBase(kind, pos) { this.base[kind] = pos ? { x: pos.x, y: pos.y, z: pos.z } : null }
+}
+
+const KIND_SCAN = md => [
+  ['log', md.blocksArray.filter(b => b.name.endsWith('_log')).map(b => b.id), 48],
+  ['stone', ['stone', 'deepslate', 'cobblestone'].map(n => md.blocksByName[n].id), 16],
+  ['coal_ore', ['coal_ore', 'deepslate_coal_ore'].map(n => md.blocksByName[n].id), 32],
+  ['iron_ore', ['iron_ore', 'deepslate_iron_ore'].map(n => md.blocksByName[n].id), 32],
+  ['water', [md.blocksByName.water.id], 12],
+  ['lava', [md.blocksByName.lava.id], 12],
+]
+
+export function summarize(bot, mcData, mem, ctx) {
+  const me = bot.entity.position
+  const blocks = []
+  for (const [kind, matching, maxDistance] of KIND_SCAN(mcData)) {
+    const pos = bot.findBlocks({ matching, maxDistance, count: 1 })[0]
+    if (!pos) continue
+    const b = bot.blockAt(pos)
+    const r = relTo(me, pos)
+    const name = kind === 'log' ? b.name : kind === 'stone' ? 'stone' : b.name.replace('deepslate_', '')
+    blocks.push({ name, pos: { x: pos.x, y: pos.y, z: pos.z }, ...r, reachable: r.dist <= 6 || bot.canSeeBlock(b) })
+    if (kind === 'iron_ore') mem.sawIron(pos, ctx.t, null)
+  }
+  const caveAir = mcData.blocksByName.cave_air?.id
+  if (caveAir != null) {
+    const p = bot.findBlocks({ matching: caveAir, maxDistance: 24, count: 1 })[0]
+    if (p) blocks.push({ name: 'cave', pos: { x: p.x, y: p.y, z: p.z }, ...relTo(me, p), reachable: false })
+  }
+  blocks.sort((a, b) => a.dist - b.dist)
+  const entities = Object.values(bot.entities).filter(e => e !== bot.entity && e.position && e.isValid !== false)
+    .map(e => ({ name: e.name || e.username || 'unknown', kind: classifyEntity(e, mcData), ...relTo(me, e.position), id: e.id }))
+    .filter(e => e.kind && e.dist <= 32).sort((a, b) => a.dist - b.dist).slice(0, 6)
+  const hostiles = entities.filter(e => e.kind === 'hostile')
+  const inv = {}, toolWear = {}
+  for (const it of bot.inventory.items()) {
+    inv[it.name] = (inv[it.name] || 0) + it.count
+    const max = mcData.itemsByName[it.name]?.maxDurability
+    if (it.name.endsWith('_pickaxe') && it.durabilityUsed && max) toolWear[it.name] = Math.round(100 * it.durabilityUsed / max)
+  }
+  const head = me.offset(0, 1, 0).floored()
+  let skyLight = 15, blockLight = 0
+  try { skyLight = bot.world.getSkyLight(head) ?? 15; blockLight = bot.world.getBlockLight(head) ?? 0 } catch {}
+  const below = bot.blockAt(me.offset(0, -0.5, 0).floored())
+  const { phase, secondsToDusk, secondsToMorning } = phaseOf(bot.time.timeOfDay)
+  const weather = bot.thunderState > 0 ? 'thunder' : bot.isRaining ? 'rain' : 'clear'
+  const base = { crafting_table: mem.base.table ? relTo(me, mem.base.table) : null, furnace: mem.base.furnace ? relTo(me, mem.base.furnace) : null }
+  const ironSeen = mem.ironSeen ? { ...relTo(me, mem.ironSeen.pos), agoS: ctx.t - mem.ironSeen.t, where: mem.ironSeen.where, pos: mem.ironSeen.pos } : null
+  return {
+    t: ctx.t, day: Number(bot.time.day), timeOfDay: bot.time.timeOfDay, phase, secondsToDusk, secondsToMorning, weather,
+    biome: bot.blockAt(me.floored())?.biome?.name || 'unknown', pos: { x: me.x, y: me.y, z: me.z }, standingOn: below?.name || 'air',
+    skyLight, blockLight, underground: skyLight < 4, inWater: !!bot.entity.isInWater,
+    health: bot.health ?? 20, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
+    base, memory: { ironSeen, lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading },
+    blocks, entities, nearestHostile: hostiles[0] || null,
+    current: ctx.current || null, last: ctx.last || null, goal: ctx.goal || 'iron_pickaxe', done: !!inv.iron_pickaxe,
+  }
+}
