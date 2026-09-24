@@ -15,7 +15,8 @@ export function startRecorder(bot, { output, fps = 5, width = 448, height = 448,
   const viewer = new Viewer(renderer)
   if (!viewer.setVersion(bot.version)) throw new Error(`prismarine-viewer does not support ${bot.version}`)
   const updateEntity = viewer.updateEntity.bind(viewer)
-  viewer.updateEntity = e => { try { updateEntity(e) } catch {} }   // the viewer has no mesh for dropped items ("Unknown entity item") and throws
+  const SKIP = new Set(['item', 'experience_orb', 'arrow', 'falling_block'])   // the viewer has no mesh for these and logs a stack trace before throwing
+  viewer.updateEntity = e => { if (SKIP.has(e?.name)) return; try { updateEntity(e) } catch {} }
   const cam = () => { viewer.setFirstPersonCamera(bot.entity.position, bot.entity.yaw, bot.entity.pitch); worldView.updatePosition(bot.entity.position) }
   const worldView = new WorldView(bot.world, viewDistance, bot.entity.position)
   viewer.listen(worldView)

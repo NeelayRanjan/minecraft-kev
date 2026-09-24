@@ -40,6 +40,13 @@ export async function startServer({ port, seed, dir = path.join(ROOT, 'servers',
   fs.mkdirSync(dir, { recursive: true })
   killStale(dir, log)
   for (const f of [JAR, 'eula.txt', 'ops.json']) fs.copyFileSync(path.join(TEMPLATE_DIR, f), path.join(dir, f))
+  // Paper unpacks ~200 MB of libraries per instance; share the template's read-only copies instead of duplicating them.
+  for (const d of ['libraries', 'versions', 'cache']) {
+    const src = path.join(TEMPLATE_DIR, d), dst = path.join(dir, d)
+    if (!fs.existsSync(src)) continue
+    if (fs.existsSync(dst) && !fs.lstatSync(dst).isSymbolicLink()) fs.rmSync(dst, { recursive: true, force: true })
+    if (!fs.existsSync(dst)) fs.symlinkSync(src, dst)
+  }
   for (const w of fs.readdirSync(dir).filter(d => d.startsWith('world'))) fs.rmSync(path.join(dir, w), { recursive: true, force: true })
   fs.writeFileSync(path.join(dir, 'server.properties'), renderProperties(fs.readFileSync(path.join(TEMPLATE_DIR, 'server.properties'), 'utf8'), { port, seed }))
   const outPath = path.join(dir, 'server.out')

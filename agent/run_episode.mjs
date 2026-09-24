@@ -24,6 +24,8 @@ import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
+import { askPlanner } from './planner.js'
+import { options as optionsFor } from './subtasks.js'
 
 // ---- args ------------------------------------------------------------------------------------------------------
 const argv = process.argv.slice(2)
@@ -32,7 +34,9 @@ const flag = k => argv.includes(`--${k}`)
 const seed = opt('seed', '1'), port = Number(opt('port', 25580)), policy = opt('policy', 'teacher'), kevUrl = opt('kev-url', null)
 const epsAction = Number(opt('eps-action', 0)), minutes = Number(opt('minutes', 20)), successMin = Number(opt('success-minutes', 15))
 const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Number(opt('fps', 5)), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
+const llmUrl = opt('llm-url', 'http://127.0.0.1:11434'), llmModel = opt('llm-model', 'qwen3:4b')
 if (policy === 'kev' && !kevUrl) { console.error('--policy kev needs --kev-url'); process.exit(2) }
+if (!['teacher', 'kev', 'llm'].includes(policy)) { console.error(`unknown policy ${policy}`); process.exit(2) }
 fs.mkdirSync('out', { recursive: true })
 const T0 = Date.now()
 const log = s => { if (!quiet) console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${s}`) }
@@ -71,7 +75,7 @@ await bot.waitForTicks(20)
 const mcData = mcDataFor(bot.version)
 const mem = new EpisodeMemory()
 const motor = new Motor(bot, mcData, mem, { log: s => log(`motor: ${s}`) })
-const elog = new EpisodeLog({ seed, policy, eps_action: epsAction, minutes, kev_url: kevUrl, model: policy === 'kev' ? 'kev' : null, username: me, version: bot.version,
+const elog = new EpisodeLog({ seed, policy, eps_action: epsAction, minutes, kev_url: kevUrl, model: policy === 'kev' ? 'kev' : policy === 'llm' ? llmModel : null, username: me, version: bot.version,
   difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps } : null })
 let recorder = null
 if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
@@ -132,12 +136,27 @@ async function decide(obs, t) {
       catch (e) { kevErrors++; log(`kev error: ${e.message}`); elog.event({ t, kind: 'kev_error', error: String(e.message) }); answers = oneHot(qs, labels); source = 'kev_error' }
     } else answers = oneHot(qs, labels)
     if (finished) return
-    if (decision) {
+    let teacherLabel = labels.next_subtask ?? null, why = null, plannerLatency = null
+    if (decision && policy === 'llm') {
+      // The LLM leads: it picks from the same offered list; its choice becomes the next_subtask label (LLM-teacher data).
+      const opts = optionsFor(obs)
+      const forecasts = {}
+      for (const q of ['subgoal_succeeds_60s', 'iron_found_3min', 'survive_until_morning']) if (answers[q]?.probabilities) forecasts[q] = answers[q].probabilities.true
+      if (answers.damage_next_20s?.probabilities) forecasts.damage_major_or_death = (answers.damage_next_20s.probabilities[2] || 0) + (answers.damage_next_20s.probabilities[3] || 0)
+      try {
+        const a = await askPlanner({ url: llmUrl, model: llmModel, stateText: text, options: opts, history: elog.events.slice(-12), forecasts: kevUrl ? forecasts : {} })
+        plannerLatency = a.latency_ms
+        if (a.id) { chosen = a.id; source = 'llm'; why = a.why; labels.next_subtask = a.id }
+        else { elog.event({ t, kind: 'planner_invalid', raw: a.raw }); ({ id: chosen } = chooseAction({ policy: 'teacher', qs, labels, answers, rng, epsAction: 0 })); source = 'llm_fallback' }
+      } catch (e) { log(`planner error: ${e.message}`); elog.event({ t, kind: 'planner_error', error: String(e.message).slice(0, 200) }); ({ id: chosen } = chooseAction({ policy: 'teacher', qs, labels, answers, rng, epsAction: 0 })); source = 'llm_fallback' }
+      if (finished) return
+    } else if (decision) {
       if (source === 'kev_error' && policy === 'kev') chosen = 'wait'
       else ({ id: chosen, source } = chooseAction({ policy, qs, labels, answers, rng, epsAction }))
       if (source === 'fallback') elog.event({ t, kind: 'fallback', wanted: policy === 'kev' ? answers.next_subtask?.choice : labels.next_subtask })
     }
-    elog.decision({ t, state_text: text, decision, qs, labels, answers, chosen, source, latency_ms: latency })
+    if (answers.next_subtask) answers.next_subtask.label = labels.next_subtask ?? null
+    elog.decision({ t, state_text: text, decision, qs, labels, answers, chosen, source, latency_ms: latency, teacher_label: teacherLabel, why, planner_latency_ms: plannerLatency })
     if (decision && !motor.busy && !finished) startSubtask(chosen, source, obs)
   } finally { asking = false }
 }
