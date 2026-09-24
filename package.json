@@ -7,7 +7,7 @@
     "server:stop": "pkill -f '[p]aper-1.20.4-499.jar'",
     "smoke:bot": "node smoke/bot_smoke.mjs",
     "smoke:render": "node smoke/render_smoke.mjs day 30 448 && node smoke/render_smoke.mjs midnight 30 448 && smoke/frame_stats.sh out/render_day.mp4 && smoke/frame_stats.sh out/render_midnight.mp4",
-    "test": "node --test tests/"
+    "test": "node --test tests/*.test.mjs"
   },
   "keywords": [],
   "author": "",
