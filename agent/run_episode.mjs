@@ -23,6 +23,7 @@ import { counts } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev } from './logger.js'
 import { ask } from './kev_client.js'
+import { injectDeaths } from './relabel.js'
 
 // ---- args ------------------------------------------------------------------------------------------------------
 const argv = process.argv.slice(2)
@@ -43,11 +44,13 @@ const server = noServer ? null : await startServer({ port, seed, log })
 const bot = createBot({ host: '127.0.0.1', port, username: `kev_${port % 100}`, version: '1.20.4', auth: 'offline' })
 bot.loadPlugin(pathfinderPkg.pathfinder); bot.loadPlugin(collectPkg.plugin); bot.loadPlugin(pvp)
 let finished = false
+let wrote = false
 const shutdown = async (why, code) => {
   if (finished) return
   finished = true
   log(`shutdown: ${why}`)
   try { clearInterval(loop) } catch {}
+  if (!wrote) { try { elog?.finish({ end_reason: `crash: ${why}`.slice(0, 120), ended_t: now?.() ?? null }); fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(elog.toJSON())); wrote = true } catch {} }
   try { if (recorder) await recorder.stop() } catch {}
   try { bot.quit() } catch {}
   if (server) await server.stop()
@@ -61,7 +64,9 @@ bot.on('error', e => log(`bot error: ${e.message}`))
 await new Promise(r => bot.once('spawn', r))
 for (let i = 0; i < 10; i++) { try { await bot.waitForChunksToLoad(); break } catch { log('chunks not ready, retrying') } }
 const me = bot.username
-for (const c of ['/time set 0', `/difficulty ${difficulty}`, '/gamerule doDaylightCycle true', '/gamerule keepInventory false', '/gamerule doImmediateRespawn true', '/weather clear']) bot.chat(c)
+// Server commands go to the console when we own the server (works for any bot name); chat needs the bot to be an op.
+const command = c => { if (server) server.proc.stdin.write(c + '\n'); else bot.chat('/' + c) }
+for (const c of ['time set 0', `difficulty ${difficulty}`, 'gamerule doDaylightCycle true', 'gamerule keepInventory false', 'gamerule doImmediateRespawn true', 'weather clear']) command(c)
 await bot.waitForTicks(20)
 const mcData = mcDataFor(bot.version)
 const mem = new EpisodeMemory()
@@ -90,52 +95,60 @@ function startSubtask(id, source, obs) {
   }).catch(e => { lastResult = { id, result: 'failed' }; elog.event({ t: now(), kind: 'subtask_error', id, error: String(e?.message || e) }) })
 }
 
-async function tick() {
-  if (ticking || finished) return
-  ticking = true
+// The 1 Hz tick is synchronous (sample, frame, interrupts, end conditions) so a slow kev request can never stall the
+// timeline; the question/decision path is async and skipped while a previous request is still in flight.
+let asking = false, kevErrors = 0
+const KEV_DOWN_AFTER = 30
+function tick() {
+  if (finished) return
+  const t = now()
+  const cur = motor.current ? { name: motor.current.name, arg: motor.current.arg, elapsedS: motor.elapsedS(), progress: motor.progress() } : null
+  const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal: 'iron_pickaxe' })
+  const step = techStep(obs), c = counts(obs)
+  if (obs.done && doneAt == null) { doneAt = t; elog.event({ t, kind: 'goal_done', item: 'iron_pickaxe' }); log(`GOAL: iron pickaxe at ${t.toFixed(0)} s`) }
+  elog.sample({ t, step: step.index, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done })
+  elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
+  const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead })
+  if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); motor.interrupt(why) }
+  prevHostileDist = obs.nearestHostile?.dist ?? null
+  const morning = obs.day > startDay && obs.timeOfDay < 12000
+  if (t >= minutes * 60) { finish('time'); return }
+  if (morning) { finish(doneAt != null ? 'morning_after_goal' : 'morning'); return }
+  if (kevErrors >= KEV_DOWN_AFTER) { finish('kev_down'); return }
+  if (!asking) decide(obs, t).catch(e => { console.error(e); shutdown(`decide: ${e.message}`, 1) })
+}
+
+async function decide(obs, t) {
+  asking = true
   try {
-    const t = now()
-    const cur = motor.current ? { name: motor.current.name, arg: motor.current.arg, elapsedS: motor.elapsedS(), progress: motor.progress() } : null
-    const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal: 'iron_pickaxe' })
-    const step = techStep(obs), c = counts(obs)
-    if (obs.done && doneAt == null) { doneAt = t; elog.event({ t, kind: 'goal_done', item: 'iron_pickaxe' }); log(`GOAL: iron pickaxe at ${t.toFixed(0)} s`) }
-    elog.sample({ t, step: step.index, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done })
-    elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
-    // interrupts
-    const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead })
-    if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); motor.interrupt(why) }
-    prevHostileDist = obs.nearestHostile?.dist ?? null
-    // questions
     const decision = !motor.busy && !dead
     const { qs, labels } = buildQuestions(obs, { decision })
     if (!Object.keys(qs).length) return
     const text = serialize(obs)
-    let answers, latency = null
+    let answers, latency = null, source = null, chosen = null
     if (kevUrl) {
-      try { const resp = await ask(kevUrl, text, qs); answers = fromKev(resp, qs, labels); latency = resp.latency_ms }
-      catch (e) { log(`kev error: ${e.message}`); elog.event({ t, kind: 'kev_error', error: String(e.message) }); answers = oneHot(qs, labels) }
+      try { const resp = await ask(kevUrl, text, qs, { timeoutMs: 10_000 }); answers = fromKev(resp, qs, labels); latency = resp.latency_ms; kevErrors = 0 }
+      catch (e) { kevErrors++; log(`kev error: ${e.message}`); elog.event({ t, kind: 'kev_error', error: String(e.message) }); answers = oneHot(qs, labels); source = 'kev_error' }
     } else answers = oneHot(qs, labels)
-    let chosen = null, source = null
+    if (finished) return
     if (decision) {
-      ({ id: chosen, source } = chooseAction({ policy, qs, labels, answers, rng, epsAction }))
+      if (source === 'kev_error' && policy === 'kev') chosen = 'wait'
+      else ({ id: chosen, source } = chooseAction({ policy, qs, labels, answers, rng, epsAction }))
       if (source === 'fallback') elog.event({ t, kind: 'fallback', wanted: policy === 'kev' ? answers.next_subtask?.choice : labels.next_subtask })
     }
     elog.decision({ t, state_text: text, decision, qs, labels, answers, chosen, source, latency_ms: latency })
-    if (decision && !finished) startSubtask(chosen, source, obs)
-    // end conditions
-    const morning = obs.day > startDay && obs.timeOfDay < 12000
-    if (t >= minutes * 60) await finish('time')
-    else if (doneAt != null && morning) await finish('morning_after_goal')
-  } finally { ticking = false }
+    if (decision && !motor.busy && !finished) startSubtask(chosen, source, obs)
+  } finally { asking = false }
 }
 
 async function finish(reason) {
   if (finished) return
   const t = now()
   motor.interrupt('episode_end')
+  elog.timeline = injectDeaths(elog.timeline, elog.events)   // the sampler rarely catches the few ticks between death and respawn
   elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, video_frames: recorder ? recorder.frames() : null })
   const json = elog.toJSON(), recs = elog.toRecords()
-  fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(json))
+  fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(json)); wrote = true
   fs.writeFileSync(path.join('out', `${name}.jsonl`), recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : ''))
   const cens = elog.censoring()
   const dec = json.decisions.filter(d => d.decision).length
@@ -144,4 +157,4 @@ async function finish(reason) {
 }
 
 log(`episode ${name}: seed ${seed}, policy ${policy}, eps ${epsAction}, ${minutes} min, spawn ${bot.entity.position.floored()}`)
-const loop = setInterval(() => { tick().catch(e => { console.error(e); shutdown(`tick: ${e.message}`, 1) }) }, 1000)
+const loop = setInterval(() => { try { tick() } catch (e) { console.error(e); shutdown(`tick: ${e.message}`, 1) } }, 1000)

@@ -18,7 +18,7 @@ const opt = (k, d) => { const i = argv.indexOf(`--${k}`); return i >= 0 && !argv
 const seeds = Number(opt('seeds', 4)), seed0 = Number(opt('seed0', 0)), procs = Number(opt('procs', 2)), minutes = opt('minutes', '20')
 const epsAction = opt('eps-action', '0'), out = opt('out', 'data/mc.jsonl'), thin = Number(opt('thin', 5)), policy = opt('policy', 'teacher')
 const kevUrl = opt('kev-url', null), port0 = Number(opt('port0', 25600)), prefix = opt('prefix', 'gen'), difficulty = opt('difficulty', 'normal')
-const video = argv.includes('--video')
+const video = argv.includes('--video'), videoSeeds = Number(opt('video-seeds', 2))   // --video records only the first N seeds (each renderer costs CPU and RAM)
 fs.mkdirSync(path.dirname(out), { recursive: true })
 const T0 = Date.now()
 const say = s => console.log(`[${((Date.now() - T0) / 60000).toFixed(1)} min] ${s}`)
@@ -27,7 +27,7 @@ function runEpisode(seed, slot) {
   return new Promise(resolve => {
     const name = `${prefix}_s${seed}`
     const args = [path.join(HERE, 'run_episode.mjs'), '--seed', String(seed), '--port', String(port0 + slot), '--policy', policy, '--minutes', minutes,
-      '--eps-action', epsAction, '--out', name, '--difficulty', difficulty, '--quiet', ...(kevUrl ? ['--kev-url', kevUrl] : []), ...(video ? ['--video'] : [])]
+      '--eps-action', epsAction, '--out', name, '--difficulty', difficulty, '--quiet', ...(kevUrl ? ['--kev-url', kevUrl] : []), ...(video && seed - seed0 < videoSeeds ? ['--video'] : [])]
     const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     child.stdout.on('data', d => { stdout += d })
@@ -43,21 +43,8 @@ function runEpisode(seed, slot) {
   })
 }
 
-function thinRecords(recs) {
-  const kept = []
-  let postGoalDec = 0, forecastN = 0
-  for (const r of recs) {
-    const m = r._meta
-    const postGoal = /Goal: iron pickaxe done/.test(r.state)
-    let keep
-    if (m.decision) keep = postGoal ? (postGoalDec++ % thin === 0) : true
-    else keep = (forecastN++ % thin === 0)
-    if (!keep) continue
-    const { _meta, ...rest } = r
-    kept.push(rest)
-  }
-  return kept
-}
+import { thinRecords as thinShared } from './thin.js'
+const thinRecords = recs => thinShared(recs, thin)
 
 const results = []
 let next = 0

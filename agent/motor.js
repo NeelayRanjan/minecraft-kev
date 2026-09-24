@@ -18,9 +18,11 @@ const fail = (result, detail) => ({ result, detail })
 class Abort extends Error { constructor(why) { super(why); this.name = 'Abort' } }
 
 export class Motor {
-  constructor(bot, mcData, mem, { log = () => {} } = {}) {
+  constructor(bot, mcData, mem, { log = () => {}, timeouts = {} } = {}) {
     this.bot = bot; this.md = mcData; this.mem = mem; this.log = log
+    this.timeouts = { ...TIMEOUTS, ...timeouts }
     this.busy = false; this.current = null; this.last = null; this.interrupted = null; this.deadline = 0
+    this.gen = 0   // per-run generation: an executor abandoned by a timeout/interrupt is aborted at its next check()
     bot.setMaxListeners(64)   // abandoned collect/goto calls leave listeners behind briefly; the default of 10 warns
     this.movements = new Movements(bot, mcData)
     this.movements.canDig = true
@@ -64,16 +66,21 @@ export class Motor {
     const exec = this.exec[name]
     if (!exec) return fail('failed', `unknown subtask ${name}`)
     this.busy = true; this.interrupted = null
-    this.current = { id, name, arg, t0: Date.now(), y0: this.bot.entity.position.y, progress: null }
-    this.deadline = Date.now() + TIMEOUTS[name] * 1000
-    let out
+    const gen = ++this.gen
+    const timeoutS = this.timeouts[name] ?? 30
+    this.current = { id, name, arg, t0: Date.now(), y0: this.bot.entity.position.y, progress: null, gen }
+    this.deadline = Date.now() + timeoutS * 1000
+    const ctx = Object.create(this)   // executors run with this = ctx so check() can compare their run generation
+    ctx.runGen = gen
+    let out, timer
     try {
       out = await Promise.race([
-        exec.call(this, arg, obs).catch(e => this.mapError(e)),
-        new Promise(r => setTimeout(() => r(fail('timeout')), TIMEOUTS[name] * 1000)),
+        exec.call(ctx, arg, obs).catch(e => this.mapError(e)),
+        new Promise(r => { timer = setTimeout(() => r(fail('timeout')), timeoutS * 1000) }),
         new Promise(r => { this._onInterrupt = r }),
       ])
     } finally {
+      clearTimeout(timer)
       this._onInterrupt = null
       this.stopAll()
     }
@@ -116,7 +123,11 @@ export class Motor {
 
   elapsedS() { return this.current ? (Date.now() - this.current.t0) / 1000 : 0 }
 
-  check() { if (this.interrupted) throw new Abort(this.interrupted); if (Date.now() > this.deadline) throw new Abort('timeout') }
+  check() {
+    if (this.runGen != null && this.runGen !== this.gen) throw new Abort('superseded')
+    if (this.interrupted) throw new Abort(this.interrupted)
+    if (Date.now() > this.deadline) throw new Abort('timeout')
+  }
 
   mapError(e) {
     if (e instanceof Abort) return fail(e.message === 'timeout' ? 'timeout' : 'interrupted', e.message)
@@ -171,7 +182,7 @@ export class Motor {
       try { await this.bot.collectBlock.collect(block, { ignoreNoPath: false }); return }
       catch (e) {
         // "Digging aborted": collectblock started its dig while the pathfinder was still breaking a block on the path.
-        if (attempt < 2 && /Digging aborted/.test(e?.message || '')) { this.log(`collect ${block.name}: dig aborted, retrying`); await this.waitDigIdle(); continue }
+        if (attempt < 2 && /Digging aborted/.test(e?.message || '')) { this.check(); this.log(`collect ${block.name}: dig aborted, retrying`); await this.waitDigIdle(); continue }
         throw e
       }
     }
@@ -195,7 +206,7 @@ export class Motor {
     for (let attempt = 0; ; attempt++) {
       try { await this.bot.dig(block); return }
       catch (e) {
-        if (attempt < 2 && /Digging aborted/.test(e?.message || '')) { await this.waitDigIdle(); continue }
+        if (attempt < 2 && /Digging aborted/.test(e?.message || '')) { this.check(); await this.waitDigIdle(); continue }
         throw e
       }
     }
@@ -409,7 +420,7 @@ export class Motor {
       await this.equipWeapon()
       b.pvp.attack(target)
       const t0 = Date.now()
-      while (Date.now() - t0 < TIMEOUTS.fight * 1000) {
+      while (Date.now() - t0 < this.timeouts.fight * 1000) {
         this.check()
         if (!target.isValid || !b.entities[target.id]) return ok('killed or gone')
         if (b.entity.position.distanceTo(target.position) > 24) return fail('target_gone', 'out of range')
@@ -447,7 +458,7 @@ export class Motor {
       return placed > 0 ? ok(`+${placed} blocks`) : fail('failed', 'placed nothing')
     },
 
-    async wait() { await sleep(TIMEOUTS.wait * 1000 - 200); return ok() },
+    async wait() { await sleep(Math.max(10, this.timeouts.wait * 1000 - 200)); return ok() },
   }
 
   nearestHostileEntity() {

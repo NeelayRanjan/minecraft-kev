@@ -4,15 +4,17 @@
 # Usage: scripts/drive_eval.sh <run> [seeds=20] [seed0=1000] [minutes=20]
 set -u
 cd "$(dirname "$0")/.."
-run=${1:?run}; seeds=${2:-20}; seed0=${3:-1000}; minutes=${4:-20}
+run=${1:?run}; seeds=${2:-20}; seed0=${3:-1000}; minutes=${4:-22}
 KEV=${KEV:-../overcooked-kev/kev}
+mkdir -p "reports/$run"
 say() { echo "[$(date '+%F %T')] drive_eval $run: $*"; }
+pkill -f '[p]aper-1.20.4-499.jar' 2>/dev/null; sleep 2   # orphans from an earlier batch would hold ports and RAM
 ( cd "$KEV" && KEV_DTYPE=bf16 setsid .venv/bin/python -m kev.serve --run "runs/$run" --port 8009 > ".serve-$run.log" 2>&1 < /dev/null & )
 for i in $(seq 1 120); do curl -s -o /dev/null http://127.0.0.1:8009/v1/models && break; sleep 2; done
 curl -s -o /dev/null http://127.0.0.1:8009/v1/models || { say "kev.serve did not come up"; exit 1; }
 say "kev.serve up; kev drives $seeds seeds from $seed0"
 node agent/gen_data.mjs --policy kev --kev-url http://127.0.0.1:8009 --seeds "$seeds" --seed0 "$seed0" --procs 5 --minutes "$minutes" --thin 8 \
-  --out "data/drive_${run}_kev.jsonl" --prefix "drive_${run}_kev" --port0 25620 --video
+  --out "data/drive_${run}_kev.jsonl" --prefix "drive_${run}_kev" --port0 25620 --video --video-seeds 3
 say "kev runs done (exit $?)"
 pkill -f "[k]ev.serve --run runs/$run" ; sleep 3
 say "teacher drives the same seeds (no noise)"

@@ -22,6 +22,24 @@ test('steps follow the tech tree', () => {
   assert.equal(techStep(baseObs({ inventory: { stone_pickaxe: 1 } })).text, 'find and mine 3 iron ore')
 })
 
+test('the tech step never falls just by walking away from the table', () => {
+  const far = { crafting_table: { dist: 40, dir: 'east', dy: 0 }, furnace: null }
+  assert.equal(techStep(baseObs({ inventory: { oak_log: 1 }, base: far })).index, 3)
+  assert.equal(techStep(baseObs({ inventory: { oak_planks: 3, stick: 2 }, base: far })).index, 3)
+})
+
+test('far from the base with no spare table and not enough planks, the teacher returns to base', () => {
+  const far = { crafting_table: { dist: 40, dir: 'east', dy: 0 }, furnace: null }
+  assert.equal(teacherSubtask(baseObs({ inventory: { oak_planks: 3, stick: 2 }, base: far })), 'return_to_base')
+  assert.equal(teacherSubtask(baseObs({ inventory: { oak_planks: 8, stick: 2 }, base: far })), 'craft(crafting_table)')
+})
+
+test('threat teacher never asks to pillar up in water', () => {
+  const o = baseObs({ inWater: true, nearestHostile: { name: 'zombie', dist: 5, dir: 'west', dy: 0 },
+    entities: [1, 2, 3].map(i => ({ name: 'zombie', kind: 'hostile', dist: 4 + i, dir: 'west', dy: 0 })), inventory: { cobblestone: 5 } })
+  assert.equal(teacherThreat(o), 'flee')
+})
+
 test('no tree in sight: explore the surface, never wait', () => {
   assert.equal(teacherSubtask(baseObs()), 'explore_toward(surface)')
 })

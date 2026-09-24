@@ -9,34 +9,37 @@ export const DAMAGE_LEVELS = ['none: no damage taken', 'minor: less than 4 hp lo
 export const HOSTILE_RANGE = 16
 export const POST_HOC = new Set(['subgoal_succeeds_60s', 'iron_found_3min', 'damage_next_20s', 'survive_until_morning'])
 
+// One place for the question texts, shared by buildQuestions (play / data generation) and relabel.js (rebuilding
+// records from raw logs whose decisions carry only answers). `hostile` is the pretty (space-separated) mob name.
+export function questionFor(qid, { stepText = '', hostile = '', optionDescs = {} } = {}) {
+  switch (qid) {
+    case 'next_subtask': return { type: 'choice', instructions: 'Which subtask should the player do next to make progress on the goal without dying?', criteria: { ...optionDescs } }
+    case 'threat_response': return { type: 'choice', instructions: `How should the player respond to the ${hostile} nearby?`, criteria: { ...THREAT_OPTIONS } }
+    case 'subgoal_succeeds_60s': return { type: 'noul', instructions: `Will the current step (${stepText}) be completed within the next ${HORIZONS.step} seconds?` }
+    case 'iron_found_3min': return { type: 'noul', instructions: `Will the player mine at least one iron ore within the next ${HORIZONS.iron / 60} minutes?` }
+    case 'damage_next_20s': return { type: 'score', instructions: `How much damage will the player take in the next ${HORIZONS.damage} seconds?`, criteria: [...DAMAGE_LEVELS] }
+    case 'survive_until_morning': return { type: 'noul', instructions: 'Will the player survive until sunrise without dying?' }
+    default: throw new Error(`unknown question ${qid}`)
+  }
+}
+
 export function buildQuestions(obs, { decision }) {
   const qs = {}, labels = {}
   const step = techStep(obs)
   const c = counts(obs)
   if (decision) {
     const opts = options(obs)
-    qs.next_subtask = { type: 'choice', instructions: 'Which subtask should the player do next to make progress on the goal without dying?',
-      criteria: Object.fromEntries(opts.map(o => [o.id, o.desc])) }
+    qs.next_subtask = questionFor('next_subtask', { optionDescs: Object.fromEntries(opts.map(o => [o.id, o.desc])) })
     labels.next_subtask = teacherSubtask(obs)
     if (obs.nearestHostile && obs.nearestHostile.dist <= HOSTILE_RANGE) {
-      qs.threat_response = { type: 'choice', instructions: `How should the player respond to the ${obs.nearestHostile.name.replace(/_/g, ' ')} nearby?`, criteria: { ...THREAT_OPTIONS } }
+      qs.threat_response = questionFor('threat_response', { hostile: obs.nearestHostile.name.replace(/_/g, ' ') })
       labels.threat_response = teacherThreat(obs)
     }
   }
-  if (step.index <= 7) {
-    qs.subgoal_succeeds_60s = { type: 'noul', instructions: `Will the current step (${step.text}) be completed within the next ${HORIZONS.step} seconds?` }
-    labels.subgoal_succeeds_60s = null
-  }
-  if (step.index === 5 && c.rawIron === 0) {
-    qs.iron_found_3min = { type: 'noul', instructions: `Will the player mine at least one iron ore within the next ${HORIZONS.iron / 60} minutes?` }
-    labels.iron_found_3min = null
-  }
-  qs.damage_next_20s = { type: 'score', instructions: `How much damage will the player take in the next ${HORIZONS.damage} seconds?`, criteria: [...DAMAGE_LEVELS] }
-  labels.damage_next_20s = null
-  if (obs.phase === 'dusk' || obs.phase === 'night') {
-    qs.survive_until_morning = { type: 'noul', instructions: 'Will the player survive until sunrise without dying?' }
-    labels.survive_until_morning = null
-  }
+  if (step.index <= 7) { qs.subgoal_succeeds_60s = questionFor('subgoal_succeeds_60s', { stepText: step.text }); labels.subgoal_succeeds_60s = null }
+  if (step.index === 5 && c.rawIron === 0) { qs.iron_found_3min = questionFor('iron_found_3min'); labels.iron_found_3min = null }
+  qs.damage_next_20s = questionFor('damage_next_20s'); labels.damage_next_20s = null
+  if (obs.phase === 'dusk' || obs.phase === 'night') { qs.survive_until_morning = questionFor('survive_until_morning'); labels.survive_until_morning = null }
   return { qs, labels }
 }
 

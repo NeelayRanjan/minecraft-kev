@@ -12,3 +12,4 @@ out/
 servers/
 data/
 media/
+__pycache__/

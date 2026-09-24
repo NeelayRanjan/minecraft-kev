@@ -15,7 +15,7 @@ export function techStep(obs) {
   else if (c.rawIron + c.ingots >= 3) index = 6
   else if (c.hasStonePickaxe) index = 5
   else if (c.hasPickaxe) index = 4
-  else if (c.table >= 1 || tableNear(obs)) index = 3
+  else if (c.table >= 1 || obs.base?.crafting_table) index = 3   // a table exists (any distance): the step must not fall by walking away
   else if (woodEq >= WOOD_NEEDED) index = 2
   else index = 1
   const text = index === 8 ? 'goal done: survive until morning' : STEPS[index - 1]
@@ -37,7 +37,7 @@ export function teacherThreat(obs) {
   const close = (obs.entities || []).filter(e => e.kind === 'hostile' && e.dist <= 8).length
   if (h.name === 'creeper') return 'flee'
   if (obs.health < 8) return 'flee'
-  if (close >= 3) return c.blocks >= 3 ? 'pillar_up' : 'flee'
+  if (close >= 3) return c.blocks >= 3 && !obs.inWater ? 'pillar_up' : 'flee'
   if (h.dist <= 10 && MELEE.has(h.name)) return 'fight'
   if (h.dist <= 10) return 'flee'
   return 'ignore'
@@ -50,7 +50,8 @@ function pick(obs) {
   const step = techStep(obs).index
   const wood = () => has(obs, isLog, 48) ? 'gather_wood' : 'explore_toward(surface)'
   const craft = item => optionId('craft', item)
-  const needTable = item => (tableNear(obs) || c.table >= 1) ? craft(item) : c.planks >= 4 ? craft('crafting_table') : c.logs >= 1 ? craft('planks') : wood()
+  const needTable = item => (tableNear(obs) || c.table >= 1) ? craft(item) : c.planks >= 4 ? craft('crafting_table')
+    : (obs.base?.crafting_table && obs.base.crafting_table.dist > 8) ? 'return_to_base' : c.logs >= 1 ? craft('planks') : wood()
   const sticks = () => c.planks >= 2 ? craft('sticks') : c.logs >= 1 ? craft('planks') : wood()
   const dig = () => c.hasPickaxe && obs.pos.y > 14 ? 'explore_toward(down)' : 'explore_toward(surface)'
   const stone = () => has(obs, isStone, 16) ? 'mine_stone' : dig()

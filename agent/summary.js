@@ -68,7 +68,7 @@ export function summarize(bot, mcData, mem, ctx) {
   }
   blocks.sort((a, b) => a.dist - b.dist)
   const entities = Object.values(bot.entities).filter(e => e !== bot.entity && e.position && e.isValid !== false)
-    .map(e => ({ name: e.name || e.username || 'unknown', kind: classifyEntity(e, mcData), ...relTo(me, e.position), id: e.id }))
+    .map(e => ({ name: e.name || e.username || 'unknown', kind: classifyEntity(e, mcData), ...relTo(me, e.position), id: e.id, pos: { x: e.position.x, y: e.position.y, z: e.position.z } }))
     .filter(e => e.kind && e.dist <= 32).sort((a, b) => a.dist - b.dist).slice(0, 6)
   const hostiles = entities.filter(e => e.kind === 'hostile')
   const inv = {}, toolWear = {}

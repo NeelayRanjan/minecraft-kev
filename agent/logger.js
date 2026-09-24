@@ -80,7 +80,7 @@ export class EpisodeLog {
 
   toJSON() {
     this.label()
-    return { meta: this.meta, frames: this.frames, decisions: this.decisions.map(d => ({ t: d.t, decision: d.decision, state_text: d.state_text, labels: d.labels, answers: d.answers, chosen: d.chosen, source: d.source, latency_ms: d.latency_ms })),
+    return { meta: this.meta, frames: this.frames, decisions: this.decisions.map(d => ({ t: d.t, decision: d.decision, state_text: d.state_text, qs: d.qs, labels: d.labels, answers: d.answers, chosen: d.chosen, source: d.source, latency_ms: d.latency_ms })),
       events: this.events, timeline: this.timeline }
   }
 }
