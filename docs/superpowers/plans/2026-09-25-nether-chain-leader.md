@@ -44,7 +44,7 @@
   - `INGOTS = {iron_sword:2, iron_axe:3, iron_helmet:5, iron_chestplate:8, iron_leggings:7, iron_boots:4, bucket:3, flint_and_steel:1}`, `DIAMONDS = {diamond_pickaxe:3, diamond_sword:2, diamond_axe:3}`, `STICKS = {iron_sword:1, iron_axe:2, diamond_pickaxe:2, diamond_sword:1, diamond_axe:2}`
   - `stageOf(obs) -> { index: 0..4, id, done: bool }` (index 4 done when `obs.portalLit`)
   - `needs(obs) -> { ingots, diamonds, sticks, obsidian, flint, missing: [item ids still to craft in the current stage] }` (ingots counts only the current and earlier stages' missing items; `owns(item)` counts inventory **and** worn armor `obs.armor`)
-  - `chainStep(obs) -> { index, of: 30, text, stage }` monotone: stage 0 = `techStep(obs).index` (1..8), then `10 + k` for stage 1 substeps, `20 + k` stage 2, `30 + k` stage 3, `40 + k` stage 4; `of` reported as the last index (44); substeps: iron tools: 11 "get N iron ingots", 12 "craft iron sword", 13 "craft iron axe"; armor: 21 ingots, 22..25 pieces; diamond: 31 "reach diamond level (y -58)" (until y <= -50 or diamond seen), 32 "mine N diamonds", 33..35 tools; portal: 41 "craft a bucket", 42 "fill the bucket with water", 43 "make 10 obsidian from lava", 44 "mine 10 obsidian", 45 "get flint and craft flint and steel", 46 "build the frame", 47 "light the portal"; index 48 = "chain done".
+  - `chainStep(obs) -> { index, of: 47, text, stage }` monotone: stage 0 = `techStep(obs).index` (1..8), then `10 + k` for stage 1 substeps, `20 + k` stage 2, `30 + k` stage 3, `40 + k` stage 4; `of` is always 47 (the last real step); substeps: iron tools: 11 "get N iron ingots", 12 "craft iron sword", 13 "craft iron axe"; armor: 21 ingots, 22..25 pieces; diamond: 31 "reach diamond level (y -58)" (until y <= -50 or diamond seen), 32 "mine N diamonds", 33..35 tools; portal: 41 "craft a bucket", 42 "fill the bucket with water", 43 "make 10 obsidian from lava", 44 "mine 10 obsidian", 45 "get flint and craft flint and steel", 46 "build the frame", 47 "light the portal"; index 48 = "chain done".
   - `describeChain(obs) -> string` e.g. `Goal chain: iron tools (done), iron armor (2 of 4 pieces), diamond tools, lit nether portal. Current stage: iron armor, step 23 of 47: craft iron leggings (needs 7 ingots, have 3).`
 
 - [ ] **Step 1: Write the failing tests**
@@ -128,7 +128,7 @@ test('chain mode: iron tool and armor recipes are offered when the ingots are th
   const o = chain({ inventory: { iron_pickaxe: 1, iron_ingot: 8, stick: 4, crafting_table: 1 } })
   const ids_ = ids(o)
   for (const id of ['craft(iron_sword)', 'craft(iron_axe)', 'craft(iron_helmet)']) assert.ok(ids_.includes(id), id)
-  assert.ok(!ids_.includes('craft(iron_chestplate)'), 'chestplate needs 8 ingots and the sword/axe come first in the stage arithmetic? no: it is offered when affordable')
+  assert.ok(ids_.includes('craft(iron_chestplate)'), 'affordable with 8 ingots')
 })
 test('chain mode: diamond, gravel, obsidian and the portal steps follow their preconditions', () => {
   const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }
@@ -149,7 +149,6 @@ test('experiment-1 mode never offers chain options', () => {
   assert.ok(!ids(o).some(id => id.includes('iron_sword') || id === 'mine_diamond'))
 })
 ```
-(Drop the confused assertion about the chestplate: assert instead that `craft(iron_chestplate)` **is** offered with 8 ingots.)
 
 - [ ] **Step 2: Run** → fails.
 - [ ] **Step 3: Implement.** In `options(obs)`: after the existing list, `if (obs.goal === 'nether') addChain(obs, out, c)`. `addChain`: iron recipes via `canCraft` (extend the switch: `iron_sword: ingots>=2 && sticks>=1`, `iron_axe: 3 && 2`, armor by `INGOTS`, `diamond_*` by `DIAMONDS`/`STICKS`, `bucket: ingots>=3`, `flint_and_steel: ingots>=1 && flint>=1`), all `TABLE_ITEMS` except bucket? (bucket is a 3x3 recipe: table needed; add all to `TABLE_ITEMS`). `mine_iron` in chain mode: offered when iron seen/remembered and `rawIron + ingots < needs.ingots`. `mine_diamond` when `hasIronPickaxe` and a `diamond_ore` block within 32 (or `obs.memory.diamondSeen`) and `diamonds < needs.diamonds`. `explore_toward(deep)` when `hasIronPickaxe`, stage >= 3, `pos.y > -50`. `mine_gravel` when stage 4, `flint === 0`, no flint_and_steel, gravel within 16. `fill_bucket(water)` when `bucket >= 1` and water within 24 (or `memory.waterSeen`). `cast_obsidian` when `waterBucket` and lava within 24 (or `memory.lavaSeen`) and `obsidian < 10`. `mine_obsidian` when `hasDiamondPickaxe`, obsidian block within 16, `obsidian < 10`. `build_portal` when `obsidian >= 10 && blocks >= 4 && flintAndSteel && !obs.portalFrame`. `light_portal` when `obs.portalFrame && !obs.portalLit && flintAndSteel`. `DESC` entries for each (one line each, imperative, with the recipe quantities). The gathering caps in stage 0 stay as they are.
