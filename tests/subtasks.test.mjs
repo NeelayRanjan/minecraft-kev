@@ -100,9 +100,19 @@ test('chain mode: diamond, gravel, obsidian and the portal steps follow their pr
   assert.ok(ids(chain({ inventory: { ...d, obsidian: 10, cobblestone: 4, flint_and_steel: 1 }, armor })).includes('build_portal'))
   assert.ok(ids(chain({ inventory: { ...d, flint_and_steel: 1 }, armor, portalFrame: { dist: 2, dir: 'north', dy: 0 } })).includes('light_portal'))
 })
-test('chain mode keeps the stage-0 mine_iron cap; from stage 1 it follows needs().ingots', () => {
-  assert.ok(ids(chain({ inventory: { stone_pickaxe: 1 }, blocks: [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }] })).includes('mine_iron'), 'stage 0 in chain mode still offers mine_iron')
-  assert.ok(!ids(chain({ inventory: { iron_pickaxe: 1, iron_ingot: 5 }, blocks: [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }] })).includes('mine_iron'), 'stage 1: 5 ingots already covers iron_sword + iron_axe (2+3)')
+test('chain mode keeps the stage-0 mine_iron cap; from stage 1, needs().ingots (net of held ingots) is compared against raw iron alone', () => {
+  const ironSeen = [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }]
+  assert.ok(ids(chain({ inventory: { stone_pickaxe: 1 }, blocks: ironSeen })).includes('mine_iron'), 'stage 0 in chain mode still offers mine_iron')
+  assert.ok(ids(chain({ inventory: { iron_pickaxe: 1, iron_ingot: 3 }, blocks: ironSeen })).includes('mine_iron'), 'stage 1: need 5 ingots, have 3, net 2 > 0 raw iron waiting to be smelted')
+  assert.ok(!ids(chain({ inventory: { iron_pickaxe: 1, iron_ingot: 3, raw_iron: 2 }, blocks: ironSeen })).includes('mine_iron'), 'stage 1: the net-2 need is already covered by 2 raw iron in hand')
+  assert.ok(!ids(chain({ inventory: { iron_pickaxe: 1, iron_ingot: 5 }, blocks: ironSeen })).includes('mine_iron'), 'stage 1: 5 ingots already covers iron_sword + iron_axe (2+3)')
+})
+test('chain mode mine_diamond compares the already-net needs().diamonds against zero, not against held diamonds again', () => {
+  const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }
+  const armor = { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }
+  const diamondSeen = [{ name: 'diamond_ore', dist: 9, dir: 'north', dy: 0, reachable: true }]
+  assert.ok(ids(chain({ inventory: { ...kit, diamond: 4 }, armor, blocks: diamondSeen })).includes('mine_diamond'), 'stage 3: need 8 diamonds (3+2+3), have 4, net 4 > 0')
+  assert.ok(!ids(chain({ inventory: { ...kit, diamond: 8 }, armor, blocks: diamondSeen })).includes('mine_diamond'), 'stage 3: 8 diamonds already covers all three diamond tools')
 })
 test('experiment-1 mode never offers chain options', () => {
   const o = baseObs({ inventory: { iron_pickaxe: 1, iron_ingot: 8, stick: 4, crafting_table: 1 } })

@@ -150,7 +150,9 @@ function addChain(obs, out, c) {
     if (TABLE_ITEMS.has(item) && !tableNear(obs) && c.table === 0) continue
     add('craft', item)
   }
-  if (c.hasIronPickaxe && (seen(obs, isDiamond, 32) || obs.memory?.diamondSeen) && c.diamonds < need.diamonds) add('mine_diamond')
+  // needs().diamonds is already net of held diamonds (diamond ore drops diamond directly, no smelting), so
+  // the raw ">0" check is correct as-is: comparing a held quantity against it again would be self-referential.
+  if (c.hasIronPickaxe && (seen(obs, isDiamond, 32) || obs.memory?.diamondSeen) && need.diamonds > 0) add('mine_diamond')
   if (c.hasIronPickaxe && stage >= 3 && obs.pos.y > -50) add('explore_toward', 'deep')
   if (stage === 4 && c.flint === 0 && !c.flintAndSteel && seen(obs, isGravel, 16)) add('mine_gravel')
   if (c.bucket >= 1 && (seen(obs, isWater, 24) || obs.memory?.waterSeen)) add('fill_bucket', 'water')
@@ -177,9 +179,12 @@ export function options(obs) {
   if (c.hasPickaxe && seen(obs, isStone, 16) && (done || c.cobble < 32)) add('mine_stone')
   if (c.hasPickaxe && seen(obs, isCoal, 32)) add('mine_coal')
   // Chain mode keeps the flat experiment-1 cap (6) at stage 0 (the iron pickaxe itself isn't in needs()'s
-  // model); from stage 1 on it switches to what the current chain stage still needs, capped at 40 total.
+  // model). From stage 1 on: needs(obs).ingots is already net of held ingots, so it's compared against
+  // rawIron alone (iron waiting to be smelted into ingots), not against rawIron + ingots again, capped at 40.
   const stage0Cap = done || c.rawIron + c.ingots < 6
-  const mineIronOk = chainMode && stageOf(obs).index >= 1 ? c.rawIron + c.ingots < Math.min(needs(obs).ingots, 40) : stage0Cap
+  const mineIronOk = chainMode && stageOf(obs).index >= 1
+    ? needs(obs).ingots > c.rawIron && c.rawIron + c.ingots < 40
+    : stage0Cap
   if (c.hasStonePickaxe && (seen(obs, isIron, 32) || obs.memory?.ironSeen) && mineIronOk) add('mine_iron')
   for (const item of CRAFTABLE) {
     if (!canCraft(item, c)) continue
