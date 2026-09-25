@@ -90,6 +90,7 @@ test('chain mode: diamond, gravel, obsidian and the portal steps follow their pr
   const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }
   const armor = { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }
   assert.ok(ids(chain({ inventory: kit, armor, pos: { x: 0, y: 40, z: 0 } })).includes('explore_toward(deep)'))
+  assert.ok(ids(chain({ inventory: kit, armor, pos: { x: 0, y: -58, z: 0 } })).includes('explore_toward(deep)'), 'explore_toward(deep) stays offered at diamond level, not just above it')
   assert.ok(ids(chain({ inventory: kit, armor, blocks: [{ name: 'diamond_ore', dist: 9, dir: 'north', dy: 0, reachable: true }] })).includes('mine_diamond'))
   assert.ok(!ids(chain({ inventory: { stone_pickaxe: 1 }, blocks: [{ name: 'diamond_ore', dist: 9, dir: 'north', dy: 0, reachable: true }] })).includes('mine_diamond'), 'diamond needs an iron pickaxe')
   const d = { ...kit, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1 }

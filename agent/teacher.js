@@ -106,13 +106,15 @@ function pickChain(obs) {
   const sticks = () => c.planks >= 2 ? craft('sticks') : c.logs >= 1 ? craft('planks') : wood()
   const ironSeen = has(obs, isIron, 32) || !!obs.memory?.ironSeen
   const diamondSeen = has(obs, isDiamond, 32) || !!obs.memory?.diamondSeen
+  // Same as pick()'s stone(): mine_stone is only offered when stone is actually in view.
+  const stone = () => has(obs, isStone, 16) ? 'mine_stone' : (obs.pos.y > 14 ? 'explore_toward(down)' : 'explore_toward(surface)')
 
   // Same shape as pick()'s step 5-6: smelt what's held, else fix the furnace/fuel gap, else go get more iron.
   const getIron = () => {
     const furnaceHandy = furnaceNear(obs) || c.furnace >= 1
     if (c.rawIron >= 1) {
       if (hasFuel(c) && furnaceHandy) return 'smelt(iron_ingot)'
-      if (!furnaceHandy) return c.cobble >= 8 ? needTable('furnace') : 'mine_stone'
+      if (!furnaceHandy) return c.cobble >= 8 ? needTable('furnace') : stone()
       if (c.logs >= 1) return craft('planks')
       if (has(obs, isCoal, 32)) return 'mine_coal'
       if (has(obs, isLog, 48)) return 'gather_wood'
@@ -147,7 +149,7 @@ function pickChain(obs) {
       if (c.flint >= 1) return c.ingots >= 1 ? needTable('flint_and_steel') : getIron()
       return has(obs, isGravel, 16) ? 'mine_gravel' : 'explore_toward(surface)'
     }
-    return c.blocks >= 4 ? 'build_portal' : 'mine_stone'
+    return c.blocks >= 4 ? 'build_portal' : stone()
   }
   if (has(obs, isObsidian, 16)) return 'mine_obsidian'
   if (!c.bucket && !c.waterBucket) return canCraft('bucket', c) ? needTable('bucket') : getIron()

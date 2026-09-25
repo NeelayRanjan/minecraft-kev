@@ -142,3 +142,10 @@ test('chain teacher: portal', () => {
   assert.equal(teacherSubtask(chain({ inventory: { ...d, obsidian: 10, cobblestone: 4, flint_and_steel: 1 }, armor })), 'build_portal')
   assert.equal(teacherSubtask(chain({ inventory: { ...d, flint_and_steel: 1 }, armor, portalFrame: { dist: 2, dir: 'north', dy: 0 } })), 'light_portal')
 })
+test('chain teacher: getIron and the diamond fallback only return offered ids (review fix round 1)', () => {
+  // stage 1, raw iron on hand but no furnace, no cobblestone and no stone in view: mine_stone was never offered here.
+  assert.equal(teacherSubtask(chain({ inventory: { iron_pickaxe: 1, raw_iron: 3 }, pos: { x: 0, y: 60, z: 0 } })), 'explore_toward(down)')
+  // stage 3 at diamond level (y -58): explore_toward(deep) used to be gated to y > -50 in options(), so the
+  // teacher's answer was never offered once the bot actually reached depth.
+  assert.equal(teacherSubtask(chain({ inventory: kit, armor, pos: { x: 0, y: -58, z: 0 } })), 'explore_toward(deep)')
+})

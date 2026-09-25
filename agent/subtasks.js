@@ -124,7 +124,7 @@ export const DESC = {
   mine_diamond: 'walk to the nearest known diamond ore and mine it with an iron or better pickaxe',
   mine_gravel: 'mine gravel nearby (a source of flint)',
   mine_obsidian: 'mine obsidian with a diamond pickaxe',
-  'explore_toward(deep)': 'dig or path down toward diamond level (y -58)',
+  'explore_toward(deep)': 'dig a staircase down to diamond level (y -58), or tunnel along it once there',
   'fill_bucket(water)': 'walk to water and fill the bucket',
   cast_obsidian: 'pour the water bucket onto lava to make obsidian',
   build_portal: 'place the obsidian frame for a nether portal (10 obsidian)',
@@ -153,7 +153,7 @@ function addChain(obs, out, c) {
   // needs().diamonds is already net of held diamonds (diamond ore drops diamond directly, no smelting), so
   // the raw ">0" check is correct as-is: comparing a held quantity against it again would be self-referential.
   if (c.hasIronPickaxe && (seen(obs, isDiamond, 32) || obs.memory?.diamondSeen) && need.diamonds > 0) add('mine_diamond')
-  if (c.hasIronPickaxe && stage >= 3 && obs.pos.y > -50) add('explore_toward', 'deep')
+  if (c.hasIronPickaxe && stage >= 3) add('explore_toward', 'deep')
   if (stage === 4 && c.flint === 0 && !c.flintAndSteel && seen(obs, isGravel, 16)) add('mine_gravel')
   if (c.bucket >= 1 && (seen(obs, isWater, 24) || obs.memory?.waterSeen)) add('fill_bucket', 'water')
   if (c.waterBucket >= 1 && (seen(obs, isLava, 24) || obs.memory?.lavaSeen) && c.obsidian < 10) add('cast_obsidian')
