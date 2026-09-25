@@ -151,3 +151,12 @@ test('chain teacher: getIron and the diamond fallback only return offered ids (r
   // teacher's answer was never offered once the bot actually reached depth.
   assert.equal(teacherSubtask(chain({ inventory: kit, armor, pos: { x: 0, y: -58, z: 0 } })), 'explore_toward(deep)')
 })
+
+test('a withheld mining subtask underground falls back to exploring down, not to the surface climb', () => {
+  const under = baseObs({ pos: { x: 0, y: 30, z: 0 }, skyLight: 0, underground: true, inventory: { stone_pickaxe: 1, wooden_pickaxe: 1, cobblestone: 20 },
+    memory: { ironSeen: { dist: 10, dy: -4, ago: 0 } }, withhold: ['mine_iron'] })
+  assert.ok(!options(under).some(o => o.id === 'mine_iron'))
+  assert.equal(teacherSubtask(under), 'explore_toward(down)')
+  // deeper than explore_toward(down) is offered: the surface fallback as before
+  assert.equal(teacherSubtask({ ...under, pos: { x: 0, y: 10, z: 0 } }), 'explore_toward(surface)')
+})

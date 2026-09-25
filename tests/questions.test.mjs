@@ -115,3 +115,9 @@ test('chain mode: subgoal forecast asks about the chain step, and stops once the
   // experiment 1 with an iron pickaxe: step 8, no subgoal question (unchanged)
   assert.ok(!buildQuestions(baseObs({ inventory: { iron_pickaxe: 1 } }), { decision: false }).qs.subgoal_succeeds_60s)
 })
+
+test('labelDecisions: a step that drops (items lost on death, chain mode) is not an advance', () => {
+  const ds = [{ t: 0, qids: ['subgoal_succeeds_60s'], labels: {} }]
+  labelDecisions(ds, [{ t: 0, step: 21 }, { t: 30, step: 11 }, { t: 61, step: 11 }])
+  assert.equal(ds[0].labels.subgoal_succeeds_60s, false)
+})

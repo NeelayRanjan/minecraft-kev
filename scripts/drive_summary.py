@@ -22,12 +22,34 @@ def load(prefix, seeds, seed0):
         src = Counter(d.get("source") for d in j.get("decisions", []) if d.get("decision"))
         replans = sum(1 for e in j.get("events", []) if e["kind"] == "interrupt" and e.get("reason") == "low_forecast")
         rows.append({"seed": s, "goal_t": m.get("goal_done_t"), "deaths": m.get("deaths", 0), "end": m.get("end_reason"), "t": m.get("ended_t"),
-                     "subtasks": sum(res.values()), "ok": res.get("ok", 0), "src": src, "replans": replans, "supervisor": (m.get("supervisor") or {}).get("mode")})
+                     "subtasks": sum(res.values()), "ok": res.get("ok", 0), "src": src, "replans": replans, "supervisor": (m.get("supervisor") or {}).get("mode"),
+                     "goal": m.get("goal", "iron_pickaxe"), "stage": m.get("stage_reached"), "stage_times": m.get("stage_times") or {}})
     return rows
+
+
+def summarize_chain(name, rows):
+    """Chain mode (meta.goal == 'nether'): the stage reached (0..4 in progress, 5 = lit portal) and when."""
+    ok = [r for r in rows if not r.get("missing")]
+    stages = [r["stage"] or 0 for r in ok]
+    fail_share = 1 - sum(r["ok"] for r in ok) / max(1, sum(r["subtasks"] for r in ok))
+    print(f"{name:12s} episodes {len(ok):2d}/{len(rows)}  stage reached: {max(stages, default=0)}/5 (median {median(stages) if stages else '-'})"
+          f"  deaths {sum(r['deaths'] for r in ok):3d}  subtasks failing {100 * fail_share:.0f}%")
+    def seed_str(r):
+        if r.get("missing"): return f"{r['seed']}:-"
+        st = r["stage"] or 0
+        t = r["stage_times"].get(str(st))
+        return f"{r['seed']}:stage{st}" + (f"@{t:.0f}s" if t is not None else "")
+    print("             per seed: " + " ".join(seed_str(r) for r in rows))
+    times = {}
+    for r in ok:
+        for k, t in r["stage_times"].items(): times.setdefault(int(k), []).append(t)
+    if times: print("             median time to stage: " + " ".join(f"{k}:{median(v) / 60:.1f} min (n={len(v)})" for k, v in sorted(times.items())))
 
 
 def summarize(name, rows):
     ok = [r for r in rows if not r.get("missing")]
+    if ok and all(r["goal"] == "nether" for r in ok):
+        return summarize_chain(name, rows)
     succ = [r for r in ok if r["goal_t"] is not None and r["goal_t"] <= SUCCESS_S]
     ever = [r for r in ok if r["goal_t"] is not None]
     times = [r["goal_t"] for r in succ]
@@ -53,7 +75,8 @@ def main():
         seeds = int(a[1]) if len(a) > 1 else 20
         seed0 = int(a[2]) if len(a) > 2 else 1000
         prefixes = [f"drive_{run}_kev", "drive_teacher"]
-    print(f"Driving evaluation on seeds {seed0}-{seed0 + seeds - 1} (unseen); success = iron pickaxe within {SUCCESS_S // 60} in-game minutes")
+    print(f"Driving evaluation on seeds {seed0}-{seed0 + seeds - 1} (unseen); success = iron pickaxe within {SUCCESS_S // 60} in-game minutes"
+          " (chain runs: the stage reached, 1 iron tools, 2 armor, 3 diamond tools, 4 portal, 5 lit)")
     for p in prefixes:
         summarize(p, load(p, seeds, seed0))
 

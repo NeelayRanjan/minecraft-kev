@@ -66,7 +66,7 @@ const shutdown = async (why, code) => {
   finished = true
   log(`shutdown: ${why}`)
   try { clearInterval(loop) } catch {}
-  if (!wrote) { try { elog?.finish({ end_reason: `crash: ${why}`.slice(0, 120), ended_t: now?.() ?? null }); fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(elog.toJSON())); wrote = true } catch {} }
+  if (!wrote) { try { elog?.finish({ end_reason: `crash: ${why}`.slice(0, 120), ended_t: now?.() ?? null, ...(() => { try { return stageMeta() } catch { return {} } })() }); fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(elog.toJSON())); wrote = true } catch {} }
   try { if (recorder) await recorder.stop() } catch {}
   try { bot.quit() } catch {}
   if (server) await server.stop()
@@ -139,7 +139,10 @@ function tick() {
     const st = stageOf(obs).index
     if (st > stageReached) { stageReached = st; elog.event({ t, kind: 'stage_done', stage: st }); log(`stage ${st} reached at ${t.toFixed(0)} s`) }
   }
-  if (obs.done && doneAt == null) { doneAt = t; const it = goal === 'nether' ? 'nether_portal' : 'iron_pickaxe'; elog.event({ t, kind: 'goal_done', item: it }); log(`GOAL: ${it} at ${t.toFixed(0)} s`) }
+  if (obs.done && doneAt == null) {
+    doneAt = t; const it = goal === 'nether' ? 'nether_portal' : 'iron_pickaxe'; elog.event({ t, kind: 'goal_done', item: it }); log(`GOAL: ${it} at ${t.toFixed(0)} s`)
+    if (goal === 'nether') { stageReached = 5; elog.event({ t, kind: 'stage_done', stage: 5 }) }   // stage 5: the whole chain (a lit portal)
+  }
   elog.sample({ t, step: step.index, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead })
@@ -197,18 +200,27 @@ async function decide(obs, t) {
   } finally { asking = false }
 }
 
+// Chain mode: the stage_done events are the one source of truth. stage_reached is the highest stage index entered
+// (0..4, 5 once the portal is lit); stage_times maps each index to the second it was first reached.
+function stageMeta() {
+  if (goal !== 'nether') return { goal }
+  const times = {}
+  for (const e of elog.events) if (e.kind === 'stage_done' && times[e.stage] == null) times[e.stage] = +e.t.toFixed(1)
+  return { goal, stage_reached: stageReached, stage_times: times }
+}
+
 async function finish(reason) {
   if (finished) return
   const t = now()
   motor.interrupt('episode_end')
   elog.timeline = injectDeaths(elog.timeline, elog.events)   // the sampler rarely catches the few ticks between death and respawn
-  elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, video_frames: recorder ? recorder.frames() : null })
+  elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, ...stageMeta(), video_frames: recorder ? recorder.frames() : null })
   const json = elog.toJSON(), recs = elog.toRecords()
   fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(json)); wrote = true
   fs.writeFileSync(path.join('out', `${name}.jsonl`), recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : ''))
   const cens = elog.censoring()
   const dec = json.decisions.filter(d => d.decision).length
-  console.log(JSON.stringify({ name, seed, policy, end_reason: reason, t: Math.round(t), goal_done_t: doneAt, deaths, decisions: json.decisions.length, decision_points: dec, records: recs.length, censoring: cens }))
+  console.log(JSON.stringify({ name, seed, policy, end_reason: reason, t: Math.round(t), goal_done_t: doneAt, deaths, ...(goal === 'nether' ? { stage_reached: stageReached } : {}), decisions: json.decisions.length, decision_points: dec, records: recs.length, censoring: cens }))
   await shutdown(reason, 0)
 }
 

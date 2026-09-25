@@ -20,6 +20,7 @@ const epsAction = opt('eps-action', '0'), out = opt('out', 'data/mc.jsonl'), thi
 const kevUrl = opt('kev-url', null), port0 = Number(opt('port0', 25600)), prefix = opt('prefix', 'gen'), difficulty = opt('difficulty', 'normal')
 const video = argv.includes('--video'), videoSeeds = Number(opt('video-seeds', 2))   // --video records only the first N seeds (each renderer costs CPU and RAM)
 const llmUrl = opt('llm-url', null), llmModel = opt('llm-model', null)
+const goal = opt('goal', null)   // --goal nether: the chain (passed through to run_episode)
 const supervisor = opt('supervisor', null), supervisorPool = opt('supervisor-pool', null)   // agent/supervisor.js arms (off | real | shuffled)
 fs.mkdirSync(path.dirname(out), { recursive: true })
 const T0 = Date.now()
@@ -29,7 +30,7 @@ function runEpisode(seed, slot) {
   return new Promise(resolve => {
     const name = `${prefix}_s${seed}`
     const args = [path.join(HERE, 'run_episode.mjs'), '--seed', String(seed), '--port', String(port0 + slot), '--policy', policy, '--minutes', minutes,
-      '--eps-action', epsAction, '--out', name, '--difficulty', difficulty, '--quiet', ...(kevUrl ? ['--kev-url', kevUrl] : []), ...(llmUrl ? ['--llm-url', llmUrl] : []), ...(llmModel ? ['--llm-model', llmModel] : []), ...(supervisor ? ['--supervisor', supervisor] : []), ...(supervisorPool ? ['--supervisor-pool', supervisorPool] : []), ...(video && seed - seed0 < videoSeeds ? ['--video'] : [])]
+      '--eps-action', epsAction, '--out', name, '--difficulty', difficulty, '--quiet', ...(kevUrl ? ['--kev-url', kevUrl] : []), ...(llmUrl ? ['--llm-url', llmUrl] : []), ...(llmModel ? ['--llm-model', llmModel] : []), ...(goal ? ['--goal', goal] : []), ...(supervisor ? ['--supervisor', supervisor] : []), ...(supervisorPool ? ['--supervisor-pool', supervisorPool] : []), ...(video && seed - seed0 < videoSeeds ? ['--video'] : [])]
     const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     child.stdout.on('data', d => { stdout += d })
@@ -62,7 +63,7 @@ async function worker(slot) {
     }
     results.push(r)
     const s = r.summary
-    if (s) say(`seed ${seed}: ${s.end_reason} at ${s.t} s, goal ${s.goal_done_t != null ? `${Math.round(s.goal_done_t)} s` : 'no'}, deaths ${s.deaths}, ${s.records} records (${s.decision_points} decisions)`)
+    if (s) say(`seed ${seed}: ${s.end_reason} at ${s.t} s, ${s.stage_reached != null ? `stage ${s.stage_reached}, ` : ''}goal ${s.goal_done_t != null ? `${Math.round(s.goal_done_t)} s` : 'no'}, deaths ${s.deaths}, ${s.records} records (${s.decision_points} decisions)`)
     else say(`seed ${seed}: FAILED (exit ${r.code}) ${r.stderr.replace(/\s+/g, ' ').slice(-200)}`)
   }
 }

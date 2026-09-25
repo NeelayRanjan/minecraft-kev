@@ -53,6 +53,42 @@ export function rayClear(blockAt, from, to, target, blocks) {
   }
   return true
 }
+// Pickaxes from the one to spend first to the one to keep. For a pickaxe block, dig with the first held pickaxe that
+// can harvest it: tunnelling (pathfinder digs, staircases, mine_stone) wore the iron pickaxe out in 10 minutes of the
+// first chain run and dropped the chain back to stage 0. The iron pickaxe then only digs what needs it (diamond ore).
+// null when the block is not a pickaxe block or nothing held harvests it (the caller's default applies). Pure.
+export const PICKAXE_THRIFT = ['stone_pickaxe', 'wooden_pickaxe', 'iron_pickaxe', 'diamond_pickaxe']
+export function thriftyPickaxe(block, items) {
+  if (!block || block.material !== 'mineable/pickaxe') return null
+  for (const name of PICKAXE_THRIFT) {
+    const it = items.find(i => i.name === name)
+    if (it && (!block.harvestTools || block.harvestTools[it.type])) return it
+  }
+  return null
+}
+// Items smelted per fuel item. Sticks are left out on purpose (they are what the chain is short of).
+export const fuelValue = name => name === 'coal' || name === 'charcoal' ? 8 : name.endsWith('_planks') || name.endsWith('_log') ? 1.5 : 0
+// How to fuel a furnace for `raw` items given the inventory `items` [{name, count}] and the fuel slot `slot`
+// ({name, count} | null): {take: empty the slot first, put: {name, count} | null, smelt: how many raw items the fuel
+// covers}. The first chain run's smelt timeouts came from a leftover plank in the slot (1.5 items) being trusted to
+// cover three, and from one log (1.5 items) put in for four raw iron: the smelt then waited the full 90 s. Pure.
+export function fuelPlan(raw, items, slot) {
+  const have = slot ? slot.count * fuelValue(slot.name) : 0
+  if (have >= raw) return { take: false, put: null, smelt: raw }
+  const held = {}
+  for (const i of items) if (fuelValue(i.name) > 0) held[i.name] = (held[i.name] || 0) + i.count
+  const rank = n => n === slot?.name ? 0 : fuelValue(n) >= 8 ? 1 : n.endsWith('_planks') ? 2 : 3
+  let best = { take: false, put: null, smelt: Math.min(raw, Math.floor(have)) }
+  for (const name of Object.keys(held).sort((a, b) => rank(a) - rank(b))) {
+    const v = fuelValue(name), same = name === slot?.name
+    const base = same || !slot ? have : 0
+    const count = Math.min(held[name], Math.ceil((raw - base) / v))
+    const plan = { take: !same && !!slot, put: { name, count }, smelt: Math.min(raw, Math.floor(base + count * v)) }
+    if (plan.smelt >= raw) return plan
+    if (plan.smelt > best.smelt) best = plan
+  }
+  return best
+}
 const FILLERS = ['cobblestone', 'cobbled_deepslate', 'dirt']
 const isAir = b => !!b && (b.name === 'air' || b.name === 'cave_air')
 
@@ -84,6 +120,21 @@ export class Motor {
     this.walkMovements.scafoldingBlocks = []
     this.walkMovements.maxDropDown = 2
     if (bot.collectBlock) bot.collectBlock.movements = this.movements   // collectblock re-applies its own Movements on every collect()
+    // Every dig picks the thriftiest pickaxe that works (thriftyPickaxe): the pathfinder's own digs, collectblock's
+    // (via mineflayer-tool) and digSafe.
+    if (bot.pathfinder.bestHarvestTool) {
+      const fastest = bot.pathfinder.bestHarvestTool
+      bot.pathfinder.bestHarvestTool = block => thriftyPickaxe(block, bot.inventory.items()) ?? fastest(block)
+    }
+    if (bot.tool?.equipForBlock) {
+      const equipFastest = bot.tool.equipForBlock.bind(bot.tool)
+      bot.tool.equipForBlock = async (block, options, cb) => {
+        const it = thriftyPickaxe(block, bot.inventory.items())
+        if (!it) return equipFastest(block, options, cb)
+        if (bot.heldItem?.name !== it.name) await bot.equip(it, 'hand')
+        cb?.()
+      }
+    }
     bot.pathfinder.thinkTimeout = 4000
     bot.pathfinder.searchRadius = 64   // unlimited (-1) lets A* with digging enabled allocate gigabytes on a buried goal; 32 starves walks over hills
     // Paper answers every craft/click with a burst of full-inventory resyncs (window_items) whose first snapshot can
@@ -264,7 +315,11 @@ export class Motor {
 
   async digSafe(block) {
     for (let attempt = 0; ; attempt++) {
-      try { await this.bot.dig(block); return }
+      try {
+        const it = thriftyPickaxe(block, this.bot.inventory.items())
+        if (it && this.bot.heldItem?.name !== it.name) await this.bot.equip(it, 'hand')
+        await this.bot.dig(block); return
+      }
       catch (e) {
         if (attempt < 2 && /Digging aborted/.test(e?.message || '')) { this.check(); await this.waitDigIdle(); continue }
         throw e
@@ -586,22 +641,34 @@ export class Motor {
       if (!furnace) furnace = await this.findStation('furnace', 'furnace', true)
       if (!furnace) return fail('no_furnace')
       this.mem.setBase('furnace', furnace.position)
-      const fuel = this.count('coal') ? ['coal', Math.ceil(raw / 8)] : this.countBy(n => n.endsWith('_planks')) >= 2 ? [this.bot.inventory.items().find(i => i.name.endsWith('_planks')).name, Math.ceil(raw / 1.5)]
-        : this.countBy(n => n.endsWith('_log')) ? [this.bot.inventory.items().find(i => i.name.endsWith('_log')).name, Math.ceil(raw / 1.5)] : null
-      if (!fuel) return fail('no_materials', 'no fuel')
       await this.settleInventory()
       const f = await this.bot.openFurnace(furnace)
+      let n = 0
       try {
-        if (!f.fuelItem() || f.fuelItem().count < 1) await f.putFuel(md.itemsByName[fuel[0]].id, null, Math.min(fuel[1], this.count(fuel[0])))
-        await f.putInput(md.itemsByName.raw_iron.id, null, raw)
-        const want = raw + (f.outputItem()?.count || 0)
-        while ((f.outputItem()?.count || 0) < want) { this.check(); await sleep(1000) }
-        await f.takeOutput()
+        const slot = f.fuelItem()
+        const plan = fuelPlan(raw, this.bot.inventory.items(), slot ? { name: slot.name, count: slot.count } : null)
+        if (plan.smelt === 0) return fail('no_materials', 'no fuel')
+        if (plan.take) { await f.takeFuel(); await this.settleInventory() }
+        if (plan.put) await f.putFuel(md.itemsByName[plan.put.name].id, null, plan.put.count)
+        n = plan.smelt
+        await f.putInput(md.itemsByName.raw_iron.id, null, n)
+        const want = n + (f.outputItem()?.count || 0)
+        // ~10 s per item; a furnace that has stopped burning with output still missing will not finish (give up at 15 s idle)
+        let lastOut = -1, idleSince = Date.now()
+        while ((f.outputItem()?.count || 0) < want) {
+          this.check(); await sleep(1000)
+          const out = f.outputItem()?.count || 0
+          if (out !== lastOut || f.fuel > 0) { lastOut = out; idleSince = Date.now() }
+          else if (Date.now() - idleSince > 15_000) break
+        }
+        const got = f.outputItem()?.count || 0
+        if (got) await f.takeOutput()
+        if (got < n) return fail('no_materials', `fuel ran out: +${got} of ${n}`)
       } finally { try { f.close() } catch {} }
-      return ok(`+${raw} iron ingots`)
+      return ok(`+${n} iron ingots`)
     },
 
-    async explore_toward(target) {
+    async explore_toward(target, obs) {
       const me = this.bot.entity.position
       const [fx, fz] = this.headingVec()
       if (target === 'cave') {
@@ -631,7 +698,17 @@ export class Motor {
         try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 12 * fx, Math.floor(me.z) + 12 * fz)) } catch (e) { if (e?.name === 'NoPath') this.rotateHeading(); throw e }
         return ok(`tunnelled at y ${this.bot.entity.position.y.toFixed(0)}`)
       }
-      // surface
+      // surface. Underground (no sky light) it climbs first: the first chain run walked 24 m sideways at y 50 over and
+      // over while the only tree was 16 m above it (gather_wood no_path, explore_toward(surface) ok, repeat for 5 min).
+      // The pathfinder digs up and towers with carried blocks; the driver repeats the subtask until the sky is open.
+      // A pathfinder GoalY stood still for 2 minutes in run 2 (towering in a 2-high tunnel: the jump hits the ceiling),
+      // so the climb is a manual staircase up; a blocked heading (liquid, bedrock, nothing to step on) is rotated.
+      if (obs?.underground ?? this.underground()) {
+        const y0 = me.y
+        try { await this.digStaircaseUp(8) } catch (e) { if (e?.name !== 'Abort') throw e; this.log(`climb: ${e.message}`) }
+        const y = this.bot.entity.position.y
+        return y > y0 + 0.5 ? ok(`climbed to y ${y.toFixed(0)}`) : fail('no_path', 'no way up here')
+      }
       if (this.mem.lastPath && this.mem.lastPath !== 'ok') this.rotateHeading()
       const [sx, sz] = this.headingVec()
       try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 24 * sx, Math.floor(me.z) + 24 * sz)) } catch (e) { this.rotateHeading(); throw e }
@@ -918,6 +995,40 @@ export class Motor {
   }
 
   unsafeToStep(ahead) { return liquidAround(p => this.bot.blockAt(p), ahead) }
+  underground() { try { return (this.bot.world.getSkyLight(this.bot.entity.position.floored().offset(0, 1, 0)) ?? 15) < 4 } catch { return false } }
+
+  // Manual staircase up: open the block above the head and the two cells ahead one level up, make sure there is a
+  // step to stand on (a filler block if not), step up, repeat; stops at open sky. Stops (and turns) before a cell
+  // with or under a liquid, or one that cannot be dug.
+  async digStaircaseUp(steps) {
+    const b = this.bot
+    const [fx, fz] = this.headingVec()
+    for (let i = 0; i < steps && this.underground(); i++) {
+      this.check()
+      const feet = b.entity.position.floored()
+      const ahead = feet.offset(fx, 0, fz)
+      const open = [feet.offset(0, 2, 0), ahead.offset(0, 1, 0), ahead.offset(0, 2, 0)]
+      for (const p of [...open, feet.offset(0, 3, 0), ahead.offset(0, 3, 0)]) {
+        const n = b.blockAt(p)?.name
+        if (n === 'lava' || n === 'water') { this.rotateHeading(); throw new Abort(`liquid above (${n})`) }
+      }
+      for (const p of open) {
+        for (let k = 0; k < 4; k++) {   // gravel and sand fall into the opened cell: dig again
+          const blk = b.blockAt(p)
+          if (!blk || blk.boundingBox !== 'block') break
+          if (!b.canDigBlock(blk) || blk.name === 'bedrock') { this.rotateHeading(); throw new Abort(`cannot dig ${blk.name}`) }
+          await this.digSafe(blk); this.check(); await b.waitForTicks(2)
+        }
+      }
+      const step = b.blockAt(ahead)
+      if (!step || step.boundingBox !== 'block') {
+        const under = b.blockAt(ahead.offset(0, -1, 0)), filler = b.inventory.items().find(it => FILLERS.includes(it.name))
+        if (!filler || !under || under.boundingBox !== 'block') { this.rotateHeading(); throw new Abort('nothing to step on') }
+        await b.equip(filler, 'hand'); await b.placeBlock(under, new Vec3(0, 1, 0)); this.check()
+      }
+      await this.goto(new goals.GoalBlock(ahead.x, ahead.y + 1, ahead.z), this.walkMovements)
+    }
+  }
 
   // Manual staircase: dig head, feet and step-down ahead, walk onto the step, repeat. Stops (and turns) before a step
   // that would open into lava or water or stand on it.

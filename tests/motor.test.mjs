@@ -105,3 +105,36 @@ test('rayClear: reaches the target through air and fluids, stops at a solid bloc
   assert.equal(rayClear(at, new Vec3(0.5, 65.5, 0.5), new Vec3(4.5, 65.5, 0.5), new Vec3(4, 65, 0), solid), true)
   assert.equal(rayClear(at, new Vec3(1.5, 64.5, 3.5), new Vec3(1.5, 64.5, 6.5), new Vec3(1, 64, 6), solid), true)
 })
+
+import { thriftyPickaxe } from '../agent/motor.js'
+test('thriftyPickaxe: tunnelling spends the stone pickaxe, the iron one only where it is needed', () => {
+  const md = mcDataFor('1.20.4')
+  const inv = names => names.map(n => ({ name: n, type: md.itemsByName[n].id }))
+  const blk = n => md.blocksByName[n]
+  const all = inv(['iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe', 'oak_planks'])
+  assert.equal(thriftyPickaxe(blk('stone'), all).name, 'stone_pickaxe')
+  assert.equal(thriftyPickaxe(blk('granite'), inv(['iron_pickaxe', 'wooden_pickaxe'])).name, 'wooden_pickaxe')
+  assert.equal(thriftyPickaxe(blk('iron_ore'), inv(['iron_pickaxe', 'wooden_pickaxe'])).name, 'iron_pickaxe')
+  assert.equal(thriftyPickaxe(blk('iron_ore'), all).name, 'stone_pickaxe')
+  assert.equal(thriftyPickaxe(blk('diamond_ore'), all).name, 'iron_pickaxe')
+  assert.equal(thriftyPickaxe(blk('stone'), inv(['iron_pickaxe'])).name, 'iron_pickaxe')   // the only one that works
+  assert.equal(thriftyPickaxe(blk('dirt'), all), null)          // not a pickaxe block: the default (fastest) choice
+  assert.equal(thriftyPickaxe(blk('obsidian'), all), null)      // nothing held can harvest it: the default
+})
+
+import { fuelPlan } from '../agent/motor.js'
+test('fuelPlan: fuel for every raw iron, counting what already sits in the slot', () => {
+  const inv = o => Object.entries(o).map(([name, count]) => ({ name, count }))
+  // one coal smelts 8
+  assert.deepEqual(fuelPlan(3, inv({ coal: 2 }), null), { take: false, put: { name: 'coal', count: 1 }, smelt: 3 })
+  // a leftover plank in the slot (1.5 items) is topped up, not trusted to cover 3 (the run-1 smelt timeouts)
+  assert.deepEqual(fuelPlan(3, inv({ oak_planks: 4 }), { name: 'oak_planks', count: 1 }), { take: false, put: { name: 'oak_planks', count: 1 }, smelt: 3 })
+  // enough in the slot already
+  assert.deepEqual(fuelPlan(3, inv({ coal: 1 }), { name: 'coal', count: 1 }), { take: false, put: null, smelt: 3 })
+  // a different fuel in the slot that cannot cover it: take it out, put coal
+  assert.deepEqual(fuelPlan(4, inv({ coal: 1 }), { name: 'birch_planks', count: 1 }), { take: true, put: { name: 'coal', count: 1 }, smelt: 4 })
+  // not enough fuel for all: smelt what it covers (one log = 1.5 items -> 1), never wait on the rest
+  assert.deepEqual(fuelPlan(4, inv({ birch_log: 1 }), null), { take: false, put: { name: 'birch_log', count: 1 }, smelt: 1 })
+  // no fuel at all
+  assert.equal(fuelPlan(3, inv({ stick: 4 }), null).smelt, 0)
+})

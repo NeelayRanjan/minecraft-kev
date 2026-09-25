@@ -164,6 +164,9 @@ export function teacherSubtask(obs) {
   const id = pick(obs)
   const offered = options(obs).map(o => o.id)
   if (offered.includes(id)) return id
+  // A mining subtask withheld underground (the ore did not path three times): look for more below rather than climb
+  // out (explore_toward(surface) climbs from underground since the first chain run).
+  if (id.startsWith('mine_') && obs.underground && offered.includes('explore_toward(down)')) return 'explore_toward(down)'
   if (id !== 'wait' && offered.includes('explore_toward(surface)')) return 'explore_toward(surface)'
   return 'wait'
 }
