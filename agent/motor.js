@@ -213,12 +213,13 @@ export class Motor {
   }
 
   // A crafting table or furnace the bot can use: one in reach, else the remembered one if it is within 32 m (walk
-  // there and re-check; forget it if it is gone). Returns the block, positioned within reach, or null.
-  async findStation(blockName, memKey) {
+  // there and re-check; forget it if it is gone). Returns the block, positioned within reach, or null. A bot carrying
+  // one does not walk unless placing it failed (a climb back to the surface table ate the whole 20 s craft timeout).
+  async findStation(blockName, memKey, walk = !this.count(blockName)) {
     const id = this.md.blocksByName[blockName].id
     let block = this.bot.findBlock({ matching: id, maxDistance: 8 })
     const remembered = this.mem.base[memKey]
-    if (!block && remembered && this.bot.entity.position.distanceTo(new Vec3(remembered.x, remembered.y, remembered.z)) <= 32) {
+    if (!block && remembered && walk && this.bot.entity.position.distanceTo(new Vec3(remembered.x, remembered.y, remembered.z)) <= 32) {
       try { await this.goto(new goals.GoalNear(remembered.x, remembered.y, remembered.z, 2)) } catch (e) { if (e instanceof Abort) throw e; this.log(`${blockName}: cannot reach the remembered one (${e?.name})`) }
       this.check()
       block = this.bot.findBlock({ matching: id, maxDistance: 6 })
@@ -327,6 +328,7 @@ export class Motor {
       if (TABLE_ITEMS.has(item)) {
         table = await this.findStation('crafting_table', 'table')
         if (!table) table = await this.placeNear('crafting_table')
+        if (!table) table = await this.findStation('crafting_table', 'table', true)
         if (!table) return fail('no_table')
         this.mem.setBase('table', table.position)
       }
@@ -358,6 +360,7 @@ export class Motor {
       if (raw === 0) return fail('no_materials', 'no raw iron')
       let furnace = await this.findStation('furnace', 'furnace')
       if (!furnace) furnace = await this.placeNear('furnace')
+      if (!furnace) furnace = await this.findStation('furnace', 'furnace', true)
       if (!furnace) return fail('no_furnace')
       this.mem.setBase('furnace', furnace.position)
       const fuel = this.count('coal') ? ['coal', Math.ceil(raw / 8)] : this.countBy(n => n.endsWith('_planks')) >= 2 ? [this.bot.inventory.items().find(i => i.name.endsWith('_planks')).name, Math.ceil(raw / 1.5)]
@@ -470,6 +473,12 @@ export class Motor {
         const feet = b.entity.position.floored()
         const below = b.blockAt(feet.offset(0, -1, 0))
         if (!below || below.boundingBox !== 'block') { this.log(`pillar: below is ${below?.name} (${below?.boundingBox}) at ${feet}`); break }
+        // In a 2-high tunnel the jump hits the ceiling and every placement is refused: open the block above the head first.
+        const ceiling = b.blockAt(feet.offset(0, 2, 0))
+        if (ceiling && ceiling.boundingBox === 'block') {
+          if (!b.canDigBlock(ceiling)) { this.log(`pillar: cannot open the ceiling (${ceiling.name})`); break }
+          await this.equipBestPickaxe(); await this.digSafe(ceiling); this.check()
+        }
         await b.equip(blockItem(), 'hand')
         await b.lookAt(feet.offset(0.5, -1, 0.5), true)
         b.setControlState('jump', true)
