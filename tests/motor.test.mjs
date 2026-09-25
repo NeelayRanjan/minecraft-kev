@@ -46,3 +46,28 @@ test('interrupt aborts the running executor and reports the reason', async () =>
   assert.equal(r.result, 'interrupted'); assert.equal(r.detail, 'threat')
   assert.equal(motor.busy, false)
 })
+
+import { Vec3 } from 'vec3'
+import { liquidAround } from '../agent/motor.js'
+
+// blockAt over a Map keyed "x,y,z"; anything unset is stone.
+const world = cells => p => ({ name: cells.get(`${p.x},${p.y},${p.z}`) || 'stone', position: p })
+
+test('liquidAround: dry step is safe', () => {
+  assert.equal(liquidAround(world(new Map()), new Vec3(5, 20, 0)), null)
+})
+
+test('liquidAround: lava in any of the three dug cells or the cell below the step', () => {
+  const ahead = new Vec3(5, 20, 0)
+  for (const dy of [1, 0, -1, -2]) {
+    const cells = new Map([[`5,${20 + dy},0`, 'lava']])
+    assert.equal(liquidAround(world(cells), ahead), 'lava', `lava at dy ${dy}`)
+  }
+  assert.equal(liquidAround(world(new Map([['5,18,0', 'water']])), ahead), 'water')
+})
+
+test('liquidAround: liquid outside the checked column is ignored; unloaded cells are not liquid', () => {
+  const ahead = new Vec3(5, 20, 0)
+  assert.equal(liquidAround(world(new Map([['5,17,0', 'lava'], ['6,20,0', 'lava'], ['5,22,0', 'lava']])), ahead), null)
+  assert.equal(liquidAround(() => null, ahead), null)
+})

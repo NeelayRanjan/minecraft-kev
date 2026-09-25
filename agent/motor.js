@@ -6,16 +6,29 @@ import { parseOption, FOOD, TABLE_ITEMS, counts } from './subtasks.js'
 
 const { Movements, goals } = pathfinderPkg
 export const TIMEOUTS = { gather_wood: 60, mine_stone: 45, mine_coal: 60, mine_iron: 90, craft: 20, smelt: 90, explore_toward: 40,
-  return_to_base: 60, eat: 10, build_shelter: 20, fight: 25, flee: 20, pillar_up: 10, wait: 3 }
+  return_to_base: 60, eat: 10, build_shelter: 20, fight: 25, flee: 20, pillar_up: 10, wait: 3,
+  mine_diamond: 120, mine_gravel: 60, mine_obsidian: 150, fill_bucket: 40, cast_obsidian: 60, build_portal: 90, light_portal: 20 }
 export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'failed', 'died']
 const INTERRUPT_RESULT = { threat: 'interrupted', took_damage: 'took_damage', died: 'died' }
 const IRON_Y = 16
+const DIAMOND_Y = -58
+const ARMOR_SLOT = { iron_helmet: 'head', iron_chestplate: 'torso', iron_leggings: 'legs', iron_boots: 'feet' }
 const HEADINGS = { north: [0, -1], east: [1, 0], south: [0, 1], west: [-1, 0] }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const ok = detail => ({ result: 'ok', detail })
 const fail = (result, detail) => ({ result, detail })
 
 class Abort extends Error { constructor(why) { super(why); this.name = 'Abort' } }
+
+// The liquid ('lava' / 'water') in the cells a staircase step digs (head, feet, step-down ahead) or in the cell the bot
+// would stand on after the step, else null. Liquids have an empty bounding box, so they must be checked by name.
+export function liquidAround(blockAt, ahead) {
+  for (const dy of [1, 0, -1, -2]) {
+    const b = blockAt(ahead.offset(0, dy, 0))
+    if (b && (b.name === 'lava' || b.name === 'water')) return b.name
+  }
+  return null
+}
 
 export class Motor {
   constructor(bot, mcData, mem, { log = () => {}, timeouts = {} } = {}) {
@@ -57,6 +70,9 @@ export class Motor {
     this.stoneIds = this.ids(['stone', 'deepslate', 'cobblestone'])
     this.coalIds = this.ids(['coal_ore', 'deepslate_coal_ore'])
     this.ironIds = this.ids(['iron_ore', 'deepslate_iron_ore'])
+    this.diamondIds = this.ids(['diamond_ore', 'deepslate_diamond_ore'])
+    this.gravelIds = this.ids(['gravel'])
+    this.obsidianIds = this.ids(['obsidian'])
   }
 
   // ---- lifecycle -------------------------------------------------------------------------------------------------
@@ -86,7 +102,7 @@ export class Motor {
     }
     await sleep(150)   // let the pathfinder's path_stop / goal_updated events from stopAll() drain before the next goto listens
     if (this.interrupted) out = fail(INTERRUPT_RESULT[this.interrupted] || 'interrupted', this.interrupted)
-    if (['gather_wood', 'mine_stone', 'mine_coal', 'mine_iron', 'explore_toward', 'return_to_base', 'flee'].includes(name)) {
+    if (['gather_wood', 'mine_stone', 'mine_coal', 'mine_iron', 'mine_diamond', 'mine_gravel', 'mine_obsidian', 'explore_toward', 'return_to_base', 'flee'].includes(name)) {
       this.mem.lastPath = out.result === 'ok' ? 'ok' : ['no_path', 'timeout'].includes(out.result) ? out.result : this.mem.lastPath
     }
     this.last = { id, result: out.result }
@@ -118,6 +134,7 @@ export class Motor {
     const c = this.current
     if (!c) return null
     if (c.name === 'explore_toward' && c.arg === 'down') return Math.max(0, Math.min(1, (c.y0 - this.bot.entity.position.y) / Math.max(1, c.y0 - IRON_Y)))
+    if (c.name === 'explore_toward' && c.arg === 'deep') return Math.max(0, Math.min(1, (c.y0 - this.bot.entity.position.y) / Math.max(1, c.y0 - DIAMOND_Y)))
     return c.progress
   }
 
@@ -130,7 +147,7 @@ export class Motor {
   }
 
   mapError(e) {
-    if (e instanceof Abort) return fail(e.message === 'timeout' ? 'timeout' : 'interrupted', e.message)
+    if (e instanceof Abort) return e.message.startsWith('liquid') ? fail('failed', e.message) : fail(e.message === 'timeout' ? 'timeout' : 'interrupted', e.message)
     const n = e?.name || ''
     if (n === 'NoPath') return fail('no_path')
     if (n === 'NoHarvestTool' || n === 'NoItem') return fail('no_materials', e.message)
@@ -311,6 +328,42 @@ export class Motor {
       return this.mineKind(this.ironIds, 32, 3, n => n === 'raw_iron', 'iron ore')
     },
 
+    async mine_diamond() {
+      let block = this.bot.findBlock({ matching: this.diamondIds, maxDistance: 32 })
+      if (!block && this.mem.seen?.diamond) {
+        const p = this.mem.seen.diamond.pos
+        await this.goto(new goals.GoalNear(p.x, p.y, p.z, 4))
+        this.check()
+        block = this.bot.findBlock({ matching: this.diamondIds, maxDistance: 16 })
+        if (!block) { this.mem.seen.diamond = null; return fail('target_gone', 'no diamond at the remembered spot') }
+      }
+      if (!block) return fail('not_found', 'no diamond known')
+      return this.mineKind(this.diamondIds, 32, 4, n => n === 'diamond', 'diamond ore')
+    },
+
+    // Gravel drops flint 10% of the time: dig up to 12 gravel blocks nearby, stop at the first flint.
+    async mine_gravel() {
+      const before = this.count('flint')
+      let dug = 0, lastErr = null
+      while (dug < 12) {
+        this.check()
+        const block = this.pickBlock(this.gravelIds, 16)
+        if (!block) break
+        try { await this.collectOne(block) } catch (e) { lastErr = e; break }
+        dug++
+        this.current.progress = dug / 12
+        await this.settleInventory()
+        if (this.count('flint') > before) return ok('+1 flint')
+      }
+      if (this.count('flint') > before) return ok('+1 flint')
+      if (!dug && lastErr) throw lastErr
+      if (!dug) return fail('not_found', 'no gravel within 16 m')
+      return fail('failed', `no flint from ${dug} gravel`)
+    },
+
+    // collectOne refuses obsidian without a diamond pickaxe (NoHarvestTool -> no_materials).
+    async mine_obsidian() { return this.mineKind(this.obsidianIds, 16, 10, n => n === 'obsidian', 'obsidian') },
+
     async craft(item) {
       const md = this.md
       let target = item
@@ -349,6 +402,11 @@ export class Motor {
         await this.settleInventory(6)
         got = this.count(target) - before
         if (got <= 0) { await this.bot.waitForTicks(20); got = this.count(target) - before }
+      }
+      if (got > 0 && ARMOR_SLOT[target]) {
+        await this.bot.equip(this.item(target), ARMOR_SLOT[target])
+        await this.settleInventory()
+        return ok(`+${got} ${target}, worn`)
       }
       return got > 0 ? ok(`+${got} ${target}`) : fail('failed', `craft ${target} produced nothing (table ${table ? `${table.name}@${table.position}` : 'none'})`)
     },
@@ -396,6 +454,17 @@ export class Motor {
         }
         try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 12 * fx, Math.floor(me.z) + 12 * fz)) } catch (e) { if (e?.name === 'NoPath') { this.rotateHeading(); throw e } throw e }
         return ok(`tunnelled to y ${this.bot.entity.position.y.toFixed(0)}`)
+      }
+      if (target === 'deep') {
+        await this.equipBestPickaxe()
+        if (me.y > IRON_Y) return this.exec.explore_toward.call(this, 'down')
+        if (me.y > DIAMOND_Y + 4) {
+          // 4 steps per call (the driver repeats the subtask); a blocked heading is rotated and tried once more.
+          try { await this.digStaircase(4) } catch (e) { if (e?.name === 'NoPath') { this.rotateHeading(); await this.digStaircase(4) } else throw e }
+          return ok(`y ${this.bot.entity.position.y.toFixed(0)}`)
+        }
+        try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 12 * fx, Math.floor(me.z) + 12 * fz)) } catch (e) { if (e?.name === 'NoPath') this.rotateHeading(); throw e }
+        return ok(`tunnelled at y ${this.bot.entity.position.y.toFixed(0)}`)
       }
       // surface
       if (this.mem.lastPath && this.mem.lastPath !== 'ok') this.rotateHeading()
@@ -535,7 +604,10 @@ export class Motor {
     return this.bot.blockAt(cands[0])
   }
 
-  // Manual staircase: dig head, feet and step-down ahead, walk onto the step, repeat.
+  unsafeToStep(ahead) { return liquidAround(p => this.bot.blockAt(p), ahead) }
+
+  // Manual staircase: dig head, feet and step-down ahead, walk onto the step, repeat. Stops (and turns) before a step
+  // that would open into lava or water or stand on it.
   async digStaircase(steps) {
     const b = this.bot
     const [fx, fz] = this.headingVec()
@@ -543,9 +615,11 @@ export class Motor {
       this.check()
       const feet = b.entity.position.floored()
       const ahead = feet.offset(fx, 0, fz)
+      const liquid = this.unsafeToStep(ahead)
+      if (liquid) { this.rotateHeading(); throw new Abort(`liquid ahead (${liquid})`) }
       for (const p of [ahead.offset(0, 1, 0), ahead, ahead.offset(0, -1, 0)]) {
         const blk = b.blockAt(p)
-        if (blk && blk.boundingBox === 'block' && b.canDigBlock(blk)) { if (blk.name === 'lava' || blk.name === 'water') throw new Abort('liquid ahead'); await this.digSafe(blk) }
+        if (blk && blk.boundingBox === 'block' && b.canDigBlock(blk)) await this.digSafe(blk)
       }
       await this.goto(new goals.GoalBlock(ahead.x, ahead.y - 1, ahead.z))
     }
