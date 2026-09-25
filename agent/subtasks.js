@@ -123,5 +123,6 @@ export function options(obs) {
   if (c.blocks >= 1 && c.hasPickaxe && (obs.phase === 'dusk' || obs.phase === 'night')) add('build_shelter')
   add('wait')
   const stuck = stuckOn(obs)
+  for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)   // a subtask the supervisor just abandoned (agent/supervisor.js)
   return out.filter(o => !stuck.has(o.id))
 }

@@ -71,3 +71,10 @@ test('every option carries a description', () => {
     nearestHostile: { name: 'zombie', dist: 5, dir: 'west', dy: 0 }, phase: 'night', food: 10 })
   for (const x of options(o)) assert.ok(typeof x.desc === 'string' && x.desc.length > 5, `${x.id} has no description`)
 })
+
+test('a supervisor-withheld option is dropped for the next decision; wait survives', () => {
+  const o = baseObs({ blocks: [{ name: 'oak_log', dist: 12, dir: 'north', dy: 0, reachable: true }] })
+  assert.ok(ids(o).includes('gather_wood'))
+  assert.ok(!ids({ ...o, withhold: ['gather_wood'] }).includes('gather_wood'))
+  assert.ok(ids({ ...o, withhold: ['wait'] }).includes('wait'))
+})

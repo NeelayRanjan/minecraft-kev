@@ -92,6 +92,6 @@ export function summarize(bot, mcData, mem, ctx) {
     health: bot.health ?? 20, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
     base, memory: { ironSeen, lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading },
     blocks, entities, nearestHostile: hostiles[0] || null,
-    current: ctx.current || null, last: ctx.last || null, goal: ctx.goal || 'iron_pickaxe', done: !!inv.iron_pickaxe,
+    current: ctx.current || null, last: ctx.last || null, withhold: ctx.withhold || [], goal: ctx.goal || 'iron_pickaxe', done: !!inv.iron_pickaxe,
   }
 }

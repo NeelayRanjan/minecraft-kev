@@ -29,3 +29,22 @@ systemd-inhibit; keep Windows awake for the run (Settings > Power, or a SetThrea
 
 Line endings: `.gitattributes` forces LF (bash in the container rejects CRLF scripts that `core.autocrlf=true` would
 check out).
+
+## Remote use over Tailscale (since 2026-09-25)
+
+The desktop is reached from the laptop over the tailnet, not AnyDesk (the pipeline's GPU load dropped AnyDesk; SSH does
+not care). Windows OpenSSH Server is enabled; from the laptop `ssh homepc` (alias in `~/.ssh/config`, user `rneel`).
+The remote shell is cmd.exe, so do not quote bash in the command line: pipe a script into the container instead,
+`ssh homepc 'docker exec -i mckev bash' < script.sh`. Long jobs are launched from such a script with `setsid nohup ... &`.
+
+The LLM leader for laptop-side runs is the **native Windows Ollama** on the tailnet (`--llm-url http://100.109.91.95:11434`),
+not the container's: `OLLAMA_HOST` is the Tailscale IP, and `C:\Users\rneel\.ollama\models` is a directory junction to
+this repo's `tools\ollama`, so both Ollamas share the imported models. User-level variables set the container's flags
+(`OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=1`,
+`OLLAMA_KEEP_ALIVE=30m`). Restart it with `taskkill /f /im "ollama app.exe" & taskkill /f /im ollama.exe & schtasks /run /tn OllamaTray`
+(a logon task that starts the tray app). Measured from the laptop with the 27B IQ2_S and the JSON schema: ~1 s per warm
+call, no penalty after idle gaps up to 150 s, ~2 min for the first call after a restart (load) and ~30 s for the first
+call with the schema (grammar compile), so send one warm-up call at episode start.
+
+Before a run that records video: `docker exec mckev pgrep -a Xvfb` must show a live server, not `<defunct>` (see the
+Xvfb lock lesson in CLAUDE.md).

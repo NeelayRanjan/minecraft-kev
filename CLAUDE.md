@@ -19,6 +19,19 @@ Experiment 1 (iron pickaxe from spawn, text state) is built, trained once, evalu
 
 Full results, the bugs found and why they mattered: see "Results (2026-09-24)" further down.
 
+## Status (2026-09-25, day 4: remote setup done, DAgger night running, supervisor test negative)
+
+**Remote setup (next step 1) is done.** Tailscale on both machines, `ssh homepc` from the laptop, the native Windows Ollama serving the imported models on the tailnet (`--llm-url http://100.109.91.95:11434`; ~1 s per warm 27B call from the laptop). Details and quirks: `docker/README.md`, "Remote use over Tailscale". Minecraft + kev run on the laptop, GPU jobs run in the desktop's container over SSH.
+
+**The DAgger night (next step 3) ran on the desktop** (`scripts/night_mc3.sh`, launched 00:09 after `rebuild_data` made `data/mc1_dagger.jsonl` from the 15 finished DAgger episodes: 2,959 records, `subgoal_succeeds_60s` 46% true, `survive_until_morning` 52% true). Phase B: **mc-v2** (mc-v1 + DAgger, 2 h) on the old holdout: `next_subtask` 0.96, `threat_response` 0.92, `subgoal_succeeds_60s` acc 0.59 / ECE 0.23 (mc-v1: 0.56 / 0.28). The 22-minute recollection finished (40 train + 20 holdout seeds; seeds 0-1 were rerun after the Xvfb crash below and appended: 8,265 teacher records). Phase C: **mc-v2 drives 16/20 within 15 min (18 ever)** on 1000-1019; the teacher runs and phase D (mc-v3 with `survive_until_morning`) were still running when this was written. Check `data/night_mc3.log`, `reports/mc-v2/`, `reports/mc-v3/` on the desktop; `data/night_mc3.done` marks the end.
+
+**Leader viability (next step 2a, 2b): the forecasts are not yet actionable.**
+- `scripts/reliability.py` now reports AUROC and the Brier decomposition (resolution / uncertainty) beside ECE. mc-v1's `subgoal_succeeds_60s`: AUROC 0.63 on the dev split, **0.68 on the states kev itself drives** (`reports/mc-v1/driven-postfix/`, the post-fix compare records scored offline), resolution 0.02 of a possible 0.19. `survive_until_morning` 0.51 (untrained, as expected).
+- The scripted supervisor (`agent/supervisor.js`, `scripts/supervisor_eval.sh`, `reports/mc-v1/supervisor.txt`): abandon the running subtask when p < 0.25 for 15 s, withhold it at the next decision. Four arms of mc-v1 on seeds 1000-1019, iron pickaxe within 15 min: **off 13/20, off again 10/20, real forecasts 14/20 (1.9 replans/episode), shuffled forecasts 15/20 (0.8/episode)**. The real arm does not beat the shuffled one, and the two off runs differ by 3 episodes, so **this 20-seed evaluation cannot resolve differences under about 4 episodes** (compare kev with the teacher inside a run only, and treat 13 vs 16 as suggestive). Read: with mc-v1's forecasts a threshold rule gains nothing over random abandons; any abandon that breaks a stuck state helps a little. Redo the test with mc-v3 (better forecasts) and more seeds before building a leader that replans on forecasts.
+- The first shuffled arm drew an independent pool value every second and never fired (0.24^15); the arm now holds one draw per subtask, redrawn every 15 s. Keep that in mind for any future "shuffled control".
+
+**Next (the user's plan):** randomised starting states (inventory drawn from a tech-tree stage, time of day, spawn offset, a typed task) as *supervised* data collection, with a start spec that can also replay a state captured from a hand-played session (the user wants to put the bot into odd situations by hand). RL was considered and set aside: calibration is a supervised objective and the real-time server yields ~300 episodes a night.
+
 ## Status (2026-09-24, day 3, Windows machine): stopped mid-run, plan changed
 
 **Why it stopped.** The user works on the Windows machine remotely over AnyDesk. The full pipeline (5 bots with their Paper servers, kev.serve, an LLM on the GPU) drops the AnyDesk session, and with it all control of the machine. At about 18:20 PDT everything was stopped on request: the overnight job, the leader bench, kev.serve, Ollama. The `mckev` container is stopped (`docker compose -f docker/compose.yml up -d` brings it back; Ollama and the viewer must be restarted by hand, see `docker/README.md`).
@@ -61,6 +74,7 @@ agent/
   relabel.js       injectDeaths, reconstructQs, rebuildRecords: kev records from a raw log with the current labelers
   thin.js          record thinning shared by gen_data and rebuild_data
   planner.js       LLM leader: buildPlannerMessages, answerSchema (JSON schema over the offered ids), askPlanner (Ollama)
+  supervisor.js    scripted supervisor: abandon the running subtask when p(step done in 60 s) < 0.25 for 15 s; off / real / shuffled arms (pure)
   kev_client.js    POST /v1/systemone
   recorder.js      first-person video at a fixed fps over prismarine-viewer's headless internals (entity whitelist)
   server_ctl.js    startServer({port, seed}) -> one Paper instance per bot (servers/<port>/, shared libraries)
@@ -69,7 +83,8 @@ docker/            Dockerfile, compose.yml, setup.sh, README.md: the whole pipel
 tests/             node --test tests/*.test.mjs ; tests/integration/{motor_check,mem_probe}.mjs start their own server (no GPU)
 scripts/           collect_mc1.sh, overnight_mc1.sh, split.sh, train_mc1.sh, eval_mc1.sh, bench_ctx.py, drive_eval.sh,
                    compare_mc1.sh (3 drivers), dagger_mc1.sh, night_mc3.sh (DAgger + recollection, day 3), warm_kev.mjs,
-                   leader_bench.mjs + leader_bench_report.mjs (offline LLM-leader comparison), base_rates.py, reliability.py, drive_summary.py
+                   leader_bench.mjs + leader_bench_report.mjs (offline LLM-leader comparison), supervisor_eval.sh (3 supervisor arms on the same seeds),
+                   base_rates.py, reliability.py (ECE, AUROC, Brier resolution), drive_summary.py
 viewer/            python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays out/<name>.mp4 with the probability bars
 server/            Paper template: eula.txt, server.properties, ops.json, run.sh (the jar is downloaded, see Setup)
 reports/<run>/     dev reports, reliability diagrams + table, drive/compare tables (tracked)
@@ -120,6 +135,8 @@ npm run server / npm run server:stop            # the template server alone (smo
 node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher --minutes 3 --out t7 --video     # one episode -> out/t7.{json,jsonl,mp4}
 node agent/run_episode.mjs --seed 7 --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --minutes 22 --out k7
 node agent/run_episode.mjs --seed 7 --port 25580 --policy llm --llm-model qwen3:8b --kev-url http://127.0.0.1:8009 --minutes 22 --out l7   # LLM leader, kev forecasts in its prompt
+node agent/run_episode.mjs --seed 7 --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --supervisor real --minutes 22 --out sup7      # + scripted supervisor (shuffled needs --supervisor-pool)
+scripts/supervisor_eval.sh mc-v1 20 1000 22     # arms off / real / shuffled on seeds 1000-1019 -> reports/mc-v1/supervisor.txt
 node agent/gen_data.mjs --seeds 40 --seed0 0 --procs 5 --minutes 22 --eps-action 0.1 --thin 8 --out data/x.jsonl --prefix x [--video --video-seeds 3]
 node agent/rebuild_data.mjs --prefix x --seed0 0 --seeds 40 --thin 8 [--drop survive_until_morning] --out data/x.jsonl   # relabel from out/x_s*.json
 python3 scripts/base_rates.py data/x.jsonl       # every noul should sit between 20% and 80% true; rare labels teach nothing
@@ -134,10 +151,10 @@ Shell trap (bit us four times): `pkill -f pattern` kills the shell whose own com
 
 ## Next steps, in order
 
-1. **Decide the remote setup** (see the day-3 status): Tailscale, Ollama on this machine with the distilled 27B, and where the Minecraft/kev side runs.
+1. ~~Decide the remote setup~~ Done on day 4: Tailscale, native Ollama on the desktop, Minecraft/kev on the laptop (`docker/README.md`).
 2. **Leader viability, before building a real leader** (from the day-3 discussion):
-   - (a) Add AUROC/resolution to `scripts/reliability.py` beside ECE. A calibrated forecast with no resolution cannot trigger useful replans, and mc-v1's `subgoal_succeeds_60s` scored below always-"no" (dev 0.56 vs 0.63; LLM-led states 0.61 vs 0.81).
-   - (b) A scripted supervisor (replan when p < 0.25 for 15 s) against the same driver with the trigger off and with shuffled forecasts, on the same seeds. If a threshold rule gains nothing from the forecasts, no LLM will.
+   - (a) ~~Add AUROC/resolution to `scripts/reliability.py`~~ Done (day 4): mc-v1 `subgoal_succeeds_60s` AUROC 0.63 dev / 0.68 on kev-driven states, resolution near zero.
+   - (b) ~~A scripted supervisor against off and shuffled arms~~ Done (day 4), negative for mc-v1: real 14/20 vs shuffled 15/20 vs off 13 and 10 (`reports/mc-v1/supervisor.txt`). Rerun with mc-v3 and 40+ seeds (`scripts/supervisor_eval.sh mc-v3 40 1000 22`) before any forecast-driven leader.
    - (c) Rebuild the leader to the design of record: typed subgoals at low cadence, with kev choosing subtasks inside them. Today's `--policy llm` makes the LLM do kev's per-decision job, and at 3 s per call a 27B leader only works at subgoal cadence.
    - (d) Milestone 2 (the night) is where a leader has real decisions to make. Experiment 1 is fully scriptable.
    - (e) Fix the cobblestone line in `planner.js`'s system prompt, then bench the distilled 27B (and Q2_K_XL / IQ3_XXS) on the same pinned sample (`--seeds 2000-2004 --n 200 --ablate 60`).
@@ -159,6 +176,8 @@ Shell trap (bit us four times): `pkill -f pattern` kills the shell whose own com
 - **The Windows machine's i9-14900KF (microcode 0x120, pre Raptor Lake fix) crashes native code under load**: 3 of the first ~7 JVM/node starts segfaulted (C2 JIT, GC worker). CPU boost is disabled in the power plan until the BIOS is updated (the pipeline runs in real time and barely needs it). `run_episode` now ends at once on a dropped connection or a dead server, and `gen_data` retries an episode that crashed before its summary (twice, fresh world).
 - **Windows checkouts with `core.autocrlf=true` give CRLF shell scripts** that bash in the container rejects; `.gitattributes` forces LF.
 - **The first kev.serve requests compile the fla/Triton kernels** (>10 s, past the runner's 10 s timeout, so the first decisions of a batch fell back to `kev_error`); `scripts/warm_kev.mjs` runs after every serve start. Warm latency on the 4070 Ti SUPER: p50 130 ms, p90 170 ms.
+- **A restarted (not recreated) container keeps /tmp, and Xvfb refuses to start over the stale `/tmp/.X99-lock`**: every `--video` episode then crashes in `WebGLRenderer` and gen_data drops the seed after two retries (the first two recollection seeds on 2026-09-25). `docker/entrypoint.sh` now clears the lock; `pgrep -a Xvfb` must not show `<defunct>` before a run that records video.
+- **Working on the Windows desktop over SSH lands in cmd.exe**: `|` inside a quoted remote command is taken by cmd, `timeout /t` fails without a console, and there is no `head`/`tail`. Pipe a bash script into `docker exec -i mckev bash` over SSH stdin instead of quoting commands (see the day-4 status).
 - **A 4B local LLM is a poor leader** at this granularity: it needs a JSON schema over the offered ids to answer validly at all, cannot do the wood arithmetic (caps in the option list fix that for every driver), and still agrees with the scripted teacher on ~20% of decisions. Use it for what it does well, breaking loops, only after the option layer already does that.
 
 ---

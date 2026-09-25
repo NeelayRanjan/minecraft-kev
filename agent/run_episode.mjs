@@ -26,6 +26,7 @@ import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner } from './planner.js'
 import { options as optionsFor } from './subtasks.js'
+import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
 
 // ---- args ------------------------------------------------------------------------------------------------------
 const argv = process.argv.slice(2)
@@ -37,6 +38,13 @@ const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Numb
 const llmUrl = opt('llm-url', 'http://127.0.0.1:11434'), llmModel = opt('llm-model', 'qwen3:4b')
 if (policy === 'kev' && !kevUrl) { console.error('--policy kev needs --kev-url'); process.exit(2) }
 if (!['teacher', 'kev', 'llm'].includes(policy)) { console.error(`unknown policy ${policy}`); process.exit(2) }
+// The scripted supervisor (agent/supervisor.js): --supervisor off|real|shuffled [--supervisor-pool forecasts.json]
+// [--supervisor-threshold 0.25 --supervisor-hold 15]. Needs kev's forecasts (--kev-url).
+const supMode = opt('supervisor', 'off'), supPoolFile = opt('supervisor-pool', null)
+const supThreshold = Number(opt('supervisor-threshold', SUP.threshold)), supHold = Number(opt('supervisor-hold', SUP.holdS))
+if (supMode !== 'off' && !kevUrl) { console.error('--supervisor needs --kev-url'); process.exit(2) }
+const supervisor = new Supervisor({ mode: supMode, threshold: supThreshold, holdS: supHold, pool: supPoolFile ? JSON.parse(fs.readFileSync(supPoolFile, 'utf8')) : null,
+  rng: mulberry32(Number.parseInt(String(seed).replace(/\D/g, '') || '0', 10) * 104729 + 3) })
 fs.mkdirSync('out', { recursive: true })
 const T0 = Date.now()
 const log = s => { if (!quiet) console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${s}`) }
@@ -80,7 +88,8 @@ const mcData = mcDataFor(bot.version)
 const mem = new EpisodeMemory()
 const motor = new Motor(bot, mcData, mem, { log: s => log(`motor: ${s}`) })
 const elog = new EpisodeLog({ seed, policy, eps_action: epsAction, minutes, kev_url: kevUrl, model: policy === 'kev' ? 'kev' : policy === 'llm' ? llmModel : null, username: me, version: bot.version,
-  difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps } : null })
+  difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps } : null,
+  supervisor: supMode === 'off' ? null : { mode: supMode, threshold: supThreshold, hold_s: supHold, cooldown_s: supervisor.cooldownS, pool: supPoolFile, pool_n: supervisor.pool?.length ?? null } })
 let recorder = null
 if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
 
@@ -89,12 +98,14 @@ const t0 = Date.now()
 const now = () => (Date.now() - t0) / 1000
 let dead = false, deaths = 0, prevHostileDist = null, subtaskStartHealth = null, ticking = false, doneAt = null, startDay = Number(bot.time.day)
 let lastResult = null, recent = []   // recent: the last REPEAT_WINDOW attempts {id, result}, oldest first (livelock breaker)
+let lastForecast = null, withhold = []   // supervisor: kev's latest p(step done in 60 s) {t, p}; the subtask it abandoned, withheld at the next decision
 bot.on('death', () => { dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); motor.interrupt('died'); log('died') })
 bot.on('respawn', () => { if (dead) elog.event({ t: now(), kind: 'respawn' }); dead = false })
 bot.on('health', () => { if (bot.health <= 0) dead = true })
 
 function startSubtask(id, source, obs) {
   subtaskStartHealth = bot.health
+  withhold = []; supervisor.onSubtaskStart(now())
   elog.event({ t: now(), kind: 'subtask_start', id, source })
   motor.run(id, obs).then(r => {
     const repeats = lastResult && lastResult.id === id && lastResult.result === r.result ? lastResult.repeats + 1 : 1
@@ -117,13 +128,18 @@ function tick() {
   if (finished) return
   const t = now()
   const cur = motor.current ? { name: motor.current.name, arg: motor.current.arg, elapsedS: motor.elapsedS(), progress: motor.progress() } : null
-  const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal: 'iron_pickaxe' })
+  const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal: 'iron_pickaxe', withhold })
   const step = techStep(obs), c = counts(obs)
   if (obs.done && doneAt == null) { doneAt = t; elog.event({ t, kind: 'goal_done', item: 'iron_pickaxe' }); log(`GOAL: iron pickaxe at ${t.toFixed(0)} s`) }
   elog.sample({ t, step: step.index, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead })
   if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); motor.interrupt(why) }
+  else if (motor.busy) {   // the supervisor replans on a forecast that has stayed low (a stale forecast counts as none)
+    const p = lastForecast && t - lastForecast.t <= 3 ? lastForecast.p : null
+    const fire = supervisor.observe({ t, p, busy: motor.busy, subtaskId: motor.current?.id })
+    if (fire) { withhold = [fire.id]; elog.event({ t, kind: 'interrupt', reason: 'low_forecast', subtask: fire.id, p: +fire.p.toFixed(3), shuffled: fire.shuffled }); motor.interrupt('low_forecast'); log(`supervisor: abandon ${fire.id} (p=${fire.p.toFixed(2)}${fire.shuffled ? ', shuffled' : ''})`) }
+  }
   prevHostileDist = obs.nearestHostile?.dist ?? null
   const morning = obs.day > startDay && obs.timeOfDay < 12000
   if (t >= minutes * 60) { finish('time'); return }
@@ -145,6 +161,8 @@ async function decide(obs, t) {
       catch (e) { kevErrors++; log(`kev error: ${e.message}`); elog.event({ t, kind: 'kev_error', error: String(e.message) }); answers = oneHot(qs, labels); source = 'kev_error' }
     } else answers = oneHot(qs, labels)
     if (finished) return
+    const pStep = answers.subgoal_succeeds_60s?.probabilities?.true
+    lastForecast = typeof pStep === 'number' && source !== 'kev_error' ? { t, p: pStep } : null
     let teacherLabel = labels.next_subtask ?? null, why = null, plannerLatency = null
     if (decision && policy === 'llm') {
       // The LLM leads: it picks from the same offered list; its choice becomes the next_subtask label (LLM-teacher data).

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Reliability diagrams per question from a kev.benchmark rows.json, with accuracy, base rate, ECE, n and the
-censoring rate (from gen_data's report) beside each. Definition-of-done item 3.
+"""Reliability diagrams per question from a kev.benchmark rows.json, with accuracy, base rate, ECE, AUROC, Brier
+score and its resolution, n and the censoring rate (from gen_data's report) beside each. Definition-of-done item 3.
+
+AUROC and resolution answer the question ECE cannot: does the forecast *separate* outcomes at all? A forecast that
+always says the base rate has ECE 0 and AUROC 0.5, and can never trigger a useful replan.
 
     ../overcooked-kev/client/.venv/bin/python scripts/reliability.py ../overcooked-kev/kev/runs/mc-v1-dev/rows.json \
         --censoring data/mc1_holdout.report.json --out reports/mc-v1
@@ -29,6 +32,48 @@ def ece_of(confs, hits):
         conf = sum(confs[i] for i in idx) / len(idx)
         tot += len(idx) / n * abs(acc - conf)
     return tot
+
+
+def auroc(scores, hits):
+    """Rank-based AUROC (ties get the average rank); None when only one class is present."""
+    pos = sum(hits)
+    neg = len(hits) - pos
+    if pos == 0 or neg == 0:
+        return None
+    order = sorted(range(len(scores)), key=lambda i: scores[i])
+    ranks = [0.0] * len(scores)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and scores[order[j + 1]] == scores[order[i]]:
+            j += 1
+        r = (i + j) / 2 + 1                      # average 1-based rank of the tie group
+        for k in range(i, j + 1):
+            ranks[order[k]] = r
+        i = j + 1
+    rank_sum = sum(ranks[i] for i in range(len(hits)) if hits[i])
+    return (rank_sum - pos * (pos + 1) / 2) / (pos * neg)
+
+
+def brier_parts(confs, hits):
+    """Brier score and its Murphy decomposition over the diagram bins: brier = reliability - resolution + uncertainty.
+    Resolution is how far the bins' observed rates sit from the base rate (0 for a constant forecast)."""
+    n = len(confs)
+    if not n:
+        return None, None, None, None
+    base = sum(hits) / n
+    brier = sum((c - h) ** 2 for c, h in zip(confs, hits)) / n
+    rel = res = 0.0
+    for b in range(BINS):
+        lo, hi = b / BINS, (b + 1) / BINS
+        idx = [i for i, c in enumerate(confs) if (lo <= c < hi) or (b == BINS - 1 and c == 1.0)]
+        if not idx:
+            continue
+        ob = sum(hits[i] for i in idx) / len(idx)
+        cb = sum(confs[i] for i in idx) / len(idx)
+        rel += len(idx) / n * (cb - ob) ** 2
+        res += len(idx) / n * (ob - base) ** 2
+    return brier, rel, res, base * (1 - base)
 
 
 def main():
@@ -69,9 +114,11 @@ def main():
             base = max(counts.values()) / len(rs)                   # majority-class rate
             xlabel, ylabel = "confidence (max p)", "accuracy"
         e = ece_of(confs, hits)
+        au = auroc(confs, hits)                                     # noul: p(true) vs outcome; others: confidence vs correct
+        brier, rel, res, unc = brier_parts(confs, hits)
         c = cens.get(q)
         crate = (c["censored"] / max(1, c["asked"])) if c else None
-        table.append((q, t, len(rs), acc, base, e, crate, sum(confs) / len(confs)))
+        table.append((q, t, len(rs), acc, base, e, crate, sum(confs) / len(confs), au, brier, res, unc))
         # diagram
         xs, ys, ns = [], [], []
         for b in range(BINS):
@@ -85,15 +132,19 @@ def main():
         ax.plot(xs, ys, color="#2a6f97", lw=1)
         for x, y, n in zip(xs, ys, ns): ax.annotate(str(n), (x, y), textcoords="offset points", xytext=(4, 4), fontsize=7, color="#555")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
-        sub = f"n={len(rs)}  acc={acc:.2f}  base={base:.2f}  ECE={e:.3f}" + (f"  censored={crate:.0%}" if crate is not None else "")
+        sub = f"n={len(rs)}  acc={acc:.2f}  base={base:.2f}  ECE={e:.3f}  AUROC={'-' if au is None else f'{au:.2f}'}" + (f"  censored={crate:.0%}" if crate is not None else "")
         ax.set_title(f"{a.title + ' ' if a.title else ''}{q}\n{sub}", fontsize=9)
         fig.tight_layout(); fig.savefig(os.path.join(a.out, f"reliability_{q}.png"), dpi=140); plt.close(fig)
-    lines = ["| question | type | n | accuracy | base rate | mean conf | ECE | censoring |", "|---|---|---|---|---|---|---|---|"]
-    for q, t, n, acc, base, e, crate, mc in table:
-        lines.append(f"| {q} | {t} | {n} | {acc:.3f} | {base:.3f} | {mc:.3f} | {e:.3f} | {'-' if crate is None else f'{crate:.0%}'} |")
+    lines = ["| question | type | n | accuracy | base rate | mean conf | ECE | AUROC | Brier | resolution / uncertainty | censoring |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for q, t, n, acc, base, e, crate, mc, au, brier, res, unc in table:
+        lines.append(f"| {q} | {t} | {n} | {acc:.3f} | {base:.3f} | {mc:.3f} | {e:.3f} | {'-' if au is None else f'{au:.3f}'} | {brier:.3f} | {res:.3f} / {unc:.3f} | {'-' if crate is None else f'{crate:.0%}'} |")
+    lines.append("")
+    lines.append("AUROC: noul questions rank p(true) against the outcome; choice/score questions rank confidence (max p) against correctness. "
+                 "0.5 = no discrimination. Resolution is the Brier decomposition term (binned); a forecast stuck at the base rate scores 0, "
+                 "and it is bounded by the uncertainty term base*(1-base).")
     md = "\n".join(lines)
     open(os.path.join(a.out, "reliability.md"), "w").write(md + "\n")
-    json.dump([dict(zip(["question", "type", "n", "accuracy", "base_rate", "ece", "censoring", "mean_conf"], (q, t, n, acc, base, e, crate, mc))) for q, t, n, acc, base, e, crate, mc in table],
+    json.dump([dict(zip(["question", "type", "n", "accuracy", "base_rate", "ece", "censoring", "mean_conf", "auroc", "brier", "resolution", "uncertainty"], row)) for row in table],
               open(os.path.join(a.out, "reliability.json"), "w"), indent=1)
     print(md)
 

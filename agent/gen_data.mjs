@@ -20,6 +20,7 @@ const epsAction = opt('eps-action', '0'), out = opt('out', 'data/mc.jsonl'), thi
 const kevUrl = opt('kev-url', null), port0 = Number(opt('port0', 25600)), prefix = opt('prefix', 'gen'), difficulty = opt('difficulty', 'normal')
 const video = argv.includes('--video'), videoSeeds = Number(opt('video-seeds', 2))   // --video records only the first N seeds (each renderer costs CPU and RAM)
 const llmUrl = opt('llm-url', null), llmModel = opt('llm-model', null)
+const supervisor = opt('supervisor', null), supervisorPool = opt('supervisor-pool', null)   // agent/supervisor.js arms (off | real | shuffled)
 fs.mkdirSync(path.dirname(out), { recursive: true })
 const T0 = Date.now()
 const say = s => console.log(`[${((Date.now() - T0) / 60000).toFixed(1)} min] ${s}`)
@@ -28,7 +29,7 @@ function runEpisode(seed, slot) {
   return new Promise(resolve => {
     const name = `${prefix}_s${seed}`
     const args = [path.join(HERE, 'run_episode.mjs'), '--seed', String(seed), '--port', String(port0 + slot), '--policy', policy, '--minutes', minutes,
-      '--eps-action', epsAction, '--out', name, '--difficulty', difficulty, '--quiet', ...(kevUrl ? ['--kev-url', kevUrl] : []), ...(llmUrl ? ['--llm-url', llmUrl] : []), ...(llmModel ? ['--llm-model', llmModel] : []), ...(video && seed - seed0 < videoSeeds ? ['--video'] : [])]
+      '--eps-action', epsAction, '--out', name, '--difficulty', difficulty, '--quiet', ...(kevUrl ? ['--kev-url', kevUrl] : []), ...(llmUrl ? ['--llm-url', llmUrl] : []), ...(llmModel ? ['--llm-model', llmModel] : []), ...(supervisor ? ['--supervisor', supervisor] : []), ...(supervisorPool ? ['--supervisor-pool', supervisorPool] : []), ...(video && seed - seed0 < videoSeeds ? ['--video'] : [])]
     const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     child.stdout.on('data', d => { stdout += d })

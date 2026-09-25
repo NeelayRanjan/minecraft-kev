@@ -20,8 +20,9 @@ def load(prefix, seeds, seed0):
         j = json.load(open(p)); m = j["meta"]
         res = Counter(e.get("result") for e in j.get("events", []) if e["kind"] == "subtask_done")
         src = Counter(d.get("source") for d in j.get("decisions", []) if d.get("decision"))
+        replans = sum(1 for e in j.get("events", []) if e["kind"] == "interrupt" and e.get("reason") == "low_forecast")
         rows.append({"seed": s, "goal_t": m.get("goal_done_t"), "deaths": m.get("deaths", 0), "end": m.get("end_reason"), "t": m.get("ended_t"),
-                     "subtasks": sum(res.values()), "ok": res.get("ok", 0), "src": src})
+                     "subtasks": sum(res.values()), "ok": res.get("ok", 0), "src": src, "replans": replans, "supervisor": (m.get("supervisor") or {}).get("mode")})
     return rows
 
 
@@ -33,7 +34,8 @@ def summarize(name, rows):
     med = f"{median(times) / 60:.1f} min" if times else "-"
     fail_share = 1 - sum(r["ok"] for r in ok) / max(1, sum(r["subtasks"] for r in ok))
     print(f"{name:12s} episodes {len(ok):2d}/{len(rows)}  pickaxe within 15 min: {len(succ):2d}/{len(ok)} ({100 * len(succ) / max(1, len(ok)):3.0f}%)  ever {len(ever):2d}  median {med:8s}"
-          f"  deaths {sum(r['deaths'] for r in ok):3d}  subtasks failing {100 * fail_share:.0f}%")
+          f"  deaths {sum(r['deaths'] for r in ok):3d}  subtasks failing {100 * fail_share:.0f}%"
+          + (f"  replans {sum(r['replans'] for r in ok)} ({sum(r['replans'] for r in ok) / max(1, len(ok)):.1f}/ep, {ok[0]['supervisor']})" if any(r.get("supervisor") for r in ok) else ""))
     print("             per seed: " + " ".join(f"{r['seed']}:{'-' if r.get('missing') else ('%.0fs' % r['goal_t'] if r['goal_t'] is not None else 'no')}" for r in rows))
     srcs = Counter()
     for r in ok: srcs.update(r["src"])

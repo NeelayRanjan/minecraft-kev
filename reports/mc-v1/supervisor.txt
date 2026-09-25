@@ -1,0 +1,12 @@
+Scripted supervisor on mc-v1, seeds 1000-1019, 22-minute episodes (2026-09-25). Trigger: abandon the running subtask when kev's p(step done in 60 s) < 0.25 for 15 s (30 s cooldown); the abandoned subtask is withheld at the next decision.
+sup_off2 is a second run of the off configuration (the first shuffled arm drew an independent pool value every second and never fired): it measures the run-to-run noise of this 20-seed evaluation. The shuffled arm holds one pool value per subtask, redrawn every 15 s (pool: kev's own 12,508 forecasts from the off arm, 24% below 0.25).
+
+Driving evaluation on seeds 1000-1019 (unseen); success = iron pickaxe within 15 in-game minutes
+sup_off      episodes 20/20  pickaxe within 15 min: 13/20 ( 65%)  ever 13  median 2.8 min   deaths  26  subtasks failing 13%
+             per seed: 1000:no 1001:230s 1002:154s 1003:150s 1004:no 1005:no 1006:no 1007:194s 1008:518s 1009:no 1010:163s 1011:730s 1012:467s 1013:no 1014:no 1015:140s 1016:190s 1017:169s 1018:171s 1019:149s
+sup_off2     episodes 20/20  pickaxe within 15 min: 10/20 ( 50%)  ever 10  median 3.0 min   deaths  35  subtasks failing 13%  replans 0 (0.0/ep, shuffled)
+             per seed: 1000:292s 1001:279s 1002:157s 1003:139s 1004:no 1005:no 1006:no 1007:162s 1008:no 1009:350s 1010:150s 1011:no 1012:212s 1013:no 1014:no 1015:no 1016:159s 1017:no 1018:201s 1019:no
+sup_real     episodes 20/20  pickaxe within 15 min: 14/20 ( 70%)  ever 15  median 3.5 min   deaths  21  subtasks failing 15%  replans 39 (1.9/ep, real)
+             per seed: 1000:591s 1001:391s 1002:174s 1003:142s 1004:835s 1005:148s 1006:1153s 1007:646s 1008:no 1009:152s 1010:no 1011:no 1012:no 1013:156s 1014:no 1015:327s 1016:222s 1017:559s 1018:201s 1019:163s
+sup_shuf     episodes 20/20  pickaxe within 15 min: 15/20 ( 75%)  ever 16  median 3.2 min   deaths  24  subtasks failing 9%  replans 17 (0.8/ep, shuffled)
+             per seed: 1000:143s 1001:643s 1002:162s 1003:154s 1004:no 1005:489s 1006:no 1007:518s 1008:no 1009:166s 1010:no 1011:406s 1012:191s 1013:194s 1014:904s 1015:179s 1016:388s 1017:721s 1018:133s 1019:350s
