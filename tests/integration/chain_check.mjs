@@ -1,7 +1,7 @@
 // Chain motor check on a live server: the executors the nether chain adds (iron tools and armor, diamond tools,
-// diamonds, gravel/flint, obsidian, deep exploration with the lava check). Every scenario is built with op commands
-// (/give, /fill, /setblock, /tp) so terrain does not decide the outcome.
-// Usage: node tests/integration/chain_check.mjs [--port 25572] [--seed chain-1]
+// diamonds, gravel/flint, obsidian, buckets, obsidian casting, the portal frame and lighting, deep exploration with the
+// lava check). Every scenario is built with op commands (/give, /fill, /setblock, /tp) so terrain does not decide the outcome.
+// Usage: node tests/integration/chain_check.mjs [--port 25572] [--seed chain-1] [--video]   (--video: out/chain_check.mp4)
 // Prints "[t] subtask -> result (detail)" per step and PASS/FAIL; exit code 0 on PASS.
 import { createBot } from 'mineflayer'
 import pathfinderPkg from 'mineflayer-pathfinder'
@@ -14,7 +14,7 @@ import { Motor } from '../../agent/motor.js'
 import { EpisodeMemory, summarize } from '../../agent/summary.js'
 
 const args = Object.fromEntries(process.argv.slice(2).map((a, i, arr) => a.startsWith('--') ? [a.slice(2), arr[i + 1]?.startsWith('--') || arr[i + 1] === undefined ? true : arr[i + 1]] : []).filter(Boolean))
-const port = Number(args.port ?? 25572), seed = args.seed ?? 'chain-1'
+const port = Number(args.port ?? 25572), seed = args.seed ?? 'chain-1', video = !!args.video
 const t0 = Date.now()
 const log = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${s}`)
 
@@ -24,7 +24,8 @@ bot.loadPlugin(pathfinderPkg.pathfinder); bot.loadPlugin(collectPkg.plugin); bot
 const failHard = async (why) => { log(`FAIL ${why}`); try { bot.quit() } catch {} await server.stop(); process.exit(1) }
 bot.on('kicked', r => failHard(`kicked ${JSON.stringify(r)}`))
 bot.on('error', e => log(`bot error: ${e.message}`))
-const deadline = setTimeout(() => failHard('timeout 10 min'), 10 * 60_000)
+bot.on('death', () => log('  the bot died'))
+const deadline = setTimeout(() => failHard('timeout 14 min'), 14 * 60_000)
 process.on('uncaughtException', e => failHard(`uncaught: ${e.stack || e}`))
 process.on('unhandledRejection', e => failHard(`unhandled: ${e?.stack || e}`))
 
@@ -33,6 +34,8 @@ for (let i = 0; i < 8; i++) { try { await bot.waitForChunksToLoad(); break } cat
 const mcData = mcDataFor(bot.version)
 const mem = new EpisodeMemory()
 const motor = new Motor(bot, mcData, mem, { log })
+let recorder = null
+if (video) { const { startRecorder } = await import('../../agent/recorder.js'); recorder = startRecorder(bot, { output: 'out/chain_check.mp4', fps: 5, log }); log('recording out/chain_check.mp4') }
 const obs = () => summarize(bot, mcData, mem, { t: (Date.now() - t0) / 1000, current: null, last: null, goal: 'nether' })
 const cmd = async (s) => { bot.chat(s); await bot.waitForTicks(10); await motor.settleInventory() }
 const count = n => motor.count(n)
@@ -50,9 +53,10 @@ async function step(id, allowed = ['ok']) {
   return r
 }
 
-// A flat arena around the spawn: stone floor under the feet, 5 blocks of air above it.
+// A flat arena around the spawn: 9 blocks of stone under the feet (the staircase of (f) and the gravel search of (d)
+// must not reach natural water or gravel below), 5 blocks of air above it.
 const X = Math.floor(pos().x), Y = Math.floor(pos().y), Z = Math.floor(pos().z)
-await cmd(`/fill ${X - 7} ${Y - 1} ${Z - 7} ${X + 7} ${Y - 1} ${Z + 7} stone`)
+await cmd(`/fill ${X - 7} ${Y - 9} ${Z - 7} ${X + 7} ${Y - 1} ${Z + 7} stone`)
 await cmd(`/fill ${X - 7} ${Y} ${Z - 7} ${X + 7} ${Y + 4} ${Z + 7} air`)
 await cmd(`/tp kev_smoke ${X + 0.5} ${Y} ${Z + 0.5}`)
 await bot.waitForTicks(20)
@@ -106,7 +110,41 @@ await step('explore_toward(deep)', ['ok', 'timeout'])
 await step('explore_toward(deep)', ['ok', 'timeout'])
 check(pos().y < ySurface, `y decreased from the surface (${ySurface.toFixed(0)} -> ${pos().y.toFixed(0)})`)
 
-// (g) the staircase band (between iron level and diamond level) inside a sealed deepslate block: 4 steps down.
+// Rebuild the arena (the staircase of (f) left holes): stone down to 6 below the feet, 5 blocks of air above.
+await cmd(`/fill ${X - 7} ${Y - 6} ${Z - 7} ${X + 7} ${Y - 1} ${Z + 7} stone`)
+await cmd(`/fill ${X - 7} ${Y} ${Z - 7} ${X + 7} ${Y + 4} ${Z + 7} air`)
+await cmd(`/tp kev_smoke ${X + 0.5} ${Y} ${Z + 0.5}`); await bot.waitForTicks(20)
+
+// (g) a 3x3 water source pool sunk into the floor 4-6 m east (the floor is its rim); an empty bucket fills.
+await cmd(`/fill ${X + 4} ${Y - 1} ${Z - 1} ${X + 6} ${Y - 1} ${Z + 1} water`)
+await cmd('/give kev_smoke bucket 1')
+await step('fill_bucket(water)')
+check(count('water_bucket') === 1, `a water bucket in the inventory (${count('water_bucket')})`)
+
+// (h) a 2x2 lava source pool 5-6 m south at feet level, a stone ring around it, the arena floor under it; the water is
+// poured on it, obsidian forms, and the water is taken back.
+await cmd(`/fill ${X - 2} ${Y} ${Z + 4} ${X + 1} ${Y} ${Z + 7} stone`)
+await cmd(`/fill ${X - 1} ${Y} ${Z + 5} ${X} ${Y} ${Z + 6} lava`)
+await bot.waitForTicks(10)
+const rc = await step('cast_obsidian')
+const cast = Number((/\+(\d+) obsidian/.exec(rc.detail || '') || [])[1] || 0)
+check(cast >= 2, `at least 2 obsidian cast (${cast})`)
+check(count('water_bucket') === 1 && count('bucket') === 0, `the poured water was taken back (bucket ${count('bucket')}, water_bucket ${count('water_bucket')})`)
+
+// (i) the portal frame from 10 obsidian and 4 cobblestone corners, on the flat floor, facing north (away from the pools).
+await cmd('/give kev_smoke obsidian 10'); await cmd('/give kev_smoke cobblestone 4')
+await cmd(`/tp kev_smoke ${X + 0.5} ${Y} ${Z + 0.5}`); await bot.waitForTicks(20)
+mem.heading = 'north'
+await step('build_portal')
+log(`  mem.portal ${JSON.stringify(mem.portal)}, portalFrame ${JSON.stringify(obs().portalFrame?.pos ?? null)}`)
+check(obs().portalFrame != null, 'summarize().portalFrame is set')
+
+// (j) light it.
+await cmd('/give kev_smoke flint_and_steel 1')
+await step('light_portal')
+check(obs().portalLit === true, 'summarize().portalLit is true')
+
+// (k) the staircase band (between iron level and diamond level) inside a sealed deepslate block: 4 steps down.
 const pocket = async (y, r, y0, y1) => {
   await cmd(`/fill ${X - r} ${y0} ${Z - r} ${X + r} ${y1} ${Z + r} deepslate`)
   await cmd(`/fill ${X} ${y} ${Z} ${X} ${y + 1} ${Z} air`)
@@ -128,7 +166,7 @@ const rl = await step('explore_toward(deep)', ['failed'])
 check(/lava/.test(rl.detail || '') && mem.heading !== headingBefore && Math.abs(pos().y - y0) < 0.5, 'stopped at the lava and turned')
 await cmd(`/setblock ${lava.x} ${lava.y} ${lava.z} deepslate`)
 
-// (h) diamond level: tunnel 12 m horizontally.
+// (l) diamond level: tunnel 12 m horizontally.
 mem.heading = 'east'
 await pocket(-56, 14, -59, -52)
 const p0 = pos().clone()
@@ -138,6 +176,7 @@ check(Math.abs(pos().x - p0.x) >= 10 && Math.abs(pos().y - p0.y) <= 2, `tunnelle
 log(`final inventory: ${Object.entries(obs().inventory).map(([k, v]) => `${v} ${k}`).join(', ')}`)
 log(pass ? 'PASS' : 'FAIL')
 clearTimeout(deadline)
+if (recorder) { try { await recorder.stop() } catch {} }
 bot.quit()
 await server.stop()
 process.exit(pass ? 0 : 1)

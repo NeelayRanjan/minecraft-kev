@@ -71,3 +71,37 @@ test('liquidAround: liquid outside the checked column is ignored; unloaded cells
   assert.equal(liquidAround(world(new Map([['5,17,0', 'lava'], ['6,20,0', 'lava'], ['5,22,0', 'lava']])), ahead), null)
   assert.equal(liquidAround(() => null, ahead), null)
 })
+
+import { isLavaSource, portalLayout } from '../agent/motor.js'
+
+test('isLavaSource: only a lava block at level 0 is a source', () => {
+  assert.equal(isLavaSource({ name: 'lava', getProperties: () => ({ level: 0 }) }), true)
+  assert.equal(isLavaSource({ name: 'lava', getProperties: () => ({ level: 2 }) }), false)
+  assert.equal(isLavaSource({ name: 'water', getProperties: () => ({ level: 0 }) }), false)
+  assert.equal(isLavaSource(null), false)
+})
+
+test('portalLayout: 10 obsidian, 4 corner fillers and the inside cell along x and z', () => {
+  const key = p => `${p.x},${p.y},${p.z}`
+  const L = portalLayout(new Vec3(0, 64, 0), 'x')
+  assert.equal(L.obsidian.length, 10); assert.equal(L.filler.length, 4)
+  const obs = new Set(L.obsidian.map(key)), fill = new Set(L.filler.map(key))
+  for (const k of ['1,64,0', '2,64,0', '0,65,0', '0,66,0', '0,67,0', '3,65,0', '3,66,0', '3,67,0', '1,68,0', '2,68,0']) assert.ok(obs.has(k), `obsidian ${k}`)
+  for (const k of ['0,64,0', '3,64,0', '0,68,0', '3,68,0']) assert.ok(fill.has(k), `filler ${k}`)
+  assert.equal(key(L.inside), '1,65,0')
+  const Z = portalLayout(new Vec3(10, 64, 5), 'z')
+  assert.ok(new Set(Z.obsidian.map(key)).has('10,64,6')); assert.ok(new Set(Z.filler.map(key)).has('10,68,8'))
+  assert.equal(key(Z.inside), '10,65,6')
+})
+
+import { rayClear } from '../agent/motor.js'
+
+test('rayClear: reaches the target through air and fluids, stops at a solid block in the way', () => {
+  const air = p => ({ name: 'air', boundingBox: 'empty', position: p })
+  const cells = new Map([['2,64,0', { name: 'stone', boundingBox: 'block' }], ['1,64,5', { name: 'water', boundingBox: 'empty' }]])
+  const at = p => cells.get(`${p.x},${p.y},${p.z}`) || air(p)
+  const solid = b => b.boundingBox === 'block'
+  assert.equal(rayClear(at, new Vec3(0.5, 64.5, 0.5), new Vec3(4.5, 64.5, 0.5), new Vec3(4, 64, 0), solid), false)
+  assert.equal(rayClear(at, new Vec3(0.5, 65.5, 0.5), new Vec3(4.5, 65.5, 0.5), new Vec3(4, 65, 0), solid), true)
+  assert.equal(rayClear(at, new Vec3(1.5, 64.5, 3.5), new Vec3(1.5, 64.5, 6.5), new Vec3(1, 64, 6), solid), true)
+})

@@ -30,6 +30,45 @@ export function liquidAround(blockAt, ahead) {
   return null
 }
 
+// A fluid block of the given name that is a source (level 0), not a flowing one. Pure.
+export function isFluidSource(block, fluid) {
+  if (!block || block.name !== fluid) return false
+  const level = block.getProperties?.().level ?? block.metadata
+  return Number(level) === 0
+}
+export const isLavaSource = block => isFluidSource(block, 'lava')
+
+// A nether portal frame standing on `origin` (the bottom-left corner) in the plane along `axis` ('x' | 'z'): the 10
+// obsidian, the 4 corner fillers (any block counts there) and the lowest inside cell (frame cell (1,1)). Pure.
+export function portalLayout(origin, axis) {
+  const at = (u, v) => axis === 'x' ? new Vec3(origin.x + u, origin.y + v, origin.z) : new Vec3(origin.x, origin.y + v, origin.z + u)
+  return {
+    obsidian: [[1, 0], [2, 0], [0, 1], [0, 2], [0, 3], [3, 1], [3, 2], [3, 3], [1, 4], [2, 4]].map(([u, v]) => at(u, v)),
+    filler: [[0, 0], [3, 0], [0, 4], [3, 4]].map(([u, v]) => at(u, v)),
+    inside: at(1, 1),
+  }
+}
+// True when the segment from -> to reaches the cell `target` before any cell whose block `blocks(block, yInCell)`
+// says stops the ray (sampled every 0.05 m). Mirrors the server's bucket raycast closely enough to pick an aim. Pure.
+export function rayClear(blockAt, from, to, target, blocks) {
+  const d = to.minus(from), n = Math.max(1, Math.ceil(d.norm() / 0.05))
+  for (let i = 1; i <= n; i++) {
+    const p = from.plus(d.scaled(i / n)), c = p.floored()
+    if (c.x === target.x && c.y === target.y && c.z === target.z) return true
+    const b = blockAt(c)
+    if (b && blocks(b, p.y - c.y)) return false
+  }
+  return true
+}
+const FILLERS = ['cobblestone', 'cobbled_deepslate', 'dirt']
+const isAir = b => !!b && (b.name === 'air' || b.name === 'cave_air')
+
+// GoalNear that only ends on a cell level with or above `minY` (pouring onto lava from below is not possible).
+class GoalNearAbove extends goals.GoalNear {
+  constructor(x, y, z, range, minY) { super(x, y, z, range); this.minY = minY }
+  isEnd(node) { return node.y >= this.minY && super.isEnd(node) }
+}
+
 export class Motor {
   constructor(bot, mcData, mem, { log = () => {}, timeouts = {} } = {}) {
     this.bot = bot; this.md = mcData; this.mem = mem; this.log = log
@@ -43,6 +82,14 @@ export class Motor {
     this.movements.maxDropDown = 3
     for (const n of ['crafting_table', 'furnace']) this.movements.blocksCantBreak.add(mcData.blocksByName[n].id)
     bot.pathfinder.setMovements(this.movements)
+    // Short approaches next to a frame or a pool: no digging, no scaffolding (the pathfinder would tower with the
+    // corner cobblestone, inside the frame), no parkour.
+    this.walkMovements = new Movements(bot, mcData)
+    this.walkMovements.canDig = false
+    this.walkMovements.allow1by1towers = false
+    this.walkMovements.allowParkour = false
+    this.walkMovements.scafoldingBlocks = []
+    this.walkMovements.maxDropDown = 2
     if (bot.collectBlock) bot.collectBlock.movements = this.movements   // collectblock re-applies its own Movements on every collect()
     bot.pathfinder.thinkTimeout = 4000
     bot.pathfinder.searchRadius = 64   // unlimited (-1) lets A* with digging enabled allocate gigabytes on a buried goal; 32 starves walks over hills
@@ -183,12 +230,15 @@ export class Motor {
     return this.equipBestPickaxe()
   }
 
-  async goto(goal) {
+  async goto(goal, movements = null) {
     this.bot.pathfinder.setGoal(null)   // drains a stale stop flag (emits path_stop now, before goto listens)
     await this.bot.waitForTicks(1)
     this.check()
-    await this.bot.pathfinder.goto(goal)
+    if (!movements) return this.bot.pathfinder.goto(goal)
+    this.bot.pathfinder.setMovements(movements)
+    try { await this.bot.pathfinder.goto(goal) } finally { this.bot.pathfinder.setMovements(this.movements) }
   }
+  walkTo(goal) { return this.goto(goal, this.walkMovements) }
 
   // mineflayer-collectblock asks mineflayer-tool for a harvesting tool with getFromChest on; with no chests and no
   // tool that recurses forever in a microtask loop (4 GB heap in a minute). Never hand it a block we cannot harvest.
@@ -286,6 +336,128 @@ export class Motor {
       if (tried >= 6) break
     }
     this.log(`placeNear ${itemName}${makeRoom ? ' (making room)' : ''}: no spot (${tried} tried) around ${feet}`)
+    return null
+  }
+
+  // Walk within `range` of pos (a block position) unless already there.
+  async standNear(pos, range) {
+    if (this.bot.entity.position.distanceTo(pos.offset(0.5, 0, 0.5)) <= range + 0.5) return
+    await this.goto(new goals.GoalNear(pos.x, pos.y, pos.z, range))
+    this.check()
+  }
+
+  // Nearest source block of `fluid` within maxDistance, else null.
+  fluidSource(fluid, maxDistance) {
+    const id = this.md.blocksByName[fluid]?.id
+    if (id == null) return null
+    const me = this.bot.entity.position
+    // findBlocks walks chunk sections nearest-first and stops at `count`: a lake in the bot's own section would fill a
+    // small count before a nearer pool in the next section is reached.
+    const cands = this.bot.findBlocks({ matching: id, maxDistance, count: 1024 }).sort((a, b) => me.distanceTo(a) - me.distanceTo(b))
+    for (const p of cands) { const b = this.bot.blockAt(p); if (isFluidSource(b, fluid)) return b }
+    return null
+  }
+  pickLavaSource(maxDistance) { return this.fluidSource('lava', maxDistance) }
+
+  // Look at `point` and use the held item (a bucket); the server raycasts from the rotation it last received, so the
+  // look packet must go out (next physics tick) before the use packet.
+  async useHeldAt(point) {
+    await this.bot.lookAt(point, true)
+    await this.bot.waitForTicks(2)
+    this.bot.activateItem()
+    await this.bot.waitForTicks(4)
+    await this.settleInventory()
+  }
+
+  eye() { return this.bot.entity.position.offset(0, 1.62, 0) }   // entity.height is the 1.8 m hitbox, not the eye
+
+  // An aim point on `cellPos` the server's bucket ray (5 m from the eye) reaches before anything `blocks` it, else null.
+  aimAt(cellPos, points, blocks) {
+    const eye = this.eye(), at = p => this.bot.blockAt(p)
+    for (const [dx, dy, dz] of points) {
+      const pt = cellPos.offset(dx, dy, dz)
+      if (eye.distanceTo(pt) <= 4.8 && rayClear(at, eye, pt, pt.floored(), blocks)) return pt
+    }
+    return null
+  }
+
+  // Scoop the fluid source at `pos` with the empty bucket (the empty bucket's ray stops at solid blocks and at fluid
+  // sources: a lava source in the way would fill it with lava). Walks closer (no digging) when no aim is clear.
+  async scoop(pos, fluid) {
+    const full = `${fluid}_bucket`, before = this.count(full)
+    const blocks = (b, y) => b.boundingBox === 'block' || (b.name === 'lava' && fluid !== 'lava' && isFluidSource(b, 'lava') && y < 0.9)
+    const points = [[0.5, 0.85, 0.5], [0.5, 0.5, 0.5], [0.2, 0.85, 0.5], [0.8, 0.85, 0.5], [0.5, 0.85, 0.2], [0.5, 0.85, 0.8]]
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.check()
+      let aim = attempt === 0 ? this.aimAt(pos, points, blocks) : null
+      if (!aim) {
+        // The first miss (or no clear aim): step up next to the source (onto the rim) for a steep ray, else just closer.
+        for (const g of [new GoalNearAbove(pos.x, pos.y, pos.z, 1.5, pos.y + 1), new GoalNearAbove(pos.x, pos.y, pos.z, 2, pos.y)]) {
+          try { await this.walkTo(g); break } catch (e) { if (e instanceof Abort) throw e; this.log(`scoop ${fluid}: cannot get closer (${e?.name})`) }
+        }
+        this.check()
+        aim = this.aimAt(pos, points, blocks) || pos.offset(0.5, 0.85, 0.5)
+      }
+      const bucket = this.item('bucket')
+      if (!bucket) return false
+      await this.bot.equip(bucket, 'hand')
+      await this.useHeldAt(aim)
+      if (this.count(full) > before) return true
+      this.log(`scoop ${fluid} at ${pos}: missed from ${this.bot.entity.position.floored()} (aim ${aim})`)
+      if (!isFluidSource(this.bot.blockAt(pos), fluid)) return false
+    }
+    return false
+  }
+
+  // Place `itemName` at pos against any solid neighbour; true when the block at pos is `itemName` afterwards.
+  async placeAt(pos, itemName) {
+    const b = this.bot
+    if (b.blockAt(pos)?.name === itemName) return true
+    const it = this.item(itemName)
+    if (!it) return false
+    let ref = null
+    for (const d of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
+      const r = b.blockAt(pos.offset(...d))
+      if (r && r.boundingBox === 'block') { ref = r; break }
+    }
+    if (!ref) { this.log(`placeAt ${itemName} at ${pos}: no solid neighbour`); return false }
+    if (this.eye().distanceTo(pos.offset(0.5, 0.5, 0.5)) > 5) { await this.walkTo(new goals.GoalNear(pos.x, pos.y, pos.z, 3)); this.check() }
+    try {
+      await b.equip(it, 'hand')
+      await b.placeBlock(ref, pos.minus(ref.position))
+    } catch (e) { this.log(`placeAt ${itemName} at ${pos}: ${e.message}`) }
+    await b.waitForTicks(2)
+    this.check()
+    return b.blockAt(pos)?.name === itemName
+  }
+
+  // A portal site: the 4x5 plane standing on a solid 4-wide row, `dist` ahead along a heading, perpendicular to it.
+  portalSiteOk(origin, axis) {
+    const L = portalLayout(origin, axis)
+    const cells = [...L.obsidian, ...L.filler]
+    for (let u = 1; u <= 2; u++) for (let v = 1; v <= 3; v++) cells.push(axis === 'x' ? origin.offset(u, v, 0) : origin.offset(0, v, u))
+    const ground = [0, 1, 2, 3].map(u => this.bot.blockAt(axis === 'x' ? origin.offset(u, -1, 0) : origin.offset(0, -1, u)))
+    return ground.every(g => g && g.boundingBox === 'block') && cells.every(c => isAir(this.bot.blockAt(c)))
+  }
+
+  // A partly built frame from an earlier (interrupted) attempt is resumed while its cells hold only air or the right block.
+  portalSiteResumable(origin, axis) {
+    const L = portalLayout(origin, axis)
+    const inside = []
+    for (let u = 1; u <= 2; u++) for (let v = 1; v <= 3; v++) inside.push(axis === 'x' ? origin.offset(u, v, 0) : origin.offset(0, v, u))
+    return L.obsidian.every(p => { const n = this.bot.blockAt(p)?.name; return isAir(this.bot.blockAt(p)) || n === 'obsidian' })
+      && L.filler.every(p => { const b = this.bot.blockAt(p); return isAir(b) || b?.boundingBox === 'block' })
+      && inside.every(p => isAir(this.bot.blockAt(p)) || this.bot.blockAt(p)?.name === 'nether_portal')
+  }
+
+  // The frame around a column anchor from summarize() (the lowest obsidian of a vertical stack of three): its axis and
+  // lowest inside cell, found from the bottom-row obsidian next to the anchor's foot.
+  frameFromAnchor(a) {
+    const anchor = new Vec3(a.x, a.y, a.z)
+    for (const [axis, du] of [['x', 1], ['x', -1], ['z', 1], ['z', -1]]) {
+      const foot = axis === 'x' ? anchor.offset(du, -1, 0) : anchor.offset(0, -1, du)
+      if (this.bot.blockAt(foot)?.name === 'obsidian') return { axis, inside: axis === 'x' ? anchor.offset(du, 0, 0) : anchor.offset(0, 0, du) }
+    }
     return null
   }
 
@@ -561,6 +733,152 @@ export class Motor {
     },
 
     async wait() { await sleep(Math.max(10, this.timeouts.wait * 1000 - 200)); return ok() },
+
+    // Walk to the nearest source of `fluid` ('water' | 'lava') and fill the empty bucket from it.
+    async fill_bucket(fluid = 'water') {
+      if (!['water', 'lava'].includes(fluid)) return fail('failed', `cannot fill a bucket with ${fluid}`)
+      if (!this.item('bucket')) return fail('no_materials', 'no empty bucket')
+      let src = this.fluidSource(fluid, 24)
+      const seen = this.mem.seen?.[fluid]
+      if (!src && seen) {
+        await this.goto(new goals.GoalNear(seen.pos.x, seen.pos.y, seen.pos.z, 3))
+        this.check()
+        src = this.fluidSource(fluid, 16)
+        if (!src) { this.mem.seen[fluid] = null; return fail('target_gone', `no ${fluid} source at the remembered spot`) }
+      }
+      if (!src) return fail('not_found', `no ${fluid} source within 24 m`)
+      await this.standNear(src.position, 2)
+      this.log(`fill_bucket: ${fluid} source at ${src.position}, standing at ${this.bot.entity.position.floored()}`)
+      const full = `${fluid}_bucket`
+      if (await this.scoop(src.position, fluid)) return ok(`+1 ${full}`)
+      const again = this.fluidSource(fluid, 5)   // the source may have flowed away or been refilled next to it
+      if (again && await this.scoop(again.position, fluid)) return ok(`+1 ${full}`)
+      return fail('failed', `the bucket did not fill at ${src.position}`)
+    },
+
+    // Pour the water bucket onto a lava source (it and the lava sources next to it become obsidian), then take the
+    // water back. The bot stands level with or above the lava, 2-3 m away.
+    async cast_obsidian() {
+      const b = this.bot
+      if (!this.item('water_bucket')) return fail('no_materials', 'no water bucket')
+      const src = this.pickLavaSource(24)
+      if (!src) return fail('target_gone', 'no lava source within 24 m')
+      const p = src.position
+      if (b.entity.position.floored().y < p.y || b.entity.position.distanceTo(p.offset(0.5, 0, 0.5)) > 3.5) {
+        await this.goto(new GoalNearAbove(p.x, p.y, p.z, 3, p.y))
+        this.check()
+      }
+      const countObsidian = () => b.findBlocks({ matching: this.obsidianIds, maxDistance: 6, count: 64 }).length
+      const before = countObsidian()
+      await b.equip(this.item('water_bucket'), 'hand')
+      // The full bucket's ray passes through fluids: aim at the top face of the block under the source, so the water
+      // replaces the source itself and the lava sources beside it turn to obsidian. Else the source's top face.
+      const solid = bl => bl.boundingBox === 'block'
+      const aim = this.aimAt(p.offset(0, -1, 0), [[0.5, 0.97, 0.5], [0.15, 0.97, 0.5], [0.85, 0.97, 0.5], [0.5, 0.97, 0.15], [0.5, 0.97, 0.85]], solid)
+      await this.useHeldAt(aim || p.offset(0.5, 1, 0.5))
+      if (this.item('water_bucket')) return fail('failed', `the water was not poured at ${p}`)
+      for (let i = 0; i < 4; i++) { await b.waitForTicks(10); this.check() }
+      const got = countObsidian() - before
+      // Take the water back: where it was poured, else the nearest water source within 4 m.
+      const water = isFluidSource(b.blockAt(p), 'water') ? b.blockAt(p) : this.fluidSource('water', 4)
+      const back = water ? await this.scoop(water.position, 'water') : false
+      this.log(`cast_obsidian: +${got} obsidian at ${p} (aim ${aim ? 'clear' : 'fallback'}), water ${back ? 'taken back' : `left${water ? ` at ${water.position}` : ''}`}`)
+      return got > 0 ? ok(`+${got} obsidian cast`) : fail('failed', 'no obsidian formed')
+    },
+
+    // Build the 10-obsidian frame (corners from cobblestone / cobbled deepslate / dirt) 3 m ahead on flat ground,
+    // perpendicular to the heading; no digging or filling. Bottom row, then the columns, then the top corners and row.
+    async build_portal() {
+      const b = this.bot
+      if (this.count('obsidian') < 10 && !this.mem.portal) return fail('no_materials', `${this.count('obsidian')} obsidian, 10 needed`)
+      const fillerItem = () => FILLERS.find(n => this.count(n) > 0)
+      let site = null
+      const mp = this.mem.portal
+      if (mp) {
+        const o = new Vec3(mp.origin.x, mp.origin.y, mp.origin.z)
+        if (b.entity.position.distanceTo(o) <= 24 && this.portalSiteResumable(o, mp.axis)) site = { origin: o, axis: mp.axis }
+      }
+      if (!site) {
+        if (this.count('obsidian') < 10) return fail('no_materials', `${this.count('obsidian')} obsidian, 10 needed`)
+        if (FILLERS.reduce((n, f) => n + this.count(f), 0) < 4) return fail('no_materials', 'fewer than 4 blocks for the corners')
+        const feet = b.entity.position.floored()
+        const order = ['north', 'east', 'south', 'west'], h0 = order.indexOf(this.mem.heading)
+        search: for (let k = 0; k < 4; k++) {
+          const [hx, hz] = HEADINGS[order[(Math.max(0, h0) + k) % 4]]
+          const axis = hx === 0 ? 'x' : 'z'
+          for (const d of [3, 4, 2]) {
+            // origin = the frame's left corner, the frame centred on the cell d ahead
+            const origin = axis === 'x' ? feet.offset(hx * d - 1, 0, hz * d) : feet.offset(hx * d, 0, hz * d - 1)
+            if (this.portalSiteOk(origin, axis)) { site = { origin, axis }; break search }
+          }
+        }
+        if (!site) return fail('failed', 'no flat spot')
+      }
+      const { origin, axis } = site
+      this.mem.portal = { origin: { x: origin.x, y: origin.y, z: origin.z }, axis }
+      const L = portalLayout(origin, axis)
+      // Stand 2 m in front of the frame's middle, on the side the bot is on, so every cell is within reach.
+      const n = axis === 'x' ? new Vec3(0, 0, Math.sign(b.entity.position.z - (origin.z + 0.5)) || 1) : new Vec3(Math.sign(b.entity.position.x - (origin.x + 0.5)) || 1, 0, 0)
+      const stand = L.inside.offset(0, -1, 0).plus(n.scaled(2))
+      if (!b.entity.position.floored().equals(stand)) {
+        try { await this.walkTo(new goals.GoalBlock(stand.x, stand.y, stand.z)) } catch (e) { if (e instanceof Abort) throw e; this.log(`build_portal: cannot reach the stand cell ${stand} (${e?.name})`) }
+        this.check()
+      }
+      const [o0, o1, c0, c1, c2, d0, d1, d2, t0, t1] = L.obsidian, [f0, f1, f2, f3] = L.filler
+      const plan = [[f0, 'f'], [f1, 'f'], [o0, 'o'], [o1, 'o'], [c0, 'o'], [d0, 'o'], [c1, 'o'], [d1, 'o'], [c2, 'o'], [d2, 'o'], [f2, 'f'], [f3, 'f'], [t0, 'o'], [t1, 'o']]
+      let done = 0
+      for (const [pos, kind] of plan) {
+        this.check()
+        const at = b.blockAt(pos)
+        if (kind === 'f' && at && at.boundingBox === 'block') { done++; continue }
+        const name = kind === 'o' ? 'obsidian' : fillerItem()
+        if (!name) return fail('no_materials', 'out of corner blocks')
+        if (!(await this.placeAt(pos, name))) return fail('failed', `could not place ${name} at ${pos} (${done}/14 placed)`)
+        done++
+        this.current.progress = done / plan.length
+      }
+      await this.settleInventory()
+      const have = L.obsidian.filter(p => b.blockAt(p)?.name === 'obsidian').length
+      return have === 10 ? ok(`frame at ${origin} along ${axis}`) : fail('failed', `${have}/10 obsidian in the frame`)
+    },
+
+    // Light the frame: flint and steel on the top face of the bottom obsidian under the inside cell.
+    async light_portal(_, obs) {
+      const b = this.bot
+      if (!this.item('flint_and_steel')) return fail('no_materials', 'no flint and steel')
+      let frame = null
+      const mp = this.mem.portal
+      if (mp) {
+        const L = portalLayout(new Vec3(mp.origin.x, mp.origin.y, mp.origin.z), mp.axis)
+        if (b.blockAt(L.obsidian[0])?.name === 'obsidian') frame = { axis: mp.axis, inside: L.inside }
+      }
+      if (!frame && obs?.portalFrame?.pos) frame = this.frameFromAnchor(obs.portalFrame.pos)
+      if (!frame) return fail('target_gone', 'no portal frame')
+      const portalId = this.md.blocksByName.nether_portal.id
+      const lit = () => !!b.findBlock({ matching: portalId, maxDistance: 6 })
+      const { axis, inside } = frame
+      const n = axis === 'x' ? new Vec3(0, 0, Math.sign(b.entity.position.z - (inside.z + 0.5)) || 1) : new Vec3(Math.sign(b.entity.position.x - (inside.x + 0.5)) || 1, 0, 0)
+      const front = inside.offset(0, -1, 0).plus(n.scaled(2))
+      if (b.entity.position.distanceTo(front.offset(0.5, 0, 0.5)) > 1.5) {
+        try { await this.walkTo(new goals.GoalNear(front.x, front.y, front.z, 1)) } catch (e) { if (e instanceof Abort) throw e; this.log(`light_portal: cannot reach the front of the frame (${e?.name})`) }
+        this.check()
+      }
+      if (lit()) return ok('already lit')
+      const side = axis === 'x' ? inside.offset(-1, 0, 0) : inside.offset(0, 0, -1)
+      const tries = [[inside.offset(0, -1, 0), new Vec3(0, 1, 0)], [side, axis === 'x' ? new Vec3(1, 0, 0) : new Vec3(0, 0, 1)]]
+      for (const [pos, face] of tries) {
+        this.check()
+        const blk = b.blockAt(pos)
+        if (!blk || blk.name !== 'obsidian') continue
+        await b.equip(this.item('flint_and_steel'), 'hand')
+        await b.activateBlock(blk, face)
+        await b.waitForTicks(20)
+        if (lit()) return ok('portal lit')
+      }
+      const cells = []
+      for (let u = 0; u <= 1; u++) for (let v = 0; v <= 2; v++) cells.push(b.blockAt(axis === 'x' ? inside.offset(u, v, 0) : inside.offset(0, v, u))?.name)
+      return fail('failed', `the portal did not light (inside: ${cells.join(' ')})`)
+    },
   }
 
   nearestHostileEntity() {
@@ -594,9 +912,11 @@ export class Motor {
     return fail(found ? 'failed' : 'not_found', found ? `${what} mined but nothing picked up` : `no ${what} within ${maxDistance} m`)
   }
 
-  // Nearest exposed block of the kind (one the bot can see), else the nearest at all.
+  // Nearest exposed block of the kind (one the bot can see), else the nearest at all. The count is large because
+  // findBlocks stops at it while walking chunk sections nearest-first, so a small count misses a nearer block in the
+  // next section (natural gravel in the bot's own section hid a patch 4 m away).
   pickBlock(ids, maxDistance) {
-    const cands = this.bot.findBlocks({ matching: ids, maxDistance, count: 24 })
+    const cands = this.bot.findBlocks({ matching: ids, maxDistance, count: 256 })
     if (!cands.length) return null
     const me = this.bot.entity.position
     cands.sort((a, b) => me.distanceTo(a) - me.distanceTo(b))

@@ -26,7 +26,7 @@ export function classifyEntity(e, mcData) {
   return cat === 'Hostile mobs' ? 'hostile' : cat === 'Passive mobs' ? 'passive' : null
 }
 export class EpisodeMemory {
-  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null } }
+  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null }
   sawIron(pos, t, where = null) { this.ironSeen = { pos: { x: pos.x, y: pos.y, z: pos.z }, t, where } }
   saw(kind, pos, t) { this.seen[kind] = { pos: { x: pos.x, y: pos.y, z: pos.z }, t } }
   setBase(kind, pos) { this.base[kind] = pos ? { x: pos.x, y: pos.y, z: pos.z } : null }
