@@ -46,6 +46,14 @@ test('chainStep is monotone across the chain and reuses the tech tree in stage 0
   assert.ok(chainStep(chain({ inventory: ironKit })).index > chainStep(chain({ inventory: { iron_pickaxe: 1 } })).index)
 })
 
+test('the "get N iron ingots" text is gross (still-to-craft cost), not needs().ingots\' net-of-held figure', () => {
+  // needs().ingots is net of held ingots (pinned above); the chainStep text must show the total the stage
+  // still needs to end up with, i.e. net + held, so "have H" reads against the same N a player would recognise.
+  assert.equal(chainStep(chain({ inventory: { iron_pickaxe: 1, iron_ingot: 1 } })).text, 'get 5 iron ingots (have 1)')
+  const a = chain({ inventory: { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, iron_ingot: 3 }, armor: { iron_helmet: 1 } })
+  assert.equal(chainStep(a).text, 'get 19 iron ingots (have 3)')   // chestplate+leggings+boots = 8+7+4 = 19, the stage's gross target
+})
+
 test('describeChain reads as one line', () => {
   const s = describeChain(chain({ inventory: { ...ironKit, iron_ingot: 3 }, armor: { iron_helmet: 1, iron_chestplate: 1 } }))
   assert.match(s, /^Goal chain: iron tools \(done\), iron armor \(2 of 4 pieces\), diamond tools, lit nether portal\. Current stage: iron armor, step 2[0-9] of 47: /)

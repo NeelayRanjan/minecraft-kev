@@ -74,7 +74,8 @@ function ironToolsStep(obs) {
   const n = needs(obs)
   const next = n.missing[0]
   if (!canCraftItem(obs, next)) {
-    return { index: 11, of: 47, text: `get ${n.ingots} iron ingots (have ${obs.inventory?.iron_ingot || 0})`, stage: STAGES[1] }
+    const held = obs.inventory?.iron_ingot || 0
+    return { index: 11, of: 47, text: `get ${n.ingots + held} iron ingots (have ${held})`, stage: STAGES[1] }
   }
   return { index: 11 + IRON_TOOLS.indexOf(next), of: 47, text: `craft ${humanize(next)}`, stage: STAGES[1] }
 }
@@ -83,7 +84,8 @@ function armorStep(obs) {
   const n = needs(obs)
   const next = n.missing[0]
   if (!canCraftItem(obs, next)) {
-    return { index: 21, of: 47, text: `get ${n.ingots} iron ingots (have ${obs.inventory?.iron_ingot || 0})`, stage: STAGES[2] }
+    const held = obs.inventory?.iron_ingot || 0
+    return { index: 21, of: 47, text: `get ${n.ingots + held} iron ingots (have ${held})`, stage: STAGES[2] }
   }
   return { index: 22 + ARMOR.indexOf(next), of: 47, text: `craft ${humanize(next)}`, stage: STAGES[2] }
 }
