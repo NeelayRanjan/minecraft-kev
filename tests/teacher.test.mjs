@@ -117,3 +117,28 @@ test('teacher pick is always an offered option', () => {
     baseObs({ inventory: { wooden_pickaxe: 1, cobblestone: 3 } }), baseObs({ nearestHostile: { name: 'creeper', dist: 3, dir: 'east', dy: 0 } })]
   for (const o of cases) assert.ok(options(o).some(x => x.id === teacherSubtask(o)), `${teacherSubtask(o)} not offered`)
 })
+
+const chain = over => baseObs({ goal: 'nether', armor: {}, portalLit: false, ...over })
+const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }, armor = { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }
+test('chain teacher: crafts when it can, otherwise gets iron the same way as step 5-6', () => {
+  assert.equal(teacherSubtask(chain({ inventory: { iron_pickaxe: 1, iron_ingot: 2, stick: 1, crafting_table: 1 } })), 'craft(iron_sword)')
+  assert.equal(teacherSubtask(chain({ inventory: { iron_pickaxe: 1, raw_iron: 3, coal: 2, furnace: 1 } })), 'smelt(iron_ingot)')
+  assert.equal(teacherSubtask(chain({ inventory: { iron_pickaxe: 1 }, blocks: [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }] })), 'mine_iron')
+  assert.equal(teacherSubtask(chain({ inventory: { iron_pickaxe: 1 }, pos: { x: 0, y: 60, z: 0 } })), 'explore_toward(down)')
+})
+test('chain teacher: diamonds', () => {
+  assert.equal(teacherSubtask(chain({ inventory: kit, armor, pos: { x: 0, y: 30, z: 0 } })), 'explore_toward(deep)')
+  assert.equal(teacherSubtask(chain({ inventory: kit, armor, pos: { x: 0, y: -58, z: 0 }, blocks: [{ name: 'diamond_ore', dist: 8, dir: 'east', dy: 0, reachable: true }] })), 'mine_diamond')
+  assert.equal(teacherSubtask(chain({ inventory: { ...kit, diamond: 3, stick: 2, crafting_table: 1 }, armor })), 'craft(diamond_pickaxe)')
+})
+test('chain teacher: portal', () => {
+  const d = { ...kit, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1 }
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, iron_ingot: 3, crafting_table: 1 }, armor })), 'craft(bucket)')
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, bucket: 1 }, armor, blocks: [{ name: 'water', dist: 6, dir: 'east', dy: 0, reachable: true }] })), 'fill_bucket(water)')
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, water_bucket: 1 }, armor, blocks: [{ name: 'lava', dist: 6, dir: 'east', dy: 0, reachable: true }] })), 'cast_obsidian')
+  assert.equal(teacherSubtask(chain({ inventory: d, armor, blocks: [{ name: 'obsidian', dist: 3, dir: 'east', dy: 0, reachable: true }] })), 'mine_obsidian')
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, obsidian: 10, iron_ingot: 1 }, armor, blocks: [{ name: 'gravel', dist: 5, dir: 'east', dy: 0, reachable: true }] })), 'mine_gravel')
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, obsidian: 10, iron_ingot: 1, flint: 1, crafting_table: 1 }, armor })), 'craft(flint_and_steel)')
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, obsidian: 10, cobblestone: 4, flint_and_steel: 1 }, armor })), 'build_portal')
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, flint_and_steel: 1 }, armor, portalFrame: { dist: 2, dir: 'north', dy: 0 } })), 'light_portal')
+})

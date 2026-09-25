@@ -1,6 +1,7 @@
 // The scripted tech-tree teacher: labels for next_subtask and threat_response, and the driver during data collection.
 // Deterministic function of obs (lesson 1: choice labels from a script saturate; they are for driving).
-import { counts, options, optionId, tableNear, furnaceNear, hasFuel, isLog, isStone, isCoal, isIron, TABLE_NEAR } from './subtasks.js'
+import { counts, options, optionId, tableNear, furnaceNear, hasFuel, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava, canCraft, TABLE_NEAR } from './subtasks.js'
+import { needs, stageOf, IRON_TOOLS, ARMOR, DIAMOND_TOOLS, INGOTS, DIAMONDS, STICKS } from './stages.js'
 
 export const WOOD_NEEDED = 5   // logs (or planks/4): table 1, wooden pickaxe ~1.25, sticks, spare fuel and a spare table
 export const STEPS = ['gather wood', 'craft a crafting table', 'craft a wooden pickaxe', 'craft a stone pickaxe',
@@ -61,6 +62,7 @@ function pick(obs) {
   if (th === 'flee') return 'flee(threat)'
   if (th === 'pillar_up') return 'pillar_up'
   if (obs.food < 8 && c.food >= 1) return 'eat'
+  if (obs.goal === 'nether' && stageOf(obs).index >= 1) return pickChain(obs)
   switch (step) {
     case 1: return wood()
     case 2: return c.planks >= 4 ? craft('crafting_table') : craft('planks')
@@ -89,6 +91,69 @@ function pick(obs) {
       if ((obs.phase === 'dusk' || obs.phase === 'night') && !obs.underground && c.blocks >= 1 && c.hasPickaxe) return 'build_shelter'
       return 'wait'
   }
+}
+
+// Chain mode (Task 4): stages 1-4 of agent/stages.js, called from pick() once the iron pickaxe is done.
+// Stage 1 (iron tools) and stage 2 (armor) share craftNext/getIron; stage 3 (diamond tools) shares craftNext
+// with its own diamond-seeking fallback; stage 4 (nether portal) is its own linear chain.
+function pickChain(obs) {
+  const c = counts(obs)
+  const stage = stageOf(obs).index
+  const wood = () => has(obs, isLog, 48) ? 'gather_wood' : 'explore_toward(surface)'
+  const craft = item => optionId('craft', item)
+  const needTable = item => (tableNear(obs) || c.table >= 1) ? craft(item) : c.planks >= 4 ? craft('crafting_table')
+    : (obs.base?.crafting_table && obs.base.crafting_table.dist > TABLE_NEAR) ? 'return_to_base' : c.logs >= 1 ? craft('planks') : wood()
+  const sticks = () => c.planks >= 2 ? craft('sticks') : c.logs >= 1 ? craft('planks') : wood()
+  const ironSeen = has(obs, isIron, 32) || !!obs.memory?.ironSeen
+  const diamondSeen = has(obs, isDiamond, 32) || !!obs.memory?.diamondSeen
+
+  // Same shape as pick()'s step 5-6: smelt what's held, else fix the furnace/fuel gap, else go get more iron.
+  const getIron = () => {
+    const furnaceHandy = furnaceNear(obs) || c.furnace >= 1
+    if (c.rawIron >= 1) {
+      if (hasFuel(c) && furnaceHandy) return 'smelt(iron_ingot)'
+      if (!furnaceHandy) return c.cobble >= 8 ? needTable('furnace') : 'mine_stone'
+      if (c.logs >= 1) return craft('planks')
+      if (has(obs, isCoal, 32)) return 'mine_coal'
+      if (has(obs, isLog, 48)) return 'gather_wood'
+    }
+    if (ironSeen) return 'mine_iron'
+    if (c.coal === 0 && has(obs, isCoal, 16)) return 'mine_coal'
+    return obs.pos.y > 14 ? 'explore_toward(down)' : 'explore_toward(surface)'
+  }
+
+  // Whether the resource that gates crafting `item` (ingots for iron gear, diamonds for diamond gear) is short,
+  // as opposed to only sticks being short: the two cases send the bot off to fetch different things.
+  const primaryShort = item => item.startsWith('diamond_') ? c.diamonds < (DIAMONDS[item] || 0) : c.ingots < (INGOTS[item] || 0)
+  // Craft the first affordable item of this stage; otherwise chase whatever is actually missing for the next one.
+  const craftNext = (items, gather) => {
+    const missing = needs(obs).missing.filter(i => items.includes(i))
+    const affordable = missing.find(i => canCraft(i, c))
+    if (affordable) return needTable(affordable)
+    const next = missing[0]
+    if (!next || primaryShort(next)) return gather()
+    if (c.sticks < (STICKS[next] || 0)) return sticks()
+    return gather()
+  }
+
+  if (stage === 1) return craftNext(IRON_TOOLS, getIron)
+  if (stage === 2) return craftNext(ARMOR, getIron)
+  if (stage === 3) return craftNext(DIAMOND_TOOLS, () => diamondSeen ? 'mine_diamond' : 'explore_toward(deep)')
+
+  // Stage 4: bucket -> water -> obsidian (cast or mined) -> flint and steel -> frame -> light.
+  if (obs.portalFrame) return obs.portalLit ? 'wait' : 'light_portal'
+  if (c.obsidian >= 10) {
+    if (!c.flintAndSteel) {
+      if (c.flint >= 1) return c.ingots >= 1 ? needTable('flint_and_steel') : getIron()
+      return has(obs, isGravel, 16) ? 'mine_gravel' : 'explore_toward(surface)'
+    }
+    return c.blocks >= 4 ? 'build_portal' : 'mine_stone'
+  }
+  if (has(obs, isObsidian, 16)) return 'mine_obsidian'
+  if (!c.bucket && !c.waterBucket) return canCraft('bucket', c) ? needTable('bucket') : getIron()
+  if (c.bucket && !c.waterBucket) return (has(obs, isWater, 24) || obs.memory?.waterSeen) ? 'fill_bucket(water)' : 'explore_toward(surface)'
+  if (c.waterBucket) return (has(obs, isLava, 24) || obs.memory?.lavaSeen) ? 'cast_obsidian' : (obs.pos.y > -50 ? 'explore_toward(deep)' : 'explore_toward(surface)')
+  return 'wait'
 }
 
 export function teacherSubtask(obs) {
