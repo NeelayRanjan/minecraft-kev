@@ -119,7 +119,11 @@ let lastForecast = null, withhold = []   // supervisor: kev's latest p(step done
 // decision, the last 5 values of each forecast (the trend line) and kev's last pick with its top alternatives.
 let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}, kevPick = null, leaderCalls = 0
 const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
-bot.on('death', () => { dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); leaderNote('death'); motor.interrupt('died'); log('died') })
+bot.on('death', () => {
+  dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); leaderNote('death')
+  if (pendingLeader) { elog.event({ t: now(), kind: 'leader_dropped', id: pendingLeader.id, reason: 'death' }); pendingLeader = null }   // an override for a life that ended
+  motor.interrupt('died'); log('died')
+})
 bot.on('respawn', () => { if (dead) elog.event({ t: now(), kind: 'respawn' }); dead = false })
 bot.on('health', () => { if (bot.health <= 0) dead = true })
 
@@ -246,22 +250,31 @@ function leaderTick(obs, t) {
   const event = pickEvent(leaderEvents); leaderEvents = []
   if (!leaderTrigger.due({ t, event, inFlight: !!leaderAsk })) return
   leaderTrigger.asked(t)
-  const opts = optionsFor(obs)
-  const currentId = motor.current?.id ?? null
-  const snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts }
-  leaderAsk = snap
-  const first = leaderCalls++ === 0
-  const forecasts = Object.fromEntries(Object.entries(forecastHist).map(([q, h]) => [q, h[h.length - 1]]))
-  const ctx = {
-    stateText: serialize(obs), chainText: describeChain(obs), need: needs(obs), options: opts,
-    current: motor.current ? { id: currentId, elapsedS: motor.elapsedS(), progress: motor.progress(), lastResult } : { id: null, lastResult },
-    history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
-    ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
-    minutesLeft: Math.max(0, minutes - t / 60), deaths,
+  // The synchronous part (snapshot and prompt context) must never throw into the tick: a leader bug costs one call, not the episode.
+  let snap, ctx, first
+  try {
+    const opts = optionsFor(obs)
+    const currentId = motor.current?.id ?? null
+    snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts }
+    leaderAsk = snap
+    first = leaderCalls++ === 0
+    const forecasts = Object.fromEntries(Object.entries(forecastHist).map(([q, h]) => [q, h[h.length - 1]]))
+    ctx = {
+      stateText: serialize(obs), chainText: describeChain(obs), need: needs(obs), options: opts,
+      current: motor.current ? { id: currentId, elapsedS: motor.elapsedS(), progress: motor.progress(), lastResult } : { id: null, lastResult },
+      history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
+      ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
+      minutesLeft: Math.max(0, minutes - t / 60), deaths,
+    }
+  } catch (e) {
+    leaderAsk = null
+    elog.event({ t, kind: 'leader_error', error: String(e?.message || e).slice(0, 200) }); log(`leader: snapshot failed: ${e?.message || e}`)
+    return
   }
   // The very first call may wait for the 27B model to load (~2 min): a longer timeout, not an error.
   askLeader({ url: leaderUrl, model: leaderModel, think: leaderThink, ...(leaderNumPredict ? { numPredict: Number(leaderNumPredict) } : {}), ...(first ? { timeoutMs: 300_000 } : {}), ...ctx })
     .then(a => leaderAnswered(snap, a, null), e => leaderAnswered(snap, null, e))
+    .catch(e => { leaderAsk = null; log(`leader: answer handling failed: ${e?.message || e}`); try { elog.event({ t: now(), kind: 'leader_error', error: String(e?.message || e).slice(0, 200) }) } catch {} })
 }
 
 function leaderAnswered(snap, a, err) {
@@ -295,6 +308,8 @@ function stageMeta() {
 async function finish(reason) {
   if (finished) return
   const t = now()
+  // A leader call still in flight is logged as unfinished, so the log's call count matches the calls made.
+  if (leaderAsk) { elog.leader.push({ t_asked: leaderAsk.t, t_answered: null, trigger: leaderAsk.event, current_id: leaderAsk.currentId, kind: 'unfinished', action: null, id: null, latency_ms: null, think: leaderThink }); leaderAsk = null }
   motor.interrupt('episode_end')
   elog.timeline = injectDeaths(elog.timeline, elog.events)   // the sampler rarely catches the few ticks between death and respawn
   elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, ...stageMeta(), video_frames: recorder ? recorder.frames() : null })
