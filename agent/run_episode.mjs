@@ -19,7 +19,7 @@ import { EpisodeMemory, summarize } from './summary.js'
 import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
 import { techStep } from './teacher.js'
-import { counts } from './subtasks.js'
+import { counts, REPEAT_WINDOW } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev } from './logger.js'
 import { ask } from './kev_client.js'
@@ -64,6 +64,10 @@ process.on('uncaughtException', e => { console.error(e); shutdown(`uncaught: ${e
 process.on('unhandledRejection', e => { console.error(e); shutdown(`unhandled: ${e?.message || e}`, 1) })
 bot.on('kicked', r => shutdown(`kicked: ${JSON.stringify(r)}`, 1))
 bot.on('error', e => log(`bot error: ${e.message}`))
+// A server that dies (a JVM segfault) or a dropped connection ends the episode at once instead of idling until
+// gen_data's kill timer; no summary line is printed, so gen_data retries the seed.
+bot.on('end', r => shutdown(`disconnected: ${r}`, 1))
+if (server) server.proc.on('exit', c => shutdown(`server exited (${c})`, 1))
 
 await new Promise(r => bot.once('spawn', r))
 for (let i = 0; i < 10; i++) { try { await bot.waitForChunksToLoad(); break } catch { log('chunks not ready, retrying') } }
@@ -84,7 +88,7 @@ if (video) { const { startRecorder } = await import('./recorder.js'); recorder =
 const t0 = Date.now()
 const now = () => (Date.now() - t0) / 1000
 let dead = false, deaths = 0, prevHostileDist = null, subtaskStartHealth = null, ticking = false, doneAt = null, startDay = Number(bot.time.day)
-let lastResult = null
+let lastResult = null, recent = []   // recent: the last REPEAT_WINDOW attempts {id, result}, oldest first (livelock breaker)
 bot.on('death', () => { dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); motor.interrupt('died'); log('died') })
 bot.on('respawn', () => { if (dead) elog.event({ t: now(), kind: 'respawn' }); dead = false })
 bot.on('health', () => { if (bot.health <= 0) dead = true })
@@ -94,10 +98,15 @@ function startSubtask(id, source, obs) {
   elog.event({ t: now(), kind: 'subtask_start', id, source })
   motor.run(id, obs).then(r => {
     const repeats = lastResult && lastResult.id === id && lastResult.result === r.result ? lastResult.repeats + 1 : 1
-    lastResult = { id, result: r.result, repeats }
+    recent = [...recent, { id, result: r.result }].slice(-REPEAT_WINDOW)
+    lastResult = { id, result: r.result, repeats, recent }
     elog.event({ t: now(), kind: 'subtask_done', id, result: r.result, detail: r.detail ?? null })
     log(`${id} -> ${r.result}${r.detail ? ` (${r.detail})` : ''}`)
-  }).catch(e => { lastResult = { id, result: 'failed', repeats: 1 }; elog.event({ t: now(), kind: 'subtask_error', id, error: String(e?.message || e) }) })
+  }).catch(e => {
+    recent = [...recent, { id, result: 'failed' }].slice(-REPEAT_WINDOW)
+    lastResult = { id, result: 'failed', repeats: 1, recent }
+    elog.event({ t: now(), kind: 'subtask_error', id, error: String(e?.message || e) })
+  })
 }
 
 // The 1 Hz tick is synchronous (sample, frame, interrupts, end conditions) so a slow kev request can never stall the

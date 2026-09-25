@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { options, REPEAT_LIMIT } from '../agent/subtasks.js'
+import { options, REPEAT_LIMIT, REPEAT_WINDOW } from '../agent/subtasks.js'
 import { teacherSubtask } from '../agent/teacher.js'
 import { serialize } from '../agent/serialize.js'
 import { baseObs } from './fixtures.mjs'
@@ -12,6 +12,35 @@ test('an option that just failed the same way REPEAT_LIMIT times in a row is wit
   assert.ok(ids(stuckSmelt(REPEAT_LIMIT - 1)).includes('smelt(iron_ingot)'))
   assert.ok(!ids(stuckSmelt(REPEAT_LIMIT)).includes('smelt(iron_ingot)'))
   assert.ok(!ids(stuckSmelt(20)).includes('smelt(iron_ingot)'))
+})
+
+// A leader that alternates an unreachable target with other tries never fails the same way three times in a row.
+const coal = { name: 'coal_ore', dist: 12, dir: 'north', dy: -3, reachable: false }
+const alternating = recent => baseObs({ inventory: { wooden_pickaxe: 1 }, blocks: [coal], last: { ...recent.at(-1), repeats: 1, recent } })
+const f = (id, result = 'no_path') => ({ id, result })
+
+test('an option that failed the same way REPEAT_LIMIT times among the last REPEAT_WINDOW attempts is withheld', () => {
+  assert.equal(REPEAT_WINDOW, 6)
+  const two = [f('mine_coal'), f('wait', 'ok'), f('mine_coal'), f('explore_toward(surface)', 'ok')]
+  assert.ok(ids(alternating(two)).includes('mine_coal'))
+  const three = [f('mine_coal'), f('wait', 'ok'), f('mine_coal'), f('explore_toward(surface)', 'ok'), f('mine_coal'), f('wait', 'ok')]
+  assert.ok(!ids(alternating(three)).includes('mine_coal'))
+})
+
+test('failures older than the window, or with different results, do not count toward the window', () => {
+  const aged = [f('mine_coal'), f('mine_coal'), f('wait', 'ok'), f('wait', 'ok'), f('wait', 'ok'), f('wait', 'ok'), f('mine_coal'), f('wait', 'ok')]
+  assert.ok(ids(alternating(aged)).includes('mine_coal'))   // only one mine_coal failure is within the last 6
+  const mixed = [f('mine_coal'), f('wait', 'ok'), f('mine_coal', 'timeout'), f('wait', 'ok'), f('mine_coal', 'target_gone'), f('wait', 'ok')]
+  assert.ok(ids(alternating(mixed)).includes('mine_coal'))
+})
+
+test('the window can withhold several options at once but never wait', () => {
+  const o = baseObs({ inventory: { wooden_pickaxe: 1 }, blocks: [coal, { name: 'stone', dist: 3, dir: 'south', dy: 0, reachable: true }] })
+  const recent = [f('mine_coal'), f('mine_stone'), f('mine_coal'), f('mine_stone'), f('mine_coal'), f('mine_stone')]
+  const got = ids({ ...o, last: { ...recent.at(-1), repeats: 1, recent } })
+  assert.ok(!got.includes('mine_coal') && !got.includes('mine_stone') && got.includes('wait'))
+  const waits = [f('wait', 'interrupted'), f('wait', 'interrupted'), f('wait', 'interrupted')]
+  assert.ok(ids(baseObs({ last: { ...waits.at(-1), repeats: 3, recent: waits } })).includes('wait'))
 })
 
 test('a repeated success is never withheld, and wait is always offered', () => {

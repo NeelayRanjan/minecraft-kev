@@ -5,6 +5,7 @@
 export const HOSTILE_RANGE = 16
 export const TABLE_NEAR = 16      // a remembered table/furnace within this many metres counts as usable (the motor walks to it)
 export const REPEAT_LIMIT = 3     // lesson 7: an option that failed the same way this many times in a row is withheld
+export const REPEAT_WINDOW = 6    // ... or this many times among the last REPEAT_WINDOW attempts (a leader alternated coal with other tries 51 times)
 export const TABLE_ITEMS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'furnace', 'iron_pickaxe'])
 export const CRAFTABLE = ['planks', 'sticks', 'crafting_table', 'wooden_pickaxe', 'stone_pickaxe', 'furnace', 'iron_pickaxe']
 export const FOOD = new Set(['bread', 'apple', 'cooked_beef', 'beef', 'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton',
@@ -38,7 +39,22 @@ export function canCraft(item, c) {
 export const hasFuel = c => c.coal >= 1 || c.planks >= 2 || c.logs >= 1
 export const tableNear = obs => !!(obs.base?.crafting_table && obs.base.crafting_table.dist <= TABLE_NEAR)
 export const furnaceNear = obs => !!(obs.base?.furnace && obs.base.furnace.dist <= TABLE_NEAR)
-export const stuckOn = obs => (obs.last && obs.last.result !== 'ok' && (obs.last.repeats || 0) >= REPEAT_LIMIT) ? obs.last.id : null
+// The ids the livelock breaker withholds: failed with the same result REPEAT_LIMIT times in a row (obs.last.repeats) or
+// among the last REPEAT_WINDOW attempts (obs.last.recent, oldest first, kept by the runner). wait is never withheld.
+export function stuckOn(obs) {
+  const l = obs.last, out = new Set()
+  if (!l) return out
+  if (l.result !== 'ok' && (l.repeats || 0) >= REPEAT_LIMIT) out.add(l.id)
+  const n = new Map()
+  for (const a of (l.recent || []).slice(-REPEAT_WINDOW)) {
+    if (a.result === 'ok') continue
+    const k = `${a.id} ${a.result}`
+    n.set(k, (n.get(k) || 0) + 1)
+    if (n.get(k) >= REPEAT_LIMIT) out.add(a.id)
+  }
+  out.delete('wait')
+  return out
+}
 const seen = (obs, pred, maxDist) => (obs.blocks || []).some(b => pred(b.name) && b.dist <= maxDist)
 export const isLog = n => n.endsWith('_log')
 export const isStone = n => n === 'stone' || n === 'deepslate' || n === 'cobblestone'
@@ -107,5 +123,5 @@ export function options(obs) {
   if (c.blocks >= 1 && c.hasPickaxe && (obs.phase === 'dusk' || obs.phase === 'night')) add('build_shelter')
   add('wait')
   const stuck = stuckOn(obs)
-  return stuck && stuck !== 'wait' ? out.filter(o => o.id !== stuck) : out
+  return out.filter(o => !stuck.has(o.id))
 }

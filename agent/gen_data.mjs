@@ -52,7 +52,13 @@ let next = 0
 async function worker(slot) {
   while (next < seeds) {
     const seed = seed0 + next++
-    const r = await runEpisode(seed, slot)
+    let r = await runEpisode(seed, slot)
+    // A crash before the episode summary (a JVM or node segfault at startup on the Windows machine) is retried; the
+    // episode restarts from a fresh world, so nothing of the crashed attempt is kept.
+    for (let retry = 1; retry <= 2 && !r.summary; retry++) {
+      say(`seed ${seed}: crashed (exit ${r.code}), retry ${retry}: ${r.stderr.replace(/\s+/g, ' ').slice(-160)}`)
+      r = await runEpisode(seed, slot)
+    }
     results.push(r)
     const s = r.summary
     if (s) say(`seed ${seed}: ${s.end_reason} at ${s.t} s, goal ${s.goal_done_t != null ? `${Math.round(s.goal_done_t)} s` : 'no'}, deaths ${s.deaths}, ${s.records} records (${s.decision_points} decisions)`)
