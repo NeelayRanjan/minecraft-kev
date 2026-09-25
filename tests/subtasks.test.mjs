@@ -78,3 +78,29 @@ test('a supervisor-withheld option is dropped for the next decision; wait surviv
   assert.ok(!ids({ ...o, withhold: ['gather_wood'] }).includes('gather_wood'))
   assert.ok(ids({ ...o, withhold: ['wait'] }).includes('wait'))
 })
+
+const chain = over => baseObs({ goal: 'nether', armor: {}, portalLit: false, ...over })
+test('chain mode: iron tool and armor recipes are offered when the ingots are there and a table is near', () => {
+  const o = chain({ inventory: { iron_pickaxe: 1, iron_ingot: 8, stick: 4, crafting_table: 1 } })
+  const ids_ = ids(o)
+  for (const id of ['craft(iron_sword)', 'craft(iron_axe)', 'craft(iron_helmet)']) assert.ok(ids_.includes(id), id)
+  assert.ok(ids_.includes('craft(iron_chestplate)'), 'affordable with 8 ingots')
+})
+test('chain mode: diamond, gravel, obsidian and the portal steps follow their preconditions', () => {
+  const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }
+  const armor = { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }
+  assert.ok(ids(chain({ inventory: kit, armor, pos: { x: 0, y: 40, z: 0 } })).includes('explore_toward(deep)'))
+  assert.ok(ids(chain({ inventory: kit, armor, blocks: [{ name: 'diamond_ore', dist: 9, dir: 'north', dy: 0, reachable: true }] })).includes('mine_diamond'))
+  assert.ok(!ids(chain({ inventory: { stone_pickaxe: 1 }, blocks: [{ name: 'diamond_ore', dist: 9, dir: 'north', dy: 0, reachable: true }] })).includes('mine_diamond'), 'diamond needs an iron pickaxe')
+  const d = { ...kit, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1 }
+  assert.ok(ids(chain({ inventory: { ...d, bucket: 1 }, armor, blocks: [{ name: 'water', dist: 6, dir: 'east', dy: 0, reachable: true }] })).includes('fill_bucket(water)'))
+  assert.ok(ids(chain({ inventory: { ...d, water_bucket: 1 }, armor, blocks: [{ name: 'lava', dist: 6, dir: 'east', dy: 0, reachable: true }] })).includes('cast_obsidian'))
+  assert.ok(ids(chain({ inventory: d, armor, blocks: [{ name: 'obsidian', dist: 3, dir: 'east', dy: 0, reachable: true }] })).includes('mine_obsidian'))
+  assert.ok(ids(chain({ inventory: { ...d, obsidian: 4 }, armor, blocks: [{ name: 'gravel', dist: 5, dir: 'east', dy: 0, reachable: true }] })).includes('mine_gravel'))
+  assert.ok(ids(chain({ inventory: { ...d, obsidian: 10, cobblestone: 4, flint_and_steel: 1 }, armor })).includes('build_portal'))
+  assert.ok(ids(chain({ inventory: { ...d, flint_and_steel: 1 }, armor, portalFrame: { dist: 2, dir: 'north', dy: 0 } })).includes('light_portal'))
+})
+test('experiment-1 mode never offers chain options', () => {
+  const o = baseObs({ inventory: { iron_pickaxe: 1, iron_ingot: 8, stick: 4, crafting_table: 1 } })
+  assert.ok(!ids(o).some(id => id.includes('iron_sword') || id === 'mine_diamond'))
+})
