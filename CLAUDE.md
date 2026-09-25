@@ -38,9 +38,10 @@ agent/
   recorder.js      first-person video at a fixed fps over prismarine-viewer's headless internals (entity whitelist)
   server_ctl.js    startServer({port, seed}) -> one Paper instance per bot (servers/<port>/, shared libraries)
   run_episode.mjs  one episode; gen_data.mjs many in parallel; rebuild_data.mjs records from raw logs
+docker/            Dockerfile, compose.yml, setup.sh, README.md: the whole pipeline in one CUDA container (the Windows machine)
 tests/             node --test tests/*.test.mjs ; tests/integration/{motor_check,mem_probe}.mjs start their own server (no GPU)
 scripts/           collect_mc1.sh, overnight_mc1.sh, split.sh, train_mc1.sh, eval_mc1.sh, bench_ctx.py, drive_eval.sh,
-                   compare_mc1.sh (3 drivers), dagger_mc1.sh, base_rates.py, reliability.py, drive_summary.py
+                   compare_mc1.sh (3 drivers), dagger_mc1.sh, night_mc3.sh (DAgger + recollection, day 3), warm_kev.mjs, base_rates.py, reliability.py, drive_summary.py
 viewer/            python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays out/<name>.mp4 with the probability bars
 server/            Paper template: eula.txt, server.properties, ops.json, run.sh (the jar is downloaded, see Setup)
 reports/<run>/     dev reports, reliability diagrams + table, drive/compare tables (tracked)
@@ -50,7 +51,7 @@ docs/superpowers/plans/2026-09-23-experiment-1.md   the plan that built experime
 
 ## Setup on a new machine
 
-Tested on Fedora (laptop). The 16 GB machine is Windows 11: use **WSL2 Ubuntu** (CUDA works inside WSL2; Paper, Node, Ollama and the kev venv all run there). Git Bash is not enough: the scripts use `pkill`, `setsid`, `realpath` and symlinks.
+Tested on Fedora (laptop). **The 16 GB machine (Windows 11, RTX 4070 Ti SUPER, 32 GB) runs everything in a Docker container: see `docker/README.md`** (`docker compose -f docker/compose.yml up -d --build`, `docker exec mckev docker/setup.sh`, then every command below inside `docker exec -it mckev bash`). Git Bash alone is not enough: the scripts use `pkill`, `setsid`, `realpath` and symlinks. The steps below are the bare-Linux route.
 
 ```bash
 # 1. system packages (Ubuntu/WSL2)          Fedora: dnf install libXi-devel mesa-libGL-devel pango-devel libjpeg-turbo-devel giflib-devel cairo-devel ffmpeg
@@ -103,19 +104,14 @@ python3 viewer/serve.py 8085                     # replay viewer (the parent pro
 
 Shell trap (bit us four times): `pkill -f pattern` kills the shell whose own command line contains the pattern, including a commit message. Use `pkill -f '[p]aper-1.20.4'` (bracketed first letter) and never put the pattern text elsewhere in the same command.
 
-## Next steps, in order (pick up here on the 16 GB machine)
+## Next steps, in order
 
-1. **Verify the setup** with `npm test` and `tests/integration/motor_check.mjs`, then one 3-minute teacher episode with `--video` and open it in the viewer.
-2. **DAgger round -> mc-v2** (the forecasts are the deliverable and they are uncalibrated on kev-driven states). Data with the fixed motor layer already exists: `data/compare_mc-v1_kev.jsonl` (5,148 records, kev drove seeds 1000-1019, teacher labels) and `data/compare_teacher.jsonl`. Those seeds are the holdout, so do NOT train on them; instead:
-   ```bash
-   scripts/dagger_mc1.sh            # serves mc-v1, kev drives seeds 2000-2023 (22 min, eps 0.05), merges with data/mc1.jsonl, re-splits against the same holdout, trains mc-v2 from runs/mc-v1, evaluates, drives 1000-1019
-   ```
-   It needs `data/mc1_pipeline.done` (touch it after restoring the assets). Read `reports/mc-v2/reliability.md`: the target is `subgoal_succeeds_60s` ECE well under 0.1 on the dev split *and* on the kev-driven records (`reports/<run>/driven`).
-3. **Widen the livelock breaker.** `agent/subtasks.js` withholds an option after `REPEAT_LIMIT` identical *consecutive* failures; the LLM leader chased unreachable coal 51 times in one episode with other attempts in between. Count identical (id, result) failures among the last ~6 attempts instead (the runner keeps `lastResult` only; keep a short history in the runner and pass it in `obs.last`). Test first in `tests/livelock.test.mjs`.
-4. **Recollect with 22-minute episodes** so `survive_until_morning` gets labels (`scripts/collect_mc1.sh` still says 20; the runner now ends at sunrise on its own). Then retrain with the question included.
-5. **Measure the combined mode**: LLM leader with kev's forecasts in its prompt. On 16 GB both fit (kev.serve ~2-4 GB under 5 bots, qwen3:8b ~6 GB). `scripts/compare_mc1.sh` currently runs the LLM batch *without* `--kev-url` (laptop GPU); on the big machine add `--kev-url http://127.0.0.1:8009` to that gen_data line and start kev.serve before it. Compare against kev alone and the teacher; the thesis question is whether the leader's replans on low forecasts beat the teacher.
-6. **Experiment 2 (vision)** needs a kev fork (image tokens through the processor; see "Experiment 2" below) and the 16 GB GPU; prismarine-viewer renders no day/night lighting, so pixel arms need our own darkening or must skip the night question. Not started.
-7. Housekeeping: `reports/` and the plan are tracked; raw episode logs (`out/`) are not, so archive interesting runs (videos) manually. The `.superpowers/` ledger of the build is local only.
+Day 3 (2026-09-24, Windows machine in Docker): setup is verified; the livelock breaker now also withholds an option that failed the same way `REPEAT_LIMIT` times among the last `REPEAT_WINDOW` (6) attempts (`obs.last.recent`, kept by the runner) and steps 2 and 4 are running as one overnight job, `scripts/night_mc3.sh` (log `data/night_mc3.log`, marker `data/night_mc3.done`). It (A) lets mc-v1 drive DAgger seeds 2000-2023, (B) trains mc-v2 on mc1 + DAgger against the old holdout while the teacher recollects seeds 0-39 plus a 20-seed holdout (1000-1019) at 22 minutes with `survive_until_morning` labelled, (C) drives mc-v2 on 1000-1019 against the teacher, and (D) trains mc-v3 from mc-v2 on the recollection + DAgger records (the old 20-minute mc1 data is left out), evaluates it on the new holdout and drives it. Reports: `reports/mc-v2/`, `reports/mc-v3/`, each with `driven/`. The drive numbers use the widened breaker and the two motor fixes below, so compare kev with the teacher inside a run, not with mc-v1's `compare.txt`. The phases are restartable: A skips if `data/mc1_dagger.jsonl` exists, B skips if the checkpoint or `data/mc3_collect.done` exists.
+
+1. **Read the night's results.** Targets: `subgoal_succeeds_60s` ECE well under 0.1 on the dev split *and* on the driven records; `survive_until_morning` base rate between 20% and 80% (`reports/mc-v3/base_rates*.txt`). Its holdout is only 20 episodes, and the labels within an episode are nearly all the same, so its reliability diagram is noisy. Update Status and Results.
+2. **Measure the combined mode**: LLM leader with kev's forecasts in its prompt. On 16 GB both fit (kev.serve ~2-4 GB under 5 bots, qwen3:8b ~6 GB). `scripts/compare_mc1.sh` currently runs the LLM batch *without* `--kev-url` (laptop GPU); on the big machine add `--kev-url http://127.0.0.1:8009` to that gen_data line and start kev.serve before it. Compare against kev alone and the teacher; the thesis question is whether the leader's replans on low forecasts beat the teacher.
+3. **Experiment 2 (vision)** needs a kev fork (image tokens through the processor; see "Experiment 2" below) and the 16 GB GPU; prismarine-viewer renders no day/night lighting, so pixel arms need our own darkening or must skip the night question. Not started.
+4. Housekeeping: `reports/` and the plan are tracked; raw episode logs (`out/`) are not, so archive interesting runs (videos) manually. The `.superpowers/` ledger of the build is local only.
 
 ## Lessons from this project (add to the ones below)
 
@@ -124,6 +120,10 @@ Shell trap (bit us four times): `pkill -f pattern` kills the shell whose own com
 - **Paper + mineflayer crafting:** Paper answers every window click with a full inventory resync and mineflayer shares one state id across windows; 3x3 crafts failed ~60% until clicks were serialised behind the server's reply (`clickWindow` wrapper in `Motor`). Read inventory counts only after the packet burst settles (`settleInventory`).
 - **Livelocks are the enemy of both driving and calibration.** An instantly failing subtask repeated every second produces hundreds of identical states labelled "no progress" and a bot that never finishes; the option layer must withhold it (lesson 7 from Overcooked, again).
 - **The 1 Hz sampler never sees the death tick** (immediate respawn): deaths are injected from events before labelling (`relabel.injectDeaths`), otherwise damage and survival labels miss every death.
+- **Walking to a remembered station while carrying one** ate the whole 20 s craft timeout (a climb back to the surface table from a staircase); `findStation` now places the carried one and walks only if placing fails. **Pillaring in a 2-high tunnel** was refused by the server every time (the jump hits the ceiling); `pillar_up` opens the ceiling block first. Both found by `motor_check` on day 3; the check's spawn varies between runs of the same seed, so it hits different terrain each time (a 60 s `gather_wood` timeout from a y 52 spawn is by design).
+- **The Windows machine's i9-14900KF (microcode 0x120, pre Raptor Lake fix) crashes native code under load**: 3 of the first ~7 JVM/node starts segfaulted (C2 JIT, GC worker). CPU boost is disabled in the power plan until the BIOS is updated (the pipeline runs in real time and barely needs it). `run_episode` now ends at once on a dropped connection or a dead server, and `gen_data` retries an episode that crashed before its summary (twice, fresh world).
+- **Windows checkouts with `core.autocrlf=true` give CRLF shell scripts** that bash in the container rejects; `.gitattributes` forces LF.
+- **The first kev.serve requests compile the fla/Triton kernels** (>10 s, past the runner's 10 s timeout, so the first decisions of a batch fell back to `kev_error`); `scripts/warm_kev.mjs` runs after every serve start. Warm latency on the 4070 Ti SUPER: p50 130 ms, p90 170 ms.
 - **A 4B local LLM is a poor leader** at this granularity: it needs a JSON schema over the offered ids to answer validly at all, cannot do the wood arithmetic (caps in the option list fix that for every driver), and still agrees with the scripted teacher on ~20% of decisions. Use it for what it does well, breaking loops, only after the option layer already does that.
 
 ---
