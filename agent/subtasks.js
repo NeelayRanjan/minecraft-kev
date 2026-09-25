@@ -176,8 +176,10 @@ export function options(obs) {
   if (seen(obs, isLog, 48) && (done || woodEq < 12)) add('gather_wood')
   if (c.hasPickaxe && seen(obs, isStone, 16) && (done || c.cobble < 32)) add('mine_stone')
   if (c.hasPickaxe && seen(obs, isCoal, 32)) add('mine_coal')
-  // Chain mode replaces the flat experiment-1 cap (6) with what the current chain stage still needs.
-  const mineIronOk = chainMode ? c.rawIron + c.ingots < Math.min(needs(obs).ingots, 40) : (done || c.rawIron + c.ingots < 6)
+  // Chain mode keeps the flat experiment-1 cap (6) at stage 0 (the iron pickaxe itself isn't in needs()'s
+  // model); from stage 1 on it switches to what the current chain stage still needs, capped at 40 total.
+  const stage0Cap = done || c.rawIron + c.ingots < 6
+  const mineIronOk = chainMode && stageOf(obs).index >= 1 ? c.rawIron + c.ingots < Math.min(needs(obs).ingots, 40) : stage0Cap
   if (c.hasStonePickaxe && (seen(obs, isIron, 32) || obs.memory?.ironSeen) && mineIronOk) add('mine_iron')
   for (const item of CRAFTABLE) {
     if (!canCraft(item, c)) continue

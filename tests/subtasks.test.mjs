@@ -100,6 +100,10 @@ test('chain mode: diamond, gravel, obsidian and the portal steps follow their pr
   assert.ok(ids(chain({ inventory: { ...d, obsidian: 10, cobblestone: 4, flint_and_steel: 1 }, armor })).includes('build_portal'))
   assert.ok(ids(chain({ inventory: { ...d, flint_and_steel: 1 }, armor, portalFrame: { dist: 2, dir: 'north', dy: 0 } })).includes('light_portal'))
 })
+test('chain mode keeps the stage-0 mine_iron cap; from stage 1 it follows needs().ingots', () => {
+  assert.ok(ids(chain({ inventory: { stone_pickaxe: 1 }, blocks: [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }] })).includes('mine_iron'), 'stage 0 in chain mode still offers mine_iron')
+  assert.ok(!ids(chain({ inventory: { iron_pickaxe: 1, iron_ingot: 5 }, blocks: [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }] })).includes('mine_iron'), 'stage 1: 5 ingots already covers iron_sword + iron_axe (2+3)')
+})
 test('experiment-1 mode never offers chain options', () => {
   const o = baseObs({ inventory: { iron_pickaxe: 1, iron_ingot: 8, stick: 4, crafting_table: 1 } })
   assert.ok(!ids(o).some(id => id.includes('iron_sword') || id === 'mine_diamond'))
