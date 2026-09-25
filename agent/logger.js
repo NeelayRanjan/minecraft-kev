@@ -31,13 +31,13 @@ export function fromKev(resp, qs, labels) {
 }
 
 export class EpisodeLog {
-  constructor(meta = {}) { this.meta = { ...meta }; this.frames = []; this.decisions = []; this.events = []; this.timeline = []; this.labelled = false }
+  constructor(meta = {}) { this.meta = { ...meta }; this.frames = []; this.decisions = []; this.events = []; this.timeline = []; this.leader = []; this.labelled = false }
   frame(f) { this.frames.push(f) }
   event(e) { this.events.push(e) }
   sample(s) { this.timeline.push(s) }
   decision(d) {
     this.decisions.push({ t: d.t, state_text: d.state_text, decision: !!d.decision, qs: d.qs, qids: Object.keys(d.qs), labels: { ...d.labels }, answers: d.answers || {},
-      chosen: d.chosen ?? null, source: d.source ?? null, latency_ms: d.latency_ms ?? null, teacher_label: d.teacher_label ?? null, why: d.why ?? null, planner_latency_ms: d.planner_latency_ms ?? null })
+      chosen: d.chosen ?? null, source: d.source ?? null, latency_ms: d.latency_ms ?? null, teacher_label: d.teacher_label ?? null, why: d.why ?? null, planner_latency_ms: d.planner_latency_ms ?? null, leader: d.leader ?? null })
     this.labelled = false
   }
   finish(extra = {}) { Object.assign(this.meta, extra) }
@@ -80,7 +80,7 @@ export class EpisodeLog {
 
   toJSON() {
     this.label()
-    return { meta: this.meta, frames: this.frames, decisions: this.decisions.map(d => ({ t: d.t, decision: d.decision, state_text: d.state_text, qs: d.qs, labels: d.labels, answers: d.answers, chosen: d.chosen, source: d.source, latency_ms: d.latency_ms, teacher_label: d.teacher_label, why: d.why, planner_latency_ms: d.planner_latency_ms })),
-      events: this.events, timeline: this.timeline }
+    return { meta: this.meta, frames: this.frames, decisions: this.decisions.map(d => ({ t: d.t, decision: d.decision, state_text: d.state_text, qs: d.qs, labels: d.labels, answers: d.answers, chosen: d.chosen, source: d.source, latency_ms: d.latency_ms, teacher_label: d.teacher_label, why: d.why, planner_latency_ms: d.planner_latency_ms, leader: d.leader })),
+      events: this.events, timeline: this.timeline, leader: this.leader }
   }
 }

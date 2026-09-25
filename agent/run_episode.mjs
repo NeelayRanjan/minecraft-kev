@@ -3,6 +3,7 @@
 //
 //   node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher|kev [--kev-url http://127.0.0.1:8009]
 //        [--goal iron_pickaxe|nether] [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--no-server] [--difficulty normal] [--quiet]
+//        [--leader off|periodic15|events|periodic30_interrupts --leader-think --leader-model m --leader-url u --leader-num-predict n]   (chain mode, needs --kev-url)
 //
 // Writes out/<name>.json (meta / frames / decisions / events / timeline), out/<name>.jsonl (kev records with _meta),
 // and out/<name>.mp4 with --video (first-person at --fps, default 5; frame k <-> t = k/fps s).
@@ -19,13 +20,14 @@ import { EpisodeMemory, summarize } from './summary.js'
 import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
 import { techStep } from './teacher.js'
-import { chainStep, stageOf } from './stages.js'
+import { chainStep, stageOf, describeChain, needs } from './stages.js'
 import { counts, REPEAT_WINDOW } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
-import { askPlanner } from './planner.js'
+import { askPlanner, askLeader } from './planner.js'
+import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
 
@@ -49,6 +51,14 @@ const supThreshold = Number(opt('supervisor-threshold', SUP.threshold)), supHold
 if (supMode !== 'off' && !kevUrl) { console.error('--supervisor needs --kev-url'); process.exit(2) }
 const supervisor = new Supervisor({ mode: supMode, threshold: supThreshold, holdS: supHold, pool: supPoolFile ? JSON.parse(fs.readFileSync(supPoolFile, 'utf8')) : null,
   rng: mulberry32(Number.parseInt(String(seed).replace(/\D/g, '') || '0', 10) * 104729 + 3) })
+// The LLM leader (agent/leader.js): watches kev in chain mode and says continue or overrides with an offered subtask.
+// Independent of the scripted supervisor; both may be on.
+const leaderMode = opt('leader', 'off'), leaderThink = flag('leader-think')
+const leaderNumPredict = opt('leader-num-predict', null)   // default: askLeader's (200, 1500 with thinking)
+const leaderModel = opt('leader-model', 'qwen38-27b-iq3xxs'), leaderUrl = opt('leader-url', 'http://100.109.91.95:11434')
+if (leaderMode !== 'off' && !TRIGGERS.includes(leaderMode)) { console.error(`unknown --leader ${leaderMode}`); process.exit(2) }
+if (leaderMode !== 'off' && (!kevUrl || goal !== 'nether')) { console.error('--leader needs --kev-url and --goal nether'); process.exit(2) }
+const leaderTrigger = leaderMode === 'off' ? null : new LeaderTrigger(leaderMode)
 fs.mkdirSync('out', { recursive: true })
 const T0 = Date.now()
 const log = s => { if (!quiet) console.log(`[${((Date.now() - T0) / 1000).toFixed(1)}s] ${s}`) }
@@ -93,7 +103,8 @@ const mem = new EpisodeMemory()
 const motor = new Motor(bot, mcData, mem, { log: s => log(`motor: ${s}`) })
 const elog = new EpisodeLog({ seed, policy, goal, eps_action: epsAction, minutes, kev_url: kevUrl, model: policy === 'kev' ? 'kev' : policy === 'llm' ? llmModel : null, username: me, version: bot.version,
   difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps } : null,
-  supervisor: supMode === 'off' ? null : { mode: supMode, threshold: supThreshold, hold_s: supHold, cooldown_s: supervisor.cooldownS, pool: supPoolFile, pool_n: supervisor.pool?.length ?? null } })
+  supervisor: supMode === 'off' ? null : { mode: supMode, threshold: supThreshold, hold_s: supHold, cooldown_s: supervisor.cooldownS, pool: supPoolFile, pool_n: supervisor.pool?.length ?? null },
+  leader: leaderTrigger ? { mode: leaderMode, think: leaderThink, model: leaderModel, url: leaderUrl, num_predict: leaderNumPredict ? Number(leaderNumPredict) : null } : null })
 let recorder = null
 if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
 
@@ -104,7 +115,11 @@ let dead = false, deaths = 0, prevHostileDist = null, subtaskStartHealth = null,
 let stageReached = 0   // chain mode: the highest stageOf(obs).index seen (a stage_done event on each increase)
 let lastResult = null, recent = []   // recent: the last REPEAT_WINDOW attempts {id, result}, oldest first (livelock breaker)
 let lastForecast = null, withhold = []   // supervisor: kev's latest p(step done in 60 s) {t, p}; the subtask it abandoned, withheld at the next decision
-bot.on('death', () => { dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); motor.interrupt('died'); log('died') })
+// leader: events since the last tick (the trigger's input), the call in flight, an override waiting for the next
+// decision, the last 5 values of each forecast (the trend line) and kev's last pick with its top alternatives.
+let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}, kevPick = null, leaderCalls = 0
+const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
+bot.on('death', () => { dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); leaderNote('death'); motor.interrupt('died'); log('died') })
 bot.on('respawn', () => { if (dead) elog.event({ t: now(), kind: 'respawn' }); dead = false })
 bot.on('health', () => { if (bot.health <= 0) dead = true })
 
@@ -112,16 +127,19 @@ function startSubtask(id, source, obs) {
   subtaskStartHealth = bot.health
   withhold = []; supervisor.onSubtaskStart(now())
   elog.event({ t: now(), kind: 'subtask_start', id, source })
+  if (leaderAsk && leaderAsk.bindNext) { leaderAsk.currentId = id; leaderAsk.bindNext = false }   // asked while idle: the leader judges this pick
   motor.run(id, obs).then(r => {
     const repeats = lastResult && lastResult.id === id && lastResult.result === r.result ? lastResult.repeats + 1 : 1
     recent = [...recent, { id, result: r.result }].slice(-REPEAT_WINDOW)
     lastResult = { id, result: r.result, repeats, recent }
     elog.event({ t: now(), kind: 'subtask_done', id, result: r.result, detail: r.detail ?? null })
+    if (r.detail !== 'leader') leaderNote('subtask_done')   // the leader's own interrupt is not news to it
     log(`${id} -> ${r.result}${r.detail ? ` (${r.detail})` : ''}`)
   }).catch(e => {
     recent = [...recent, { id, result: 'failed' }].slice(-REPEAT_WINDOW)
     lastResult = { id, result: 'failed', repeats: 1, recent }
     elog.event({ t: now(), kind: 'subtask_error', id, error: String(e?.message || e) })
+    leaderNote('subtask_error')
   })
 }
 
@@ -146,17 +164,18 @@ function tick() {
   elog.sample({ t, step: step.index, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead })
-  if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); motor.interrupt(why) }
+  if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); leaderNote('interrupt'); motor.interrupt(why) }
   else if (motor.busy) {   // the supervisor replans on a forecast that has stayed low (a stale forecast counts as none)
     const p = lastForecast && t - lastForecast.t <= 3 ? lastForecast.p : null
     const fire = supervisor.observe({ t, p, busy: motor.busy, subtaskId: motor.current?.id })
-    if (fire) { withhold = [fire.id]; elog.event({ t, kind: 'interrupt', reason: 'low_forecast', subtask: fire.id, p: +fire.p.toFixed(3), shuffled: fire.shuffled }); motor.interrupt('low_forecast'); log(`supervisor: abandon ${fire.id} (p=${fire.p.toFixed(2)}${fire.shuffled ? ', shuffled' : ''})`) }
+    if (fire) { withhold = [fire.id]; elog.event({ t, kind: 'interrupt', reason: 'low_forecast', subtask: fire.id, p: +fire.p.toFixed(3), shuffled: fire.shuffled }); leaderNote('interrupt'); motor.interrupt('low_forecast'); log(`supervisor: abandon ${fire.id} (p=${fire.p.toFixed(2)}${fire.shuffled ? ', shuffled' : ''})`) }
   }
   prevHostileDist = obs.nearestHostile?.dist ?? null
   const morning = goal !== 'nether' && obs.day > startDay && obs.timeOfDay < 12000   // the chain runs past sunrise
   if (t >= minutes * 60) { finish('time'); return }
   if (morning) { finish(doneAt != null ? 'morning_after_goal' : 'morning'); return }
   if (kevErrors >= KEV_DOWN_AFTER) { finish('kev_down'); return }
+  if (leaderTrigger) leaderTick(obs, t)
   if (!asking) decide(obs, t).catch(e => { console.error(e); shutdown(`decide: ${e.message}`, 1) })
 }
 
@@ -175,13 +194,23 @@ async function decide(obs, t) {
     if (finished) return
     const pStep = answers.subgoal_succeeds_60s?.probabilities?.true
     lastForecast = typeof pStep === 'number' && source !== 'kev_error' ? { t, p: pStep } : null
-    let teacherLabel = labels.next_subtask ?? null, why = null, plannerLatency = null
-    if (decision && policy === 'llm') {
+    if (leaderTrigger && kevUrl && source !== 'kev_error') {   // the leader's forecast trend (last 5 values; a question no longer asked drops out)
+      const fc = forecastsOf(answers)
+      forecastHist = Object.fromEntries(Object.entries(fc).map(([q, p]) => [q, [...(forecastHist[q] || []), +p.toFixed(3)].slice(-5)]))
+      const ps = answers.next_subtask?.probabilities
+      if (decision && ps) kevPick = { t, top: Object.entries(ps).sort((a, b) => b[1] - a[1]).slice(0, 3) }
+    }
+    let teacherLabel = labels.next_subtask ?? null, why = null, plannerLatency = null, leaderUse = null
+    if (decision && pendingLeader) {   // a leader override waits for this decision point; kev's answers are still logged
+      const p = pendingLeader; pendingLeader = null
+      if (optionsFor(obs).some(o => o.id === p.id)) leaderUse = p
+      else { elog.event({ t, kind: 'leader_dropped', id: p.id }); log(`leader: ${p.id} no longer offered, kev chooses`) }
+    }
+    if (leaderUse) { chosen = leaderUse.id; source = 'leader'; why = leaderUse.why }
+    else if (decision && policy === 'llm') {
       // The LLM leads: it picks from the same offered list; its choice becomes the next_subtask label (LLM-teacher data).
       const opts = optionsFor(obs)
-      const forecasts = {}
-      for (const q of ['subgoal_succeeds_60s', 'iron_found_3min', 'survive_until_morning']) if (answers[q]?.probabilities) forecasts[q] = answers[q].probabilities.true
-      if (answers.damage_next_20s?.probabilities) forecasts.damage_major_or_death = (answers.damage_next_20s.probabilities[2] || 0) + (answers.damage_next_20s.probabilities[3] || 0)
+      const forecasts = forecastsOf(answers)
       try {
         const a = await askPlanner({ url: llmUrl, model: llmModel, stateText: text, options: opts, history: elog.events.slice(-12), forecasts: kevUrl ? forecasts : {} })
         plannerLatency = a.latency_ms
@@ -195,9 +224,63 @@ async function decide(obs, t) {
       if (source === 'fallback') elog.event({ t, kind: 'fallback', wanted: policy === 'kev' ? answers.next_subtask?.choice : labels.next_subtask })
     }
     if (answers.next_subtask) answers.next_subtask.label = labels.next_subtask ?? null
-    elog.decision({ t, state_text: text, decision, qs, labels, answers, chosen, source, latency_ms: latency, teacher_label: teacherLabel, why, planner_latency_ms: plannerLatency })
+    elog.decision({ t, state_text: text, decision, qs, labels, answers, chosen, source, latency_ms: latency, teacher_label: teacherLabel, why, planner_latency_ms: plannerLatency,
+      leader: leaderUse ? { t_asked: leaderUse.t_asked, t_answered: leaderUse.t_answered, t_applied: +t.toFixed(1), action: leaderUse.id, why: leaderUse.why, thinking_chars: leaderUse.thinking_chars, latency_ms: leaderUse.latency_ms, stale: false } : null })
     if (decision && !motor.busy && !finished) startSubtask(chosen, source, obs)
   } finally { asking = false }
+}
+
+// kev's forecasts as single probabilities (the LLM prompts' view): p(true) per noul, p(major or death) for damage.
+function forecastsOf(answers) {
+  const out = {}
+  for (const q of ['subgoal_succeeds_60s', 'iron_found_3min', 'survive_until_morning']) if (typeof answers[q]?.probabilities?.true === 'number') out[q] = answers[q].probabilities.true
+  if (answers.damage_next_20s?.probabilities) out.damage_major_or_death = (answers.damage_next_20s.probabilities[2] || 0) + (answers.damage_next_20s.probabilities[3] || 0)
+  return out
+}
+
+// ---- the LLM leader ------------------------------------------------------------------------------------------------
+// Called once per tick. Fires a call when the trigger is due (never while one is in flight) without awaiting it; kev
+// keeps driving meanwhile. The snapshot pins the subtask the leader judged: the running one, or, when asked while
+// idle, the one kev starts next (bound in startSubtask).
+function leaderTick(obs, t) {
+  const event = pickEvent(leaderEvents); leaderEvents = []
+  if (!leaderTrigger.due({ t, event, inFlight: !!leaderAsk })) return
+  leaderTrigger.asked(t)
+  const opts = optionsFor(obs)
+  const currentId = motor.current?.id ?? null
+  const snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts }
+  leaderAsk = snap
+  const first = leaderCalls++ === 0
+  const forecasts = Object.fromEntries(Object.entries(forecastHist).map(([q, h]) => [q, h[h.length - 1]]))
+  const ctx = {
+    stateText: serialize(obs), chainText: describeChain(obs), need: needs(obs), options: opts,
+    current: motor.current ? { id: currentId, elapsedS: motor.elapsedS(), progress: motor.progress(), lastResult } : { id: null, lastResult },
+    history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
+    ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
+    minutesLeft: Math.max(0, minutes - t / 60), deaths,
+  }
+  // The very first call may wait for the 27B model to load (~2 min): a longer timeout, not an error.
+  askLeader({ url: leaderUrl, model: leaderModel, think: leaderThink, ...(leaderNumPredict ? { numPredict: Number(leaderNumPredict) } : {}), ...(first ? { timeoutMs: 300_000 } : {}), ...ctx })
+    .then(a => leaderAnswered(snap, a, null), e => leaderAnswered(snap, null, e))
+}
+
+function leaderAnswered(snap, a, err) {
+  leaderAsk = null
+  if (finished) return
+  const t = now()
+  const currentId = motor.current?.id ?? null
+  const res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: snap.currentId, offered: snap.offered })
+  elog.leader.push({ t_asked: snap.t, t_answered: +t.toFixed(1), trigger: snap.event, current_id: snap.currentId, current_id_at_answer: currentId,
+    action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
+    latency_ms: a?.latency_ms ?? null, tokens: a?.tokens ?? null, prompt_tokens: a?.prompt_tokens ?? null, tps: a?.tps != null ? +a.tps.toFixed(1) : null,
+    prompt_chars: a?.prompt_chars ?? null, prompt_hash: a?.prompt_hash ?? null, offered: snap.offered.map(o => o.id), think: leaderThink,
+    error: err ? String(err.message || err).slice(0, 200) : null })
+  if (res.kind === 'override') {
+    elog.event({ t, kind: 'leader_override', from: currentId, to: res.id, why: a.why })
+    pendingLeader = { id: res.id, why: a.why, t_asked: snap.t, t_answered: +t.toFixed(1), latency_ms: a.latency_ms, thinking_chars: a.thinking?.length ?? 0 }
+    if (motor.busy) motor.interrupt('leader')
+  } else elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
+  log(`leader (${snap.event}, ${a?.latency_ms ?? '-'} ms): ${res.kind}${res.id ? ` -> ${res.id}` : ''}${a?.why ? ` (${a.why})` : ''}${err ? ` error: ${err.message}` : ''}`)
 }
 
 // Chain mode: the stage_done events are the one source of truth. stage_reached is the highest stage index entered

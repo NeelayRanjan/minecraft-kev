@@ -1,6 +1,9 @@
 // The LLM leader (milestone 2 shape): at every decision point it sees the same state text kev sees, plus recent
 // history and kev's forecasts, and picks exactly one subtask id from the offered list. Output is JSON validated
 // against the options; nothing else is parsed. Talks to a local Ollama server (/api/chat).
+// askLeader (chain mode, agent/leader.js) uses the same transport for the supervising leader: continue or override.
+import crypto from 'node:crypto'
+import { buildLeaderMessages, leaderSchema, parseLeaderAnswer } from './leader.js'
 
 export const SYSTEM = `You lead a Minecraft survival bot. Its goal is an iron pickaxe, then surviving the night.
 Each turn you get the bot's state, what it did recently and how that went, its own forecasts, and the subtasks it can do right now.
@@ -73,4 +76,29 @@ export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen
   return { ...(parsePlannerAnswer(raw, ctx.options) || { id: null, why: '' }), raw: raw.slice(0, 400), latency_ms: Date.now() - t0,
     tokens: body?.eval_count ?? null, thinking_chars: body?.message?.thinking?.length ?? 0,
     tps: body?.eval_count && body?.eval_duration ? body.eval_count / (body.eval_duration / 1e9) : null }
+}
+
+// The leader call: messages from leader.js, the answer constrained to {"action": "continue" | offered id, "why"}.
+// With think the model reasons first (Ollama returns it as message.thinking, kept up to 4000 chars for the log);
+// num_predict covers the thinking too, so it is larger. The caller sets a longer timeout for the very first call
+// (the 27B model may still be loading).
+export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'qwen38-27b-iq3xxs', think = false, numPredict = think ? 1500 : 200, numCtx = 8192,
+  temperature = 0.2, timeoutMs = think ? 150_000 : 45_000, ...ctx }) {
+  const messages = buildLeaderMessages(ctx)
+  const promptText = messages.map(m => m.content).join('\n')
+  const t0 = Date.now()
+  const res = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model, messages, stream: false, format: leaderSchema(ctx.options), think, options: { temperature, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '60m' }),
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!res.ok) throw new Error(`leader ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  const body = await res.json()
+  const raw = body?.message?.content ?? ''
+  const { action, why } = parseLeaderAnswer(raw, ctx.options)
+  // truncated: num_predict ran out (with thinking, usually inside the thinking, so the answer is empty -> invalid)
+  return { action, why, truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
+    tokens: body?.eval_count ?? null, prompt_tokens: body?.prompt_eval_count ?? null,
+    tps: body?.eval_count && body?.eval_duration ? body.eval_count / (body.eval_duration / 1e9) : null,
+    prompt_chars: promptText.length, prompt_hash: crypto.createHash('sha1').update(promptText).digest('hex').slice(0, 12) }
 }
