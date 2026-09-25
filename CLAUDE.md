@@ -8,7 +8,7 @@ The acceptance criterion: **every decision comes with a calibrated probability t
 
 Repo: https://github.com/NeelayRanjan/minecraft-kev (private). Trained checkpoint and data are release assets, not in git (see Setup).
 
-## Status (2026-09-24, end of day 2)
+## Status (2026-09-24, end of day 2; day 3 below)
 
 Experiment 1 (iron pickaxe from spawn, text state) is built, trained once, evaluated, and its definition-of-done item 1 is met. Everything runs on the 8 GB laptop; the next session should move to the 16 GB machine.
 
@@ -18,6 +18,33 @@ Experiment 1 (iron pickaxe from spawn, text state) is built, trained once, evalu
 - **Open:** the headline forecast is not yet calibrated on the states kev itself visits (DAgger round pending); `survive_until_morning` has no labels yet (20-minute episodes end before sunrise); the combined "LLM leader + kev forecasts in the prompt" mode exists but was never measured at scale (both models do not fit on 8 GB beside the desktop).
 
 Full results, the bugs found and why they mattered: see "Results (2026-09-24)" further down.
+
+## Status (2026-09-24, day 3, Windows machine): stopped mid-run, plan changed
+
+**Why it stopped.** The user works on the Windows machine remotely over AnyDesk. The full pipeline (5 bots with their Paper servers, kev.serve, an LLM on the GPU) drops the AnyDesk session, and with it all control of the machine. At about 18:20 PDT everything was stopped on request: the overnight job, the leader bench, kev.serve, Ollama. The `mckev` container is stopped (`docker compose -f docker/compose.yml up -d` brings it back; Ollama and the viewer must be restarted by hand, see `docker/README.md`).
+
+**New plan (the user's).** Reach this machine over **Tailscale** from the personal laptop instead of AnyDesk, and have this machine **host Ollama with a larger Qwen3.8-27B variant (a distilled build)** as the LLM leader. The rest of the loop would then call it over the tailnet (`--llm-url http://<tailscale-name>:11434`; `askPlanner` already takes a URL). *To confirm with the user:* where the Minecraft/kev side runs under this plan (the laptop, calling this machine only for the leader, is the reading here). What the plan needs:
+- **Ollama reachable on the tailnet:** `OLLAMA_HOST=0.0.0.0` (or the Tailscale IP), and a Windows firewall rule for 11434 limited to the Tailscale interface. Running Ollama natively on Windows is simpler than in the container for this role.
+- **VRAM:** with no kev.serve beside it, the desktop leaves about 14 GB (1.9 GB used at idle once Medal, the NVIDIA overlay, SteelSeries GG and the Xbox apps were closed). That fits a larger 27B quant than tonight's: UD-IQ3_S 12.0 GB, UD-Q3_K_XL 13.2 GB; UD-IQ4_XS at 14.3 GB is too tight. Check which quants the chosen distillation ships.
+- **Load:** hosting only the leader is a far lighter load than the full pipeline, so the remote session should survive it. The Minecraft side is the heavy part.
+
+**Where the work was left.**
+- Step 1 (setup) and step 3 (widened breaker) are done; see the day-3 lessons.
+- **DAgger (step 2): 15 of 24 episodes finished** (`out/dagger_s2000`–`s2014.json`, mc-v1 driving, 22 min each, no crashes once CPU boost was off). The merged `data/mc1_dagger.jsonl` was never written (gen_data writes it at the end). Rebuild it with `node agent/rebuild_data.mjs --prefix dagger --seed0 2000 --seeds 15 --thin 8 --out data/mc1_dagger.jsonl`, then `scripts/night_mc3.sh` skips phase A and continues. Phases B–D (mc-v2, the 22-minute recollection, mc-v3) never ran.
+- **Leader bench (`scripts/leader_bench.mjs`, `reports/leader_bench/`, table via `scripts/leader_bench_report.mjs`):** logged kev-driven decision points replayed through candidate leaders with the live prompt. 200 points (half right after a failed subtask) from seeds 2000–2004, scored before the goal (91 points; afterwards the teacher idles). All candidates ran fully on the GPU beside kev.serve serving 5 bots:
+
+  | leader | valid | agrees with teacher | threat decisions agree | re-picks a just-failed subtask (teacher 0.49, kev 0.66) | answers changed without kev's forecasts | latency p50 | kev p50 while it runs |
+  |---|---|---|---|---|---|---|---|
+  | qwen3:8b (Q4, 5.1 GB) | 1.00 | 0.37 | 0.28 | 0.31 | 0.18 | 0.9 s | 155 ms |
+  | Qwen3.8-27B UD-IQ2_S (8.4 GB) | 0.99 | **0.49** | **0.53** | **0.20** | 0.17 | 3.0 s | 167 ms |
+
+  With about ±0.10 on each rate, the 27B is better across the board, even at 2 bits. Sharing the GPU costs kev almost nothing. Both models read the forecasts only weakly: removing them changes about 1 answer in 6. Some disagreements come from the prompt, not the model: `planner.js`'s tech-tree line "mine_stone until 11 cobblestone" lumps the furnace's 8 in with the pickaxe's 3, and the 27B followed it literally. Fix that before the next bench. UD-Q2_K_XL and UD-IQ3_XXS are downloaded (`tools/models/`) and imported into Ollama (`tools/ollama`, as `qwen38-27b-q2kxl` and `qwen38-27b-iq3xxs`) but not benchmarked; the Q2_K_XL run was interrupted.
+
+**Changes made to the Windows machine** (so they can be undone):
+- CPU boost is off in the Ultimate Performance plan (see the crash lesson below). To revert: `powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PERFBOOSTMODE 2`, `PROCTHROTTLEMAX 100`, `PROCTHROTTLEMAX1 100`, then `powercfg /setactive SCHEME_CURRENT`. The real fix is a BIOS update (MSI PRO Z790-P WIFI, microcode 0x12B or later) when someone is at the machine.
+- `%USERPROFILE%\.wslconfig` sets memory=24GB.
+- A native-Windows kev-4b server (overcooked-kev) was stopped.
+- Medal, the NVIDIA overlay, SteelSeries GG, the Xbox apps and Phone Link were closed; AnyDesk was never touched.
 
 ## Repo layout
 
@@ -41,7 +68,8 @@ agent/
 docker/            Dockerfile, compose.yml, setup.sh, README.md: the whole pipeline in one CUDA container (the Windows machine)
 tests/             node --test tests/*.test.mjs ; tests/integration/{motor_check,mem_probe}.mjs start their own server (no GPU)
 scripts/           collect_mc1.sh, overnight_mc1.sh, split.sh, train_mc1.sh, eval_mc1.sh, bench_ctx.py, drive_eval.sh,
-                   compare_mc1.sh (3 drivers), dagger_mc1.sh, night_mc3.sh (DAgger + recollection, day 3), warm_kev.mjs, base_rates.py, reliability.py, drive_summary.py
+                   compare_mc1.sh (3 drivers), dagger_mc1.sh, night_mc3.sh (DAgger + recollection, day 3), warm_kev.mjs,
+                   leader_bench.mjs + leader_bench_report.mjs (offline LLM-leader comparison), base_rates.py, reliability.py, drive_summary.py
 viewer/            python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays out/<name>.mp4 with the probability bars
 server/            Paper template: eula.txt, server.properties, ops.json, run.sh (the jar is downloaded, see Setup)
 reports/<run>/     dev reports, reliability diagrams + table, drive/compare tables (tracked)
@@ -106,12 +134,19 @@ Shell trap (bit us four times): `pkill -f pattern` kills the shell whose own com
 
 ## Next steps, in order
 
-Day 3 (2026-09-24, Windows machine in Docker): setup is verified; the livelock breaker now also withholds an option that failed the same way `REPEAT_LIMIT` times among the last `REPEAT_WINDOW` (6) attempts (`obs.last.recent`, kept by the runner) and steps 2 and 4 are running as one overnight job, `scripts/night_mc3.sh` (log `data/night_mc3.log`, marker `data/night_mc3.done`). It (A) lets mc-v1 drive DAgger seeds 2000-2023, (B) trains mc-v2 on mc1 + DAgger against the old holdout while the teacher recollects seeds 0-39 plus a 20-seed holdout (1000-1019) at 22 minutes with `survive_until_morning` labelled, (C) drives mc-v2 on 1000-1019 against the teacher, and (D) trains mc-v3 from mc-v2 on the recollection + DAgger records (the old 20-minute mc1 data is left out), evaluates it on the new holdout and drives it. Reports: `reports/mc-v2/`, `reports/mc-v3/`, each with `driven/`. The drive numbers use the widened breaker and the two motor fixes below, so compare kev with the teacher inside a run, not with mc-v1's `compare.txt`. The phases are restartable: A skips if `data/mc1_dagger.jsonl` exists, B skips if the checkpoint or `data/mc3_collect.done` exists.
+1. **Decide the remote setup** (see the day-3 status): Tailscale, Ollama on this machine with the distilled 27B, and where the Minecraft/kev side runs.
+2. **Leader viability, before building a real leader** (from the day-3 discussion):
+   - (a) Add AUROC/resolution to `scripts/reliability.py` beside ECE. A calibrated forecast with no resolution cannot trigger useful replans, and mc-v1's `subgoal_succeeds_60s` scored below always-"no" (dev 0.56 vs 0.63; LLM-led states 0.61 vs 0.81).
+   - (b) A scripted supervisor (replan when p < 0.25 for 15 s) against the same driver with the trigger off and with shuffled forecasts, on the same seeds. If a threshold rule gains nothing from the forecasts, no LLM will.
+   - (c) Rebuild the leader to the design of record: typed subgoals at low cadence, with kev choosing subtasks inside them. Today's `--policy llm` makes the LLM do kev's per-decision job, and at 3 s per call a 27B leader only works at subgoal cadence.
+   - (d) Milestone 2 (the night) is where a leader has real decisions to make. Experiment 1 is fully scriptable.
+   - (e) Fix the cobblestone line in `planner.js`'s system prompt, then bench the distilled 27B (and Q2_K_XL / IQ3_XXS) on the same pinned sample (`--seeds 2000-2004 --n 200 --ablate 60`).
+3. **Finish DAgger and the recollection** on a machine where the load does not cut remote access: rebuild `data/mc1_dagger.jsonl` (see the day-3 status) and run `scripts/night_mc3.sh`. It (A) lets mc-v1 drive DAgger seeds 2000-2023, (B) trains mc-v2 on mc1 + DAgger against the old holdout while the teacher recollects seeds 0-39 plus a 20-seed holdout (1000-1019) at 22 minutes with `survive_until_morning` labelled, (C) drives mc-v2 on 1000-1019 against the teacher, and (D) trains mc-v3 from mc-v2 on the recollection + DAgger records (the old 20-minute mc1 data is left out), evaluates it on the new holdout and drives it. Reports: `reports/mc-v2/`, `reports/mc-v3/`, each with `driven/`. The drive numbers use the widened breaker and the two motor fixes below, so compare kev with the teacher inside a run, not with mc-v1's `compare.txt`. The phases are restartable: A skips if `data/mc1_dagger.jsonl` exists, B skips if the checkpoint or `data/mc3_collect.done` exists.
 
-1. **Read the night's results.** Targets: `subgoal_succeeds_60s` ECE well under 0.1 on the dev split *and* on the driven records; `survive_until_morning` base rate between 20% and 80% (`reports/mc-v3/base_rates*.txt`). Its holdout is only 20 episodes, and the labels within an episode are nearly all the same, so its reliability diagram is noisy. Update Status and Results.
-2. **Measure the combined mode**: LLM leader with kev's forecasts in its prompt. On 16 GB both fit (kev.serve ~2-4 GB under 5 bots, qwen3:8b ~6 GB). `scripts/compare_mc1.sh` currently runs the LLM batch *without* `--kev-url` (laptop GPU); on the big machine add `--kev-url http://127.0.0.1:8009` to that gen_data line and start kev.serve before it. Compare against kev alone and the teacher; the thesis question is whether the leader's replans on low forecasts beat the teacher.
-3. **Experiment 2 (vision)** needs a kev fork (image tokens through the processor; see "Experiment 2" below) and the 16 GB GPU; prismarine-viewer renders no day/night lighting, so pixel arms need our own darkening or must skip the night question. Not started.
-4. Housekeeping: `reports/` and the plan are tracked; raw episode logs (`out/`) are not, so archive interesting runs (videos) manually. The `.superpowers/` ledger of the build is local only.
+   Targets once it has run: `subgoal_succeeds_60s` ECE well under 0.1 on the dev split *and* on the driven records; `survive_until_morning` base rate between 20% and 80% (`reports/mc-v3/base_rates*.txt`). Its holdout is only 20 episodes, and the labels within an episode are nearly all the same, so its reliability diagram is noisy. Update Status and Results.
+4. **Measure the combined mode**: LLM leader with kev's forecasts in its prompt. On 16 GB both fit (kev.serve ~2-4 GB under 5 bots, qwen3:8b ~6 GB). `scripts/compare_mc1.sh` currently runs the LLM batch *without* `--kev-url` (laptop GPU); on the big machine add `--kev-url http://127.0.0.1:8009` to that gen_data line and start kev.serve before it. Compare against kev alone and the teacher; the thesis question is whether the leader's replans on low forecasts beat the teacher.
+5. **Experiment 2 (vision)** needs a kev fork (image tokens through the processor; see "Experiment 2" below) and the 16 GB GPU; prismarine-viewer renders no day/night lighting, so pixel arms need our own darkening or must skip the night question. Not started.
+6. Housekeeping: `reports/` and the plan are tracked; raw episode logs (`out/`) are not, so archive interesting runs (videos) manually. The `.superpowers/` ledger of the build is local only.
 
 ## Lessons from this project (add to the ones below)
 
