@@ -75,16 +75,21 @@ agent/
   thin.js          record thinning shared by gen_data and rebuild_data
   planner.js       LLM leader: buildPlannerMessages, answerSchema (JSON schema over the offered ids), askPlanner (Ollama)
   supervisor.js    scripted supervisor: abandon the running subtask when p(step done in 60 s) < 0.25 for 15 s; off / real / shuffled arms (pure)
+  stages.js        the goal chain (--goal nether): stageOf, needs, chainStep (monotone step 1..47, 48 = done), describeChain, portalLayout   (pure)
+  leader.js        LLM leader: LeaderTrigger (periodic15 | events | periodic30_interrupts), buildLeaderMessages, leaderSchema, applyAnswer  (pure)
+  leader_report.js summarizeLeaderLog / renderReport for scripts/leader_report.mjs                                                          (pure)
   kev_client.js    POST /v1/systemone
   recorder.js      first-person video at a fixed fps over prismarine-viewer's headless internals (entity whitelist)
   server_ctl.js    startServer({port, seed}) -> one Paper instance per bot (servers/<port>/, shared libraries)
   run_episode.mjs  one episode; gen_data.mjs many in parallel; rebuild_data.mjs records from raw logs
 docker/            Dockerfile, compose.yml, setup.sh, README.md: the whole pipeline in one CUDA container (the Windows machine)
-tests/             node --test tests/*.test.mjs ; tests/integration/{motor_check,mem_probe}.mjs start their own server (no GPU)
+tests/             node --test tests/*.test.mjs ; tests/integration/{motor_check,chain_check,climb_check,mem_probe}.mjs start their own server (no GPU);
+                   chain_check builds an arena with /fill and proves every chain executor (armor, diamonds, gravel, obsidian casting, the portal, lighting)
 scripts/           collect_mc1.sh, overnight_mc1.sh, split.sh, train_mc1.sh, eval_mc1.sh, bench_ctx.py, drive_eval.sh,
                    compare_mc1.sh (3 drivers), dagger_mc1.sh, night_mc3.sh (DAgger + recollection, day 3), warm_kev.mjs,
                    leader_bench.mjs + leader_bench_report.mjs (offline LLM-leader comparison), supervisor_eval.sh (3 supervisor arms on the same seeds),
-                   base_rates.py, reliability.py (ECE, AUROC, Brier resolution), drive_summary.py
+                   base_rates.py, reliability.py (ECE, AUROC, Brier resolution), drive_summary.py (stage lines for --goal nether),
+                   leader_runs.sh (the six leader configurations on one seed) + leader_report.mjs (per-run decision log -> reports/leader/<run>.md)
 viewer/            python3 viewer/serve.py 8085 ; http://127.0.0.1:8085/?run=<name> plays out/<name>.mp4 with the probability bars
 server/            Paper template: eula.txt, server.properties, ops.json, run.sh (the jar is downloaded, see Setup)
 reports/<run>/     dev reports, reliability diagrams + table, drive/compare tables (tracked)
@@ -137,6 +142,10 @@ node agent/run_episode.mjs --seed 7 --port 25580 --policy kev --kev-url http://1
 node agent/run_episode.mjs --seed 7 --port 25580 --policy llm --llm-model qwen3:8b --kev-url http://127.0.0.1:8009 --minutes 22 --out l7   # LLM leader, kev forecasts in its prompt
 node agent/run_episode.mjs --seed 7 --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --supervisor real --minutes 22 --out sup7      # + scripted supervisor (shuffled needs --supervisor-pool)
 scripts/supervisor_eval.sh mc-v1 20 1000 22     # arms off / real / shuffled on seeds 1000-1019 -> reports/mc-v1/supervisor.txt
+node agent/run_episode.mjs --seed 3000 --port 25580 --policy teacher --goal nether --minutes 25 --out chain_t3000 --video                 # the goal chain: iron tools -> armor -> diamond tools -> lit portal
+node agent/run_episode.mjs --seed 3000 --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --goal nether --leader events [--leader-think --leader-num-predict 3000] \
+     --leader-model qwen38-27b-iq3xxs --leader-url http://100.109.91.95:11434 --minutes 60 --out l3000 --video   # kev drives, the 27B leader overrides (typed) or continues
+LEADER_MODEL=<ollama model> scripts/leader_runs.sh 3000 60     # the six configurations in order -> reports/leader/<run>.md ; node scripts/leader_report.mjs <run>
 node agent/gen_data.mjs --seeds 40 --seed0 0 --procs 5 --minutes 22 --eps-action 0.1 --thin 8 --out data/x.jsonl --prefix x [--video --video-seeds 3]
 node agent/rebuild_data.mjs --prefix x --seed0 0 --seeds 40 --thin 8 [--drop survive_until_morning] --out data/x.jsonl   # relabel from out/x_s*.json
 python3 scripts/base_rates.py data/x.jsonl       # every noul should sit between 20% and 80% true; rare labels teach nothing
