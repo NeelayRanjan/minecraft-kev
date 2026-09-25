@@ -1,0 +1,80 @@
+{
+ "prefix": "dagger",
+ "N": 200,
+ "think": false,
+ "ablateN": 60,
+ "sample": 200,
+ "after_failure": 97,
+ "models": {
+  "qwen3:8b": {
+   "model": "qwen3:8b",
+   "think": false,
+   "n": 200,
+   "load_s": 127,
+   "vram": "10250 MiB, 16376 MiB",
+   "ollama_ps": "qwen3:8b    500a1f067a9f    5.1 GB    100% GPU     2048       59 minutes from now",
+   "valid": 1,
+   "agree_teacher": 0.29,
+   "agree_kev": 0.33,
+   "after_failure": {
+    "n": 97,
+    "repick_failed": 0.371,
+    "teacher_repick": 0.433,
+    "kev_repick": 0.608
+   },
+   "latency_ms": {
+    "p50": 878,
+    "p90": 1105,
+    "max": 11826
+   },
+   "tokens_per_s": 55,
+   "tokens_p50": 27,
+   "forecast_ablation": {
+    "n": 60,
+    "changed": 0.133
+   },
+   "kev_latency_during": {
+    "n": 281,
+    "p50": 155,
+    "p90": 183,
+    "max": 268,
+    "errors": 0
+   }
+  },
+  "qwen38-27b-iq2s": {
+   "model": "qwen38-27b-iq2s",
+   "think": false,
+   "n": 200,
+   "load_s": 210,
+   "vram": "13381 MiB, 16376 MiB",
+   "ollama_ps": "qwen38-27b-iq2s:latest    2ce34938ed80    8.3 GB    100% GPU     2048       59 minutes from now",
+   "valid": 0.96,
+   "agree_teacher": 0.359,
+   "agree_kev": 0.391,
+   "after_failure": {
+    "n": 97,
+    "repick_failed": 0.271,
+    "teacher_repick": 0.433,
+    "kev_repick": 0.608
+   },
+   "latency_ms": {
+    "p50": 3001,
+    "p90": 3361,
+    "max": 5895
+   },
+   "tokens_per_s": 29,
+   "tokens_p50": 40,
+   "forecast_ablation": {
+    "n": 60,
+    "changed": 0.121
+   },
+   "kev_latency_during": {
+    "n": 757,
+    "p50": 167,
+    "p90": 191,
+    "max": 402,
+    "errors": 0
+   }
+  }
+ }
+}

@@ -17,6 +17,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python UV_LINK_MODE=copy UV_CACHE_DIR=/root/.cache/uv
 RUN uv python install 3.13
 
+# Ollama for the LLM leader (models live in the repo's tools/ollama via OLLAMA_MODELS, see docker/README.md)
+RUN apt-get update && apt-get install -y --no-install-recommends zstd && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://ollama.com/install.sh | sh
+
 # The analysis python ($CPY in the scripts): matplotlib for the reliability diagrams
 RUN python3 -m venv /opt/cpy && /opt/cpy/bin/pip install --no-cache-dir matplotlib numpy requests
 ENV CPY=/opt/cpy/bin/python

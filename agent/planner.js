@@ -58,17 +58,19 @@ export function parsePlannerAnswer(text, options) {
   return { id, why: typeof obj.why === 'string' ? obj.why.slice(0, 200) : '' }
 }
 
-export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen3:4b', timeoutMs = 60_000, ...ctx }) {
+export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen3:4b', timeoutMs = 60_000, think = false, numPredict = 120, numCtx = 2048, ...ctx }) {
   const t0 = Date.now()
   const res = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     // format = JSON schema: Ollama constrains decoding so "subtask" is always one of the offered ids (a small model given
     // the whole state otherwise often echoes the state back as JSON). 2048 ctx keeps the 4B model at ~2.9 GB on the GPU.
-    body: JSON.stringify({ model, messages: buildPlannerMessages(ctx), stream: false, format: answerSchema(ctx.options), think: false, options: { temperature: 0.2, num_predict: 120, num_ctx: 2048 }, keep_alive: '60m' }),
+    body: JSON.stringify({ model, messages: buildPlannerMessages(ctx), stream: false, format: answerSchema(ctx.options), think, options: { temperature: 0.2, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '60m' }),
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`planner ${res.status}: ${(await res.text()).slice(0, 200)}`)
   const body = await res.json()
   const raw = body?.message?.content ?? ''
-  return { ...(parsePlannerAnswer(raw, ctx.options) || { id: null, why: '' }), raw: raw.slice(0, 400), latency_ms: Date.now() - t0 }
+  return { ...(parsePlannerAnswer(raw, ctx.options) || { id: null, why: '' }), raw: raw.slice(0, 400), latency_ms: Date.now() - t0,
+    tokens: body?.eval_count ?? null, thinking_chars: body?.message?.thinking?.length ?? 0,
+    tps: body?.eval_count && body?.eval_duration ? body.eval_count / (body.eval_duration / 1e9) : null }
 }

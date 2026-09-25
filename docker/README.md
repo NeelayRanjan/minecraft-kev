@@ -16,6 +16,11 @@ there), `node_modules/` and `servers/` (Paper worlds, symlinks). The HF cache is
 (`%USERPROFILE%\.cache\huggingface`). The viewer is published on the host's 127.0.0.1:8085
 (`docker exec -d mckev python3 viewer/serve.py 8085`); kev.serve's 8009 stays inside the container.
 
+LLM leader: Ollama runs in the container with its models in the repo's gitignored `tools/ollama`:
+`docker exec -d mckev bash -c 'OLLAMA_MODELS=/work/minecraft-kev/tools/ollama OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 setsid nohup ollama serve > /tmp/ollama.log 2>&1'`.
+GGUFs downloaded to `tools/models/` are imported with a one-line Modelfile (`FROM /work/minecraft-kev/tools/models/<file>.gguf`;
+Ollama takes the chat template from the GGUF). `scripts/leader_bench.mjs` compares leaders offline on logged decision points.
+
 Memory: five bots with their Paper servers take ~11 GB and kev.serve ~3.3 GB; the WSL2 VM defaults to half the RAM,
 so `%USERPROFILE%\.wslconfig` sets `memory=24GB` (then `wsl --shutdown` and restart Docker Desktop).
 
