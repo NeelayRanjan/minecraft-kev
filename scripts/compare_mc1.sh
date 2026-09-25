@@ -22,6 +22,7 @@ say "llm runs done (exit $?)"
 ollama stop "$model" 2>/dev/null; sleep 2
 ( cd "$KEV" && KEV_DTYPE=bf16 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True setsid .venv/bin/python -m kev.serve --run "runs/$run" --port 8009 > ".serve-$run-compare.log" 2>&1 < /dev/null & )
 for i in $(seq 1 120); do curl -s -o /dev/null http://127.0.0.1:8009/v1/models && break; sleep 2; done
+node scripts/warm_kev.mjs | tail -1   # first requests compile the fla kernels
 curl -s -o /dev/null http://127.0.0.1:8009/v1/models || { say "kev.serve did not come up"; exit 1; }
 say "kev alone"
 node agent/gen_data.mjs --policy kev --kev-url http://127.0.0.1:8009 --seeds "$seeds" --seed0 "$seed0" --procs 5 --minutes "$minutes" --thin 8 \

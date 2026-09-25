@@ -13,6 +13,7 @@ mkdir -p reports/mc-v2
 say "serve mc-v1 and drive 24 DAgger seeds (2000-2023)"
 ( cd "$KEV" && KEV_DTYPE=bf16 setsid .venv/bin/python -m kev.serve --run runs/mc-v1 --port 8009 > .serve-mc-v1-dagger.log 2>&1 < /dev/null & )
 for i in $(seq 1 120); do curl -s -o /dev/null http://127.0.0.1:8009/v1/models && break; sleep 2; done
+node scripts/warm_kev.mjs | tail -1   # first requests compile the fla kernels
 node agent/gen_data.mjs --policy kev --kev-url http://127.0.0.1:8009 --seeds 24 --seed0 2000 --procs 5 --minutes 22 --eps-action 0.05 --thin 8 \
   --out data/mc1_dagger.jsonl --prefix dagger --port0 25640
 say "dagger runs done (exit $?)"; pkill -f "[k]ev.serve --run runs/mc-v1"; sleep 3
