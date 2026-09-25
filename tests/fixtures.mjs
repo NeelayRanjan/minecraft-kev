@@ -8,6 +8,7 @@ export function baseObs(over = {}) {
     memory: { ironSeen: null, lastPath: null, deaths: 0, heading: 'north' },
     blocks: [], entities: [], nearestHostile: null,
     current: null, last: null, goal: 'iron_pickaxe', done: false,
+    armor: {}, portalLit: false, portalFrame: null,
     ...over,
   }
 }

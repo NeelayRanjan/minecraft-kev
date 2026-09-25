@@ -2,6 +2,7 @@
 // The same function serves data generation and play; the golden test in tests/serialize.test.mjs is the contract.
 import { techStep } from './teacher.js'
 import { counts } from './subtasks.js'
+import { describeChain, ARMOR } from './stages.js'
 
 const pretty = s => String(s).replace(/_/g, ' ')
 const WOODS = /^(oak|birch|spruce|jungle|acacia|dark_oak|mangrove|cherry)_/
@@ -19,7 +20,8 @@ const rel = (b, withDy = true) => {
   return s
 }
 const BLOCK_WORD = { cave: 'cave entrance', stone: 'exposed stone', deepslate: 'exposed stone', cobblestone: 'exposed stone', coal_ore: 'coal ore', deepslate_coal_ore: 'coal ore',
-  iron_ore: 'iron ore', deepslate_iron_ore: 'iron ore', water: 'water', lava: 'lava' }
+  iron_ore: 'iron ore', deepslate_iron_ore: 'iron ore', water: 'water', lava: 'lava',
+  diamond_ore: 'diamond ore', gravel: 'gravel', obsidian: 'obsidian', nether_portal: 'nether portal' }
 
 export function describeTime(obs) {
   let when
@@ -30,7 +32,7 @@ export function describeTime(obs) {
 
 export function describeInventory(obs) {
   const inv = obs.inventory || {}
-  const order = ['iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe']
+  const order = ['diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe']
   const keys = [...order.filter(k => inv[k]), ...Object.keys(inv).filter(k => !order.includes(k) && inv[k] > 0)]
   const parts = keys.map(k => {
     const wear = obs.toolWear?.[k]
@@ -54,9 +56,12 @@ function describeBase(obs) {
 function describeMemory(obs) {
   const m = obs.memory || {}
   const iron = m.ironSeen ? `iron ore seen ${mins(m.ironSeen.agoS)} ago${m.ironSeen.where ? ` in ${m.ironSeen.where}` : ''} ${rel(m.ironSeen)}` : 'no iron seen yet'
+  // chain mode only: the other remembered sightings (experiment 1's text must not change)
+  const REMEMBERED = [['diamondSeen', 'diamond ore'], ['lavaSeen', 'lava'], ['waterSeen', 'water']]
+  const more = obs.goal === 'nether' ? REMEMBERED.filter(([k]) => m[k]).map(([k, w]) => `; ${w} seen ${mins(m[k].agoS)} ago ${rel(m[k])}`).join('') : ''
   const path = m.lastPath ? `; path last tried: ${pretty(m.lastPath)}` : ''
   const died = m.deaths ? `died: ${m.deaths} time${m.deaths > 1 ? 's' : ''}` : 'died: never'
-  return `memory: ${iron}${path}. ${died}.`
+  return `memory: ${iron}${more}${path}. ${died}.`
 }
 
 function describeBlocks(obs) {
@@ -89,21 +94,34 @@ function describeSubtask(obs) {
   return `current subtask: ${cur}.${last}`
 }
 
+// Chain mode: the armor worn, head to feet (null when none, so the line is omitted).
+function describeArmor(obs) {
+  const worn = ARMOR.filter(k => obs.armor?.[k])
+  return worn.length ? `wearing: ${worn.map(item).join(', ')}.` : null
+}
+
 export function serialize(obs) {
-  const step = techStep(obs)
-  const goal = step.index === 8 ? 'iron pickaxe done; survive until morning' : `get an iron pickaxe (step ${step.index} of 7: ${step.text})`
+  const chain = obs.goal === 'nether'
+  let first
+  if (chain) first = `Minecraft survival, day ${(obs.day ?? 0) + 1}. ${describeChain(obs)}`
+  else {
+    const step = techStep(obs)
+    const goal = step.index === 8 ? 'iron pickaxe done; survive until morning' : `get an iron pickaxe (step ${step.index} of 7: ${step.text})`
+    first = `Minecraft survival, day ${(obs.day ?? 0) + 1}. Goal: ${goal}.`
+  }
   const where = obs.underground ? 'underground' : obs.inWater ? 'in water' : 'in the open'
   const lines = [
-    `Minecraft survival, day ${(obs.day ?? 0) + 1}. Goal: ${goal}.`,
+    first,
     describeTime(obs),
     `you: health ${Math.round(obs.health)}/20, food ${Math.round(obs.food)}/20, standing on ${item(obs.standingOn || 'air')} at y ${Math.round(obs.pos.y)}, ${where}, light ${Math.max(obs.skyLight ?? 0, obs.blockLight ?? 0)}.`,
     describeInventory(obs),
     `holding: ${obs.holding ? item(obs.holding) : 'nothing'}.`,
+    chain ? describeArmor(obs) : null,
     describeBase(obs),
     describeMemory(obs),
     describeBlocks(obs),
     describeEntities(obs),
     describeSubtask(obs),
-  ]
+  ].filter(l => l != null)
   return lines.join('\n').replace(/<\|/g, '< |').replace(/\|>/g, '| >')
 }

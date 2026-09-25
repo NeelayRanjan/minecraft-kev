@@ -69,3 +69,33 @@ test('crowded scene stays under 1400 characters', () => {
     current: { name: 'explore_toward', arg: 'surface', elapsedS: 33, progress: 0.4 }, last: { id: 'craft(stone_pickaxe)', result: 'no_materials' } }))
   assert.ok(text.length < 1400, `${text.length} chars`)
 })
+
+// ---- chain mode (goal 'nether') --------------------------------------------------------------------------------
+const chainObs = () => baseObs({ goal: 'nether', inventory: { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, iron_ingot: 3, stick: 2 }, armor: { iron_helmet: 1 },
+  blocks: [{ name: 'diamond_ore', dist: 12, dir: 'west', dy: -3, reachable: false }] })
+
+test('chain golden: goal-chain first line, worn armor, diamond ore', () => {
+  const text = serialize(chainObs())
+  assert.equal(text.split('\n')[0], 'Minecraft survival, day 1. Goal chain: iron tools (done), iron armor (1 of 4 pieces), diamond tools, lit nether portal. Current stage: iron armor, step 21 of 47: get 19 iron ingots (have 3).')
+  assert.ok(text.split('\n').includes('wearing: iron helmet.'), text)
+  const lines = text.split('\n')
+  assert.equal(lines[lines.indexOf('wearing: iron helmet.') - 1].startsWith('holding: '), true)
+  assert.ok(text.includes('diamond ore 12 m west, 3 m below you'), text)
+})
+
+test('chain mode: armor in head-to-feet order, remembered diamond/lava/water, new block words', () => {
+  const text = serialize(baseObs({ goal: 'nether', inventory: { iron_pickaxe: 1, diamond_pickaxe: 1 }, armor: { iron_boots: 1, iron_helmet: 1 },
+    memory: { ironSeen: null, lastPath: 'ok', deaths: 0, heading: 'north', diamondSeen: { dist: 40, dir: 'west', dy: -30, agoS: 120 }, lavaSeen: null, waterSeen: { dist: 20, dir: 'south', dy: 0, agoS: 30 } },
+    blocks: [{ name: 'gravel', dist: 3, dir: 'north', dy: 0, reachable: true }, { name: 'obsidian', dist: 5, dir: 'east', dy: 0, reachable: true }, { name: 'nether_portal', dist: 8, dir: 'east', dy: 0, reachable: false }] }))
+  assert.match(text, /^wearing: iron helmet, iron boots\.$/m)
+  assert.match(text, /^inventory: diamond pickaxe, iron pickaxe\./m)
+  assert.match(text, /^memory: no iron seen yet; diamond ore seen 2 min ago 40 m west, 30 m below you; water seen 30 s ago 20 m south; path last tried: ok\. died: never\.$/m)
+  assert.match(text, /gravel 3 m north, reachable; obsidian 5 m east, reachable; nether portal 8 m east/)
+})
+
+test('experiment-1 mode never prints armor or the extra memory', () => {
+  const text = serialize(baseObs({ armor: { iron_helmet: 1 }, memory: { ironSeen: null, lastPath: null, deaths: 0, heading: 'north', diamondSeen: { dist: 40, dir: 'west', dy: -30, agoS: 120 }, lavaSeen: null, waterSeen: null } }))
+  assert.ok(!text.includes('wearing'))
+  assert.ok(!text.includes('diamond'))
+  assert.equal(text.split('\n').length, 10)
+})

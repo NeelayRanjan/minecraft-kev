@@ -2,6 +2,7 @@
 // Choice questions are labelled by the teacher at ask time; forecasts are labelled after the episode from the
 // per-second timeline (game truth), and a forecast whose horizon runs past the end of the timeline is censored (null).
 import { options, counts } from './subtasks.js'
+import { chainStep } from './stages.js'
 import { techStep, teacherSubtask, teacherThreat, THREAT_OPTIONS } from './teacher.js'
 
 export const HORIZONS = { step: 60, iron: 180, damage: 20 }
@@ -25,7 +26,9 @@ export function questionFor(qid, { stepText = '', hostile = '', optionDescs = {}
 
 export function buildQuestions(obs, { decision }) {
   const qs = {}, labels = {}
-  const step = techStep(obs)
+  const chain = obs.goal === 'nether'
+  const step = chain ? chainStep(obs) : techStep(obs)
+  const tech = chain ? techStep(obs) : step
   const c = counts(obs)
   if (decision) {
     const opts = options(obs)
@@ -36,8 +39,8 @@ export function buildQuestions(obs, { decision }) {
       labels.threat_response = teacherThreat(obs)
     }
   }
-  if (step.index <= 7) { qs.subgoal_succeeds_60s = questionFor('subgoal_succeeds_60s', { stepText: step.text }); labels.subgoal_succeeds_60s = null }
-  if (step.index === 5 && c.rawIron === 0) { qs.iron_found_3min = questionFor('iron_found_3min'); labels.iron_found_3min = null }
+  if (chain ? step.index < 48 : step.index <= 7) { qs.subgoal_succeeds_60s = questionFor('subgoal_succeeds_60s', { stepText: step.text }); labels.subgoal_succeeds_60s = null }
+  if (tech.index === 5 && c.rawIron === 0) { qs.iron_found_3min = questionFor('iron_found_3min'); labels.iron_found_3min = null }
   qs.damage_next_20s = questionFor('damage_next_20s'); labels.damage_next_20s = null
   if (obs.phase === 'dusk' || obs.phase === 'night') { qs.survive_until_morning = questionFor('survive_until_morning'); labels.survive_until_morning = null }
   return { qs, labels }

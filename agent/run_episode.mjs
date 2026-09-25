@@ -2,7 +2,7 @@
 // uses one-hot teacher answers), logs every distribution, and writes the trajectory + kev records.
 //
 //   node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher|kev [--kev-url http://127.0.0.1:8009]
-//        [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--no-server] [--difficulty normal] [--quiet]
+//        [--goal iron_pickaxe|nether] [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--no-server] [--difficulty normal] [--quiet]
 //
 // Writes out/<name>.json (meta / frames / decisions / events / timeline), out/<name>.jsonl (kev records with _meta),
 // and out/<name>.mp4 with --video (first-person at --fps, default 5; frame k <-> t = k/fps s).
@@ -19,6 +19,7 @@ import { EpisodeMemory, summarize } from './summary.js'
 import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
 import { techStep } from './teacher.js'
+import { chainStep, stageOf } from './stages.js'
 import { counts, REPEAT_WINDOW } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev } from './logger.js'
@@ -35,6 +36,9 @@ const flag = k => argv.includes(`--${k}`)
 const seed = opt('seed', '1'), port = Number(opt('port', 25580)), policy = opt('policy', 'teacher'), kevUrl = opt('kev-url', null)
 const epsAction = Number(opt('eps-action', 0)), minutes = Number(opt('minutes', 20)), successMin = Number(opt('success-minutes', 15))
 const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Number(opt('fps', 5)), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
+const goal = opt('goal', 'iron_pickaxe')
+if (!['iron_pickaxe', 'nether'].includes(goal)) { console.error(`unknown goal ${goal}`); process.exit(2) }
+const stepFn = goal === 'nether' ? chainStep : techStep
 const llmUrl = opt('llm-url', 'http://127.0.0.1:11434'), llmModel = opt('llm-model', 'qwen3:4b')
 if (policy === 'kev' && !kevUrl) { console.error('--policy kev needs --kev-url'); process.exit(2) }
 if (!['teacher', 'kev', 'llm'].includes(policy)) { console.error(`unknown policy ${policy}`); process.exit(2) }
@@ -87,7 +91,7 @@ await bot.waitForTicks(20)
 const mcData = mcDataFor(bot.version)
 const mem = new EpisodeMemory()
 const motor = new Motor(bot, mcData, mem, { log: s => log(`motor: ${s}`) })
-const elog = new EpisodeLog({ seed, policy, eps_action: epsAction, minutes, kev_url: kevUrl, model: policy === 'kev' ? 'kev' : policy === 'llm' ? llmModel : null, username: me, version: bot.version,
+const elog = new EpisodeLog({ seed, policy, goal, eps_action: epsAction, minutes, kev_url: kevUrl, model: policy === 'kev' ? 'kev' : policy === 'llm' ? llmModel : null, username: me, version: bot.version,
   difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps } : null,
   supervisor: supMode === 'off' ? null : { mode: supMode, threshold: supThreshold, hold_s: supHold, cooldown_s: supervisor.cooldownS, pool: supPoolFile, pool_n: supervisor.pool?.length ?? null } })
 let recorder = null
@@ -97,6 +101,7 @@ if (video) { const { startRecorder } = await import('./recorder.js'); recorder =
 const t0 = Date.now()
 const now = () => (Date.now() - t0) / 1000
 let dead = false, deaths = 0, prevHostileDist = null, subtaskStartHealth = null, ticking = false, doneAt = null, startDay = Number(bot.time.day)
+let stageReached = 0   // chain mode: the highest stageOf(obs).index seen (a stage_done event on each increase)
 let lastResult = null, recent = []   // recent: the last REPEAT_WINDOW attempts {id, result}, oldest first (livelock breaker)
 let lastForecast = null, withhold = []   // supervisor: kev's latest p(step done in 60 s) {t, p}; the subtask it abandoned, withheld at the next decision
 bot.on('death', () => { dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); motor.interrupt('died'); log('died') })
@@ -128,9 +133,13 @@ function tick() {
   if (finished) return
   const t = now()
   const cur = motor.current ? { name: motor.current.name, arg: motor.current.arg, elapsedS: motor.elapsedS(), progress: motor.progress() } : null
-  const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal: 'iron_pickaxe', withhold })
-  const step = techStep(obs), c = counts(obs)
-  if (obs.done && doneAt == null) { doneAt = t; elog.event({ t, kind: 'goal_done', item: 'iron_pickaxe' }); log(`GOAL: iron pickaxe at ${t.toFixed(0)} s`) }
+  const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal, withhold })
+  const step = stepFn(obs), c = counts(obs)
+  if (goal === 'nether') {
+    const st = stageOf(obs).index
+    if (st > stageReached) { stageReached = st; elog.event({ t, kind: 'stage_done', stage: st }); log(`stage ${st} reached at ${t.toFixed(0)} s`) }
+  }
+  if (obs.done && doneAt == null) { doneAt = t; const it = goal === 'nether' ? 'nether_portal' : 'iron_pickaxe'; elog.event({ t, kind: 'goal_done', item: it }); log(`GOAL: ${it} at ${t.toFixed(0)} s`) }
   elog.sample({ t, step: step.index, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead })
@@ -141,7 +150,7 @@ function tick() {
     if (fire) { withhold = [fire.id]; elog.event({ t, kind: 'interrupt', reason: 'low_forecast', subtask: fire.id, p: +fire.p.toFixed(3), shuffled: fire.shuffled }); motor.interrupt('low_forecast'); log(`supervisor: abandon ${fire.id} (p=${fire.p.toFixed(2)}${fire.shuffled ? ', shuffled' : ''})`) }
   }
   prevHostileDist = obs.nearestHostile?.dist ?? null
-  const morning = obs.day > startDay && obs.timeOfDay < 12000
+  const morning = goal !== 'nether' && obs.day > startDay && obs.timeOfDay < 12000   // the chain runs past sunrise
   if (t >= minutes * 60) { finish('time'); return }
   if (morning) { finish(doneAt != null ? 'morning_after_goal' : 'morning'); return }
   if (kevErrors >= KEV_DOWN_AFTER) { finish('kev_down'); return }
@@ -203,5 +212,5 @@ async function finish(reason) {
   await shutdown(reason, 0)
 }
 
-log(`episode ${name}: seed ${seed}, policy ${policy}, eps ${epsAction}, ${minutes} min, spawn ${bot.entity.position.floored()}`)
+log(`episode ${name}: seed ${seed}, goal ${goal}, policy ${policy}, eps ${epsAction}, ${minutes} min, spawn ${bot.entity.position.floored()}`)
 const loop = setInterval(() => { try { tick() } catch (e) { console.error(e); shutdown(`tick: ${e.message}`, 1) } }, 1000)

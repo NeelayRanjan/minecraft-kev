@@ -103,3 +103,15 @@ test('labelDecisions leaves teacher-labelled questions alone', () => {
   assert.equal(ds[0].labels.next_subtask, 'wait')
   assert.equal(ds[0].labels.damage_next_20s, 0)
 })
+
+test('chain mode: subgoal forecast asks about the chain step, and stops once the chain is done', () => {
+  const chainObs = baseObs({ goal: 'nether', inventory: { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, iron_ingot: 3, stick: 2 }, armor: { iron_helmet: 1 } })
+  const { qs } = buildQuestions(chainObs, { decision: false })
+  assert.match(qs.subgoal_succeeds_60s.instructions, /get 19 iron ingots/)
+  assert.ok(!qs.iron_found_3min)
+  const done = baseObs({ goal: 'nether', portalLit: true, inventory: { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1 },
+    armor: { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 } })
+  assert.ok(!buildQuestions(done, { decision: false }).qs.subgoal_succeeds_60s)
+  // experiment 1 with an iron pickaxe: step 8, no subgoal question (unchanged)
+  assert.ok(!buildQuestions(baseObs({ inventory: { iron_pickaxe: 1 } }), { decision: false }).qs.subgoal_succeeds_60s)
+})

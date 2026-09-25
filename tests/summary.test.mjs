@@ -53,3 +53,21 @@ test('entity classes', () => {
   assert.equal(classifyEntity({ type: 'object', name: 'item' }, md), null)
   assert.equal(classifyEntity({ type: 'mob', name: 'unknown_thing' }, md), null)
 })
+
+import { portalFrameNear } from '../agent/summary.js'
+
+test('portalFrameNear finds the bottom of a 3-high obsidian column', () => {
+  assert.equal(portalFrameNear([]), null)
+  assert.equal(portalFrameNear([{ x: 0, y: 60, z: 0 }, { x: 0, y: 61, z: 0 }]), null)
+  assert.equal(portalFrameNear([{ x: 0, y: 60, z: 0 }, { x: 0, y: 62, z: 0 }, { x: 0, y: 63, z: 0 }]), null)
+  assert.equal(portalFrameNear([{ x: 0, y: 60, z: 0 }, { x: 1, y: 61, z: 0 }, { x: 0, y: 62, z: 0 }]), null)
+  assert.deepEqual(portalFrameNear([{ x: 5, y: 12, z: 1 }, { x: 3, y: 62, z: 4 }, { x: 3, y: 60, z: 4 }, { x: 3, y: 61, z: 4 }, { x: 3, y: 59, z: 9 }]), { x: 3, y: 60, z: 4 })
+})
+
+test('memory remembers diamond, lava and water sightings', () => {
+  const m = new EpisodeMemory()
+  assert.deepEqual(m.seen, { diamond: null, lava: null, water: null })
+  m.saw('diamond', { x: 1, y: 2, z: 3 }, 7)
+  assert.deepEqual(m.seen.diamond, { pos: { x: 1, y: 2, z: 3 }, t: 7 })
+  assert.equal(m.seen.lava, null)
+})

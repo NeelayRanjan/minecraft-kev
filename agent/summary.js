@@ -1,5 +1,6 @@
 // bot -> obs: the one place that reads Mineflayer state for the decision layer, plus the episode memory.
 // Everything downstream (teacher, serializer, questions) is a pure function of the obs this returns.
+import { stageOf } from './stages.js'
 export function dirWord(dx, dz) {
   const a = (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360   // 0 = north (-z), 90 = east (+x)
   return ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][Math.round(a / 45) % 8]
@@ -25,8 +26,9 @@ export function classifyEntity(e, mcData) {
   return cat === 'Hostile mobs' ? 'hostile' : cat === 'Passive mobs' ? 'passive' : null
 }
 export class EpisodeMemory {
-  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null } }
+  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null } }
   sawIron(pos, t, where = null) { this.ironSeen = { pos: { x: pos.x, y: pos.y, z: pos.z }, t, where } }
+  saw(kind, pos, t) { this.seen[kind] = { pos: { x: pos.x, y: pos.y, z: pos.z }, t } }
   setBase(kind, pos) { this.base[kind] = pos ? { x: pos.x, y: pos.y, z: pos.z } : null }
 }
 
@@ -45,18 +47,41 @@ const KIND_SCAN = md => [
   ['stone', ['stone', 'deepslate', 'cobblestone'].map(n => md.blocksByName[n].id), 16],
   ['coal_ore', ['coal_ore', 'deepslate_coal_ore'].map(n => md.blocksByName[n].id), 32],
   ['iron_ore', ['iron_ore', 'deepslate_iron_ore'].map(n => md.blocksByName[n].id), 32],
-  ['water', [md.blocksByName.water.id], 12],
-  ['lava', [md.blocksByName.lava.id], 12],
+  ['diamond_ore', ['diamond_ore', 'deepslate_diamond_ore'].map(n => md.blocksByName[n].id), 32],
+  ['gravel', [md.blocksByName.gravel.id], 16],
+  ['obsidian', [md.blocksByName.obsidian.id], 16],
+  ['nether_portal', [md.blocksByName.nether_portal.id], 16],
+  ['water', [md.blocksByName.water.id], 24],
+  ['lava', [md.blocksByName.lava.id], 24],
 ]
+// Experiment 1 keeps its original scan in obs.blocks (the kinds and radii mc-v1 was trained on); the chain kinds and
+// the wider water/lava radius reach obs.blocks only in chain mode. Memory is recorded in every mode.
+const EXP1_RADIUS = { log: 48, stone: 16, coal_ore: 32, iron_ore: 32, water: 12, lava: 12 }
+const REMEMBER = { diamond_ore: 'diamond', lava: 'lava', water: 'water' }
+const ARMOR_SLOTS = [5, 6, 7, 8]   // head, torso, legs, feet
+
+// The anchor (lowest block) of any vertical stack of three obsidian at one x,z: a portal frame column. Pure.
+export function portalFrameNear(positions) {
+  const key = p => `${p.x},${p.y},${p.z}`
+  const have = new Set(positions.map(key))
+  const anchors = positions.filter(p => have.has(key({ ...p, y: p.y + 1 })) && have.has(key({ ...p, y: p.y + 2 })) && !have.has(key({ ...p, y: p.y - 1 })))
+  if (!anchors.length) return null
+  const a = anchors.reduce((m, p) => (p.y < m.y ? p : m))
+  return { x: a.x, y: a.y, z: a.z }
+}
+const seenObs = (me, s, t) => (s ? { ...relTo(me, s.pos), agoS: t - s.t, pos: s.pos } : null)
 
 export function summarize(bot, mcData, mem, ctx) {
   const me = bot.entity.position
+  const goal = ctx.goal || 'iron_pickaxe'
   const blocks = []
   for (const [kind, matching, maxDistance] of KIND_SCAN(mcData)) {
     const pos = bot.findBlocks({ matching, maxDistance, count: 1 })[0]
     if (!pos) continue
     const b = bot.blockAt(pos)
     const r = relTo(me, pos)
+    if (REMEMBER[kind]) mem.saw(REMEMBER[kind], pos, ctx.t)
+    if (goal !== 'nether' && !(r.dist <= EXP1_RADIUS[kind])) continue
     const name = kind === 'log' ? b.name : kind === 'stone' ? 'stone' : b.name.replace('deepslate_', '')
     blocks.push({ name, pos: { x: pos.x, y: pos.y, z: pos.z }, ...r, reachable: r.dist <= 6 || bot.canSeeBlock(b) })
     if (kind === 'iron_ore') mem.sawIron(pos, ctx.t, null)
@@ -84,14 +109,21 @@ export function summarize(bot, mcData, mem, ctx) {
   const { phase, secondsToDusk, secondsToMorning } = phaseOf(bot.time.timeOfDay)
   const weather = bot.thunderState > 0 ? 'thunder' : bot.isRaining ? 'rain' : 'clear'
   const base = { crafting_table: mem.base.table ? relTo(me, mem.base.table) : null, furnace: mem.base.furnace ? relTo(me, mem.base.furnace) : null }
+  const armor = {}
+  for (const i of ARMOR_SLOTS) { const it = bot.inventory.slots[i]; if (it?.name) armor[it.name] = 1 }
+  const portalLit = !!bot.findBlock({ matching: mcData.blocksByName.nether_portal.id, maxDistance: 16 })
+  const anchor = portalFrameNear(bot.findBlocks({ matching: mcData.blocksByName.obsidian.id, maxDistance: 16, count: 16 }))
+  const portalFrame = anchor ? { ...relTo(me, anchor), pos: anchor } : null
   const ironSeen = mem.ironSeen ? { ...relTo(me, mem.ironSeen.pos), agoS: ctx.t - mem.ironSeen.t, where: mem.ironSeen.where, pos: mem.ironSeen.pos } : null
   return {
     t: ctx.t, day: Number(bot.time.day), timeOfDay: bot.time.timeOfDay, phase, secondsToDusk, secondsToMorning, weather,
     biome: biomeName(bot, mcData, me.floored()), pos: { x: me.x, y: me.y, z: me.z }, standingOn: below?.name || 'air',
     skyLight, blockLight, underground: skyLight < 4, inWater: !!bot.entity.isInWater,
     health: bot.health ?? 20, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
-    base, memory: { ironSeen, lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading },
+    base, memory: { ironSeen, diamondSeen: seenObs(me, mem.seen.diamond, ctx.t), lavaSeen: seenObs(me, mem.seen.lava, ctx.t), waterSeen: seenObs(me, mem.seen.water, ctx.t),
+      lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading },
     blocks, entities, nearestHostile: hostiles[0] || null,
-    current: ctx.current || null, last: ctx.last || null, withhold: ctx.withhold || [], goal: ctx.goal || 'iron_pickaxe', done: !!inv.iron_pickaxe,
+    current: ctx.current || null, last: ctx.last || null, withhold: ctx.withhold || [], goal, armor, portalLit, portalFrame,
+    done: goal === 'nether' ? stageOf({ inventory: inv, armor, portalLit }).done : !!inv.iron_pickaxe,
   }
 }
