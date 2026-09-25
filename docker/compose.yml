@@ -1,0 +1,37 @@
+# One long-lived container: docker compose -f docker/compose.yml up -d --build ; docker exec -it mckev bash
+# The two repos are bind-mounted at their laptop-relative layout (/work/minecraft-kev, /work/overcooked-kev) so the
+# scripts' KEV=../overcooked-kev/kev default holds. Named volumes shadow the paths that must be Linux-native: the kev
+# venv (the Windows host has its own .venv there), node_modules (native builds), and servers/ (Paper worlds, symlinks).
+name: minecraft-kev
+services:
+  mc:
+    build: .
+    image: minecraft-kev:latest
+    container_name: mckev
+    init: true
+    shm_size: 8gb
+    working_dir: /work/minecraft-kev
+    environment:
+      VIEWER_HOST: 0.0.0.0   # viewer/serve.py; the port is published on the host's 127.0.0.1 only
+    volumes:
+      - ..:/work/minecraft-kev
+      - ../../overcooked-kev:/work/overcooked-kev
+      - kev-venv:/work/overcooked-kev/kev/.venv
+      - node-modules:/work/minecraft-kev/node_modules
+      - servers:/work/minecraft-kev/servers
+      - ${USERPROFILE:-~}/.cache/huggingface:/root/.cache/huggingface
+      - uv-cache:/root/.cache/uv
+    ports:
+      - "127.0.0.1:8085:8085"   # replay viewer (kev.serve's 8009 stays inside: the host may run its own kev.serve there)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+volumes:
+  kev-venv:
+  node-modules:
+  servers:
+  uv-cache:

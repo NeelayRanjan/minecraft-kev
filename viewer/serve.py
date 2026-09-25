@@ -33,4 +33,4 @@ class H(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
     print(f"viewer on http://127.0.0.1:{port}/  (runs from {OUT})")
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("VIEWER_HOST", "127.0.0.1"), port), H).serve_forever()   # 0.0.0.0 in the container
