@@ -3,6 +3,7 @@
 import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import { parseOption, FOOD, TABLE_ITEMS, counts } from './subtasks.js'
+import { portalLayout } from './stages.js'
 
 const { Movements, goals } = pathfinderPkg
 export const TIMEOUTS = { gather_wood: 60, mine_stone: 45, mine_coal: 60, mine_iron: 90, craft: 20, smelt: 90, explore_toward: 40,
@@ -38,16 +39,8 @@ export function isFluidSource(block, fluid) {
 }
 export const isLavaSource = block => isFluidSource(block, 'lava')
 
-// A nether portal frame standing on `origin` (the bottom-left corner) in the plane along `axis` ('x' | 'z'): the 10
-// obsidian, the 4 corner fillers (any block counts there) and the lowest inside cell (frame cell (1,1)). Pure.
-export function portalLayout(origin, axis) {
-  const at = (u, v) => axis === 'x' ? new Vec3(origin.x + u, origin.y + v, origin.z) : new Vec3(origin.x, origin.y + v, origin.z + u)
-  return {
-    obsidian: [[1, 0], [2, 0], [0, 1], [0, 2], [0, 3], [3, 1], [3, 2], [3, 3], [1, 4], [2, 4]].map(([u, v]) => at(u, v)),
-    filler: [[0, 0], [3, 0], [0, 4], [3, 4]].map(([u, v]) => at(u, v)),
-    inside: at(1, 1),
-  }
-}
+export { portalLayout }   // lives in stages.js (summary uses it too); re-exported for the motor tests
+
 // True when the segment from -> to reaches the cell `target` before any cell whose block `blocks(block, yInCell)`
 // says stops the ray (sampled every 0.05 m). Mirrors the server's bucket raycast closely enough to pick an aim. Pure.
 export function rayClear(blockAt, from, to, target, blocks) {

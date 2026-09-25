@@ -1,7 +1,20 @@
 // The goal chain beyond the iron pickaxe: iron tools -> iron armor -> diamond tools -> lit nether portal.
 // Pure function of obs (lesson 8-style: relational, no I/O). Later tasks use this for option filtering,
 // the teacher, and the chain-progress forecast question. Stage 0 (iron pickaxe) reuses teacher.js's techStep.
+import { Vec3 } from 'vec3'
 import { techStep } from './teacher.js'
+
+// A nether portal frame standing on `origin` (the bottom-left corner) in the plane along `axis` ('x' | 'z'): the 10
+// obsidian, the 4 corner fillers (any block counts there) and the lowest inside cell (frame cell (1,1)). Pure; shared
+// by the motor layer (building) and summary (is the frame complete).
+export function portalLayout(origin, axis) {
+  const at = (u, v) => axis === 'x' ? new Vec3(origin.x + u, origin.y + v, origin.z) : new Vec3(origin.x, origin.y + v, origin.z + u)
+  return {
+    obsidian: [[1, 0], [2, 0], [0, 1], [0, 2], [0, 3], [3, 1], [3, 2], [3, 3], [1, 4], [2, 4]].map(([u, v]) => at(u, v)),
+    filler: [[0, 0], [3, 0], [0, 4], [3, 4]].map(([u, v]) => at(u, v)),
+    inside: at(1, 1),
+  }
+}
 
 export const STAGES = ['iron_pickaxe', 'iron_tools', 'iron_armor', 'diamond_tools', 'nether_portal']
 export const IRON_TOOLS = ['iron_pickaxe', 'iron_sword', 'iron_axe']
@@ -114,6 +127,7 @@ function portalStep(obs) {
     if (!obs.portalFrame) return step(46)
     return step(47)
   }
+  if (obs.memory?.portal && flintSteel && !obs.portalFrame) return step(46)   // a frame build in progress
   if (!bucket && !waterBucket) return step(41)
   if (bucket && !waterBucket) return step(42)
   if (obsidianSeen) return step(44)

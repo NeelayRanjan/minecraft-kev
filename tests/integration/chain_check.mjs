@@ -135,6 +135,15 @@ check(count('water_bucket') === 1 && count('bucket') === 0, `the poured water wa
 await cmd('/give kev_smoke obsidian 10'); await cmd('/give kev_smoke cobblestone 4')
 await cmd(`/tp kev_smoke ${X + 0.5} ${Y} ${Z + 0.5}`); await bot.waitForTicks(20)
 mem.heading = 'north'
+// Interrupted 6 s in (a threat): the partial frame is not a frame, the build in progress is in memory, and the next
+// build_portal resumes it.
+const irq = setTimeout(() => motor.interrupt('threat'), 6000)
+await step('build_portal', ['interrupted'])
+clearTimeout(irq)
+const mid = obs()
+log(`  after the interrupt: memory.portal ${JSON.stringify(mid.memory.portal)}, portalFrame ${JSON.stringify(mid.portalFrame)}, obsidian held ${count('obsidian')}`)
+check(mid.memory.portal && mid.memory.portal.placed < 10 && mid.portalFrame === null, 'a partial frame: memory.portal with < 10 placed, no portalFrame')
+check(mid.memory.portal && count('obsidian') >= 10 - mid.memory.portal.placed, 'the obsidian still missing is held')
 await step('build_portal')
 log(`  mem.portal ${JSON.stringify(mem.portal)}, portalFrame ${JSON.stringify(obs().portalFrame?.pos ?? null)}`)
 check(obs().portalFrame != null, 'summarize().portalFrame is set')

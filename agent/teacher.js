@@ -144,6 +144,8 @@ function pickChain(obs) {
 
   // Stage 4: bucket -> water -> obsidian (cast or mined) -> flint and steel -> frame -> light.
   if (obs.portalFrame) return obs.portalLit ? 'wait' : 'light_portal'
+  const build = obs.memory?.portal   // an interrupted frame: finish it while the obsidian still missing is held
+  if (build && c.flintAndSteel && c.obsidian >= 10 - build.placed) return 'build_portal'
   if (c.obsidian >= 10) {
     if (!c.flintAndSteel) {
       if (c.flint >= 1) return c.ingots >= 1 ? needTable('flint_and_steel') : getIron()

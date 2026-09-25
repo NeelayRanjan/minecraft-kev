@@ -158,7 +158,10 @@ function addChain(obs, out, c) {
   if (c.bucket >= 1 && (seen(obs, isWater, 24) || obs.memory?.waterSeen)) add('fill_bucket', 'water')
   if (c.waterBucket >= 1 && (seen(obs, isLava, 24) || obs.memory?.lavaSeen) && c.obsidian < 10) add('cast_obsidian')
   if (c.hasDiamondPickaxe && seen(obs, isObsidian, 16) && c.obsidian < 10) add('mine_obsidian')
-  if (c.obsidian >= 10 && c.blocks >= 4 && c.flintAndSteel && !obs.portalFrame) add('build_portal')
+  // A build in progress (memory.portal) stays offered with the obsidian still missing; corner blocks are only
+  // required for a fresh frame (an interrupted one may already have them).
+  const build = obs.memory?.portal
+  if (c.flintAndSteel && !obs.portalLit && !obs.portalFrame && (build ? c.obsidian >= 10 - build.placed : c.obsidian >= 10 && c.blocks >= 4)) add('build_portal')
   if (obs.portalFrame && !obs.portalLit && c.flintAndSteel) add('light_portal')
 }
 

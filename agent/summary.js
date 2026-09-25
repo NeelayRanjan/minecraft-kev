@@ -1,6 +1,6 @@
 // bot -> obs: the one place that reads Mineflayer state for the decision layer, plus the episode memory.
 // Everything downstream (teacher, serializer, questions) is a pure function of the obs this returns.
-import { stageOf } from './stages.js'
+import { stageOf, portalLayout } from './stages.js'
 export function dirWord(dx, dz) {
   const a = (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360   // 0 = north (-z), 90 = east (+x)
   return ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][Math.round(a / 45) % 8]
@@ -60,14 +60,30 @@ const EXP1_RADIUS = { log: 48, stone: 16, coal_ore: 32, iron_ore: 32, water: 12,
 const REMEMBER = { diamond_ore: 'diamond', lava: 'lava', water: 'water' }
 const ARMOR_SLOTS = [5, 6, 7, 8]   // head, torso, legs, feet
 
-// The anchor (lowest block) of any vertical stack of three obsidian at one x,z: a portal frame column. Pure.
-export function portalFrameNear(positions) {
+// A COMPLETE portal frame among the obsidian positions (a Set of "x,y,z"): the anchor (lowest block) of a vertical
+// stack of three obsidian that is a side column of a frame whose 10 obsidian (portalLayout) are all present, else
+// null. A partly built frame is not a frame (it is reported through memory.portal instead). Pure.
+export function portalFrameNear(have) {
+  const pos = k => { const [x, y, z] = k.split(',').map(Number); return { x, y, z } }
   const key = p => `${p.x},${p.y},${p.z}`
-  const have = new Set(positions.map(key))
-  const anchors = positions.filter(p => have.has(key({ ...p, y: p.y + 1 })) && have.has(key({ ...p, y: p.y + 2 })) && !have.has(key({ ...p, y: p.y - 1 })))
-  if (!anchors.length) return null
-  const a = anchors.reduce((m, p) => (p.y < m.y ? p : m))
-  return { x: a.x, y: a.y, z: a.z }
+  let best = null
+  for (const k of have) {
+    const a = pos(k)
+    if (!have.has(key({ ...a, y: a.y + 1 })) || !have.has(key({ ...a, y: a.y + 2 }))) continue
+    // the column is the frame's left (u 0) or right (u 3) side, along x or z; the origin is the corner below it
+    for (const [axis, du] of [['x', 0], ['x', -3], ['z', 0], ['z', -3]]) {
+      const origin = axis === 'x' ? { x: a.x + du, y: a.y - 1, z: a.z } : { x: a.x, y: a.y - 1, z: a.z + du }
+      if (portalLayout(origin, axis).obsidian.every(p => have.has(key(p))) && (!best || a.y < best.y)) best = a
+    }
+  }
+  return best ? { x: best.x, y: best.y, z: best.z } : null
+}
+// The frame build in progress (motor's mem.portal) with how many of its 10 obsidian are in place, else null.
+function portalBuild(bot, mem) {
+  if (!mem.portal) return null
+  const { origin, axis } = mem.portal
+  const placed = portalLayout(origin, axis).obsidian.filter(p => bot.blockAt(p)?.name === 'obsidian').length
+  return { origin: { ...origin }, axis, placed }
 }
 const seenObs = (me, s, t) => (s ? { ...relTo(me, s.pos), agoS: t - s.t, pos: s.pos } : null)
 
@@ -112,7 +128,8 @@ export function summarize(bot, mcData, mem, ctx) {
   const armor = {}
   for (const i of ARMOR_SLOTS) { const it = bot.inventory.slots[i]; if (it?.name) armor[it.name] = 1 }
   const portalLit = !!bot.findBlock({ matching: mcData.blocksByName.nether_portal.id, maxDistance: 16 })
-  const anchor = portalFrameNear(bot.findBlocks({ matching: mcData.blocksByName.obsidian.id, maxDistance: 16, count: 16 }))
+  // count: findBlocks stops at it walking chunk sections nearest-first; a small one can miss part of a frame
+  const anchor = portalFrameNear(new Set(bot.findBlocks({ matching: mcData.blocksByName.obsidian.id, maxDistance: 16, count: 256 }).map(p => `${p.x},${p.y},${p.z}`)))
   const portalFrame = anchor ? { ...relTo(me, anchor), pos: anchor } : null
   const ironSeen = mem.ironSeen ? { ...relTo(me, mem.ironSeen.pos), agoS: ctx.t - mem.ironSeen.t, where: mem.ironSeen.where, pos: mem.ironSeen.pos } : null
   return {
@@ -121,7 +138,7 @@ export function summarize(bot, mcData, mem, ctx) {
     skyLight, blockLight, underground: skyLight < 4, inWater: !!bot.entity.isInWater,
     health: bot.health ?? 20, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
     base, memory: { ironSeen, diamondSeen: seenObs(me, mem.seen.diamond, ctx.t), lavaSeen: seenObs(me, mem.seen.lava, ctx.t), waterSeen: seenObs(me, mem.seen.water, ctx.t),
-      lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading },
+      lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading, portal: portalBuild(bot, mem) },
     blocks, entities, nearestHostile: hostiles[0] || null,
     current: ctx.current || null, last: ctx.last || null, withhold: ctx.withhold || [], goal, armor, portalLit, portalFrame,
     done: goal === 'nether' ? stageOf({ inventory: inv, armor, portalLit }).done : !!inv.iron_pickaxe,

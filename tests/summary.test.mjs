@@ -56,12 +56,25 @@ test('entity classes', () => {
 
 import { portalFrameNear } from '../agent/summary.js'
 
-test('portalFrameNear finds the bottom of a 3-high obsidian column', () => {
-  assert.equal(portalFrameNear([]), null)
-  assert.equal(portalFrameNear([{ x: 0, y: 60, z: 0 }, { x: 0, y: 61, z: 0 }]), null)
-  assert.equal(portalFrameNear([{ x: 0, y: 60, z: 0 }, { x: 0, y: 62, z: 0 }, { x: 0, y: 63, z: 0 }]), null)
-  assert.equal(portalFrameNear([{ x: 0, y: 60, z: 0 }, { x: 1, y: 61, z: 0 }, { x: 0, y: 62, z: 0 }]), null)
-  assert.deepEqual(portalFrameNear([{ x: 5, y: 12, z: 1 }, { x: 3, y: 62, z: 4 }, { x: 3, y: 60, z: 4 }, { x: 3, y: 61, z: 4 }, { x: 3, y: 59, z: 9 }]), { x: 3, y: 60, z: 4 })
+const posSet = ps => new Set(ps.map(p => `${p.x},${p.y},${p.z}`))
+// The 10 obsidian of a frame whose bottom-left corner is (ox, oy, oz), along x or z.
+const frame = (ox, oy, oz, axis) => [[1, 0], [2, 0], [0, 1], [0, 2], [0, 3], [3, 1], [3, 2], [3, 3], [1, 4], [2, 4]]
+  .map(([u, v]) => axis === 'x' ? { x: ox + u, y: oy + v, z: oz } : { x: ox, y: oy + v, z: oz + u })
+
+test('portalFrameNear: a column alone, broken columns and a partial frame are not a frame', () => {
+  assert.equal(portalFrameNear(posSet([])), null)
+  assert.equal(portalFrameNear(posSet([{ x: 0, y: 60, z: 0 }, { x: 0, y: 61, z: 0 }])), null)
+  assert.equal(portalFrameNear(posSet([{ x: 0, y: 60, z: 0 }, { x: 0, y: 62, z: 0 }, { x: 0, y: 63, z: 0 }])), null)
+  assert.equal(portalFrameNear(posSet([{ x: 3, y: 62, z: 4 }, { x: 3, y: 60, z: 4 }, { x: 3, y: 61, z: 4 }])), null, 'a 3-high column alone')
+  // the bottom row plus one column (5 of 10), as an interrupted build leaves it
+  assert.equal(portalFrameNear(posSet(frame(0, 64, 0, 'x').slice(0, 5))), null)
+  assert.equal(portalFrameNear(posSet(frame(0, 64, 0, 'x').slice(0, 9))), null, '9 of 10')
+})
+
+test('portalFrameNear: the full 10 obsidian give the anchor (lowest block of a side column), along x and z', () => {
+  assert.deepEqual(portalFrameNear(posSet([...frame(0, 64, 0, 'x'), { x: 5, y: 12, z: 1 }])), { x: 0, y: 65, z: 0 })
+  const a = portalFrameNear(posSet(frame(10, 30, 5, 'z')))
+  assert.ok(a && a.x === 10 && a.y === 31 && [5, 8].includes(a.z), JSON.stringify(a))
 })
 
 test('memory remembers diamond, lava and water sightings', () => {

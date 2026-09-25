@@ -101,6 +101,16 @@ test('chain mode: diamond, gravel, obsidian and the portal steps follow their pr
   assert.ok(ids(chain({ inventory: { ...d, obsidian: 10, cobblestone: 4, flint_and_steel: 1 }, armor })).includes('build_portal'))
   assert.ok(ids(chain({ inventory: { ...d, flint_and_steel: 1 }, armor, portalFrame: { dist: 2, dir: 'north', dy: 0 } })).includes('light_portal'))
 })
+test('chain mode: an interrupted frame build stays offered with the obsidian still missing; no light before the frame is complete', () => {
+  const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1 }
+  const armor = { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }
+  const memory = { portal: { origin: { x: 0, y: 64, z: 0 }, axis: 'x', placed: 6 } }
+  const inBuild = over => chain({ armor, memory, portalFrame: null, ...over })
+  assert.ok(ids(inBuild({ inventory: { ...kit, obsidian: 4, flint_and_steel: 1 } })).includes('build_portal'), '6 placed + 4 held')
+  assert.ok(!ids(inBuild({ inventory: { ...kit, obsidian: 3, flint_and_steel: 1 } })).includes('build_portal'), '6 placed + 3 held is short')
+  assert.ok(!ids(inBuild({ inventory: { ...kit, obsidian: 4, flint_and_steel: 1 } })).includes('light_portal'), 'no complete frame yet')
+  assert.ok(!ids(chain({ inventory: { ...kit, obsidian: 10, flint_and_steel: 1 }, armor })).includes('build_portal'), 'a fresh frame needs 4 corner blocks')
+})
 test('chain mode keeps the stage-0 mine_iron cap; from stage 1, needs().ingots (net of held ingots) is compared against raw iron alone', () => {
   const ironSeen = [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }]
   assert.ok(ids(chain({ inventory: { stone_pickaxe: 1 }, blocks: ironSeen })).includes('mine_iron'), 'stage 0 in chain mode still offers mine_iron')

@@ -141,6 +141,8 @@ test('chain teacher: portal', () => {
   assert.equal(teacherSubtask(chain({ inventory: { ...d, obsidian: 10, iron_ingot: 1, flint: 1, crafting_table: 1 }, armor })), 'craft(flint_and_steel)')
   assert.equal(teacherSubtask(chain({ inventory: { ...d, obsidian: 10, cobblestone: 4, flint_and_steel: 1 }, armor })), 'build_portal')
   assert.equal(teacherSubtask(chain({ inventory: { ...d, flint_and_steel: 1 }, armor, portalFrame: { dist: 2, dir: 'north', dy: 0 } })), 'light_portal')
+  const memory = { portal: { origin: { x: 0, y: 64, z: 0 }, axis: 'x', placed: 6 } }
+  assert.equal(teacherSubtask(chain({ inventory: { ...d, obsidian: 4, flint_and_steel: 1 }, armor, memory })), 'build_portal', 'resume an interrupted frame')
 })
 test('chain teacher: getIron and the diamond fallback only return offered ids (review fix round 1)', () => {
   // stage 1, raw iron on hand but no furnace, no cobblestone and no stone in view: mine_stone was never offered here.
