@@ -25,7 +25,7 @@ export const nightOnSurface = obs => obs.goal === 'nether' && isNight(obs) && !o
 export const shelterSoon = obs => obs.goal === 'nether' && obs.phase === 'afternoon' && !obs.underground
   && obs.secondsToDusk != null && obs.secondsToDusk <= SHELTER_EARLY_S
 export const LOW_AIR = 10   // of 20: policy.DROWNING_OXYGEN
-const LOW_AIR_OPTIONS = new Set(['wait', 'fight', 'flee', 'pillar_up', 'eat'])
+const LOW_AIR_OPTIONS = new Set(['wait', 'fight', 'flee', 'pillar_up'])   // the escapes in policy.js; eating while drowning would be interrupted at once
 export const NIGHT_REFUGES = ['build_shelter', 'explore_toward(down)', 'return_to_base']   // withhold only when one is offered
 export const HAND_DIGGABLE = new Set(['dirt', 'grass_block', 'coarse_dirt', 'podzol', 'sand', 'red_sand'])
 export const FOOD = new Set(['bread', 'apple', 'cooked_beef', 'beef', 'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton',

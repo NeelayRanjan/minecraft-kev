@@ -201,13 +201,14 @@ test('chain mode: build_shelter by hand on dirt/grass/sand with a block and no p
   assert.ok(!ids(baseObs({ phase: 'night', standingOn: 'grass_block', inventory: { dirt: 2 } })).includes('build_shelter'), 'experiment 1 keeps the pickaxe rule')
 })
 
-test('low air (10/20 or less) offers only the ways out, the threat responses and eat; wait always', () => {
+test('low air (10/20 or less) offers only the ways out and the threat responses (not eat: it would be interrupted at once); wait always', () => {
   const log = { name: 'oak_log', dist: 5, dir: 'north', dy: 0, reachable: true }
   const ids = o => options(baseObs(o)).map(x => x.id)
   const low = ids({ oxygen: 8, inWater: true, blocks: [log], inventory: { stone_pickaxe: 1, bread: 2 }, food: 10,
     nearestHostile: { name: 'drowned', dist: 6, dir: 'west', dy: 0 } })
   assert.ok(!low.includes('gather_wood') && !low.includes('explore_toward(down)'), low.join(' '))
-  for (const id of ['wait', 'explore_toward(surface)', 'fight(threat)', 'flee(threat)', 'eat']) assert.ok(low.includes(id), id)
+  for (const id of ['wait', 'explore_toward(surface)', 'fight(threat)', 'flee(threat)']) assert.ok(low.includes(id), id)
+  assert.ok(!low.includes('eat'), 'eat is not an escape')
   assert.ok(ids({ oxygen: 8, blocks: [log] }).includes('wait'))
   assert.ok(ids({ oxygen: 11, blocks: [log] }).includes('gather_wood'))
   assert.ok(ids({ blocks: [log] }).includes('gather_wood'))   // no reading: full air (stored records)
