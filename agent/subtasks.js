@@ -24,6 +24,8 @@ export const isNight = obs => obs.phase === 'dusk' || obs.phase === 'night'
 export const nightOnSurface = obs => obs.goal === 'nether' && isNight(obs) && !obs.underground
 export const shelterSoon = obs => obs.goal === 'nether' && obs.phase === 'afternoon' && !obs.underground
   && obs.secondsToDusk != null && obs.secondsToDusk <= SHELTER_EARLY_S
+export const NIGHT_REFUGES = ['build_shelter', 'explore_toward(down)', 'return_to_base']   // withhold only when one is offered
+export const HAND_DIGGABLE = new Set(['dirt', 'grass_block', 'coarse_dirt', 'podzol', 'sand', 'red_sand'])
 export const FOOD = new Set(['bread', 'apple', 'cooked_beef', 'beef', 'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton',
   'chicken', 'cooked_chicken', 'carrot', 'potato', 'baked_potato', 'sweet_berries', 'cod', 'cooked_cod', 'rotten_flesh'])
 
@@ -218,11 +220,16 @@ export function options(obs) {
   add('explore_toward', 'surface')
   if (obs.base?.crafting_table && obs.base.crafting_table.dist > TABLE_NEAR) add('return_to_base')
   if (c.food >= 1 && obs.food < 16) add('eat')
-  if (c.blocks >= 1 && c.hasPickaxe && (isNight(obs) || shelterSoon(obs))) add('build_shelter')
+  // Chain mode also shelters by hand when standing on dirt/grass/sand (motor build_shelter digs with whatever is held).
+  const canDigIn = c.hasPickaxe || (chainMode && HAND_DIGGABLE.has(obs.standingOn))
+  if (c.blocks >= 1 && canDigIn && (isNight(obs) || shelterSoon(obs))) add('build_shelter')
   if (chainMode) addChain(obs, out, c)
   add('wait')
   const stuck = stuckOn(obs)
   for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)   // a subtask the supervisor just abandoned (agent/supervisor.js)
-  if (nightOnSurface(obs)) for (const id of NIGHT_SURFACE_WITHHELD) stuck.add(id)
+  // Only when a refuge survives the filters: with none (no pickaxe, no blocks, no base) the bot keeps working instead of
+  // standing idle all night.
+  if (nightOnSurface(obs) && out.some(o => NIGHT_REFUGES.includes(o.id) && !stuck.has(o.id)))
+    for (const id of NIGHT_SURFACE_WITHHELD) stuck.add(id)
   return out.filter(o => !stuck.has(o.id))
 }

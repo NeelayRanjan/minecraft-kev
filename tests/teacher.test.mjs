@@ -166,7 +166,9 @@ const stage2 = { ...kit, stone_pickaxe: 1 }
 test('chain teacher, night on the surface: shelter with blocks, dig in without', () => {
   assert.equal(teacherSubtask(chain({ phase: 'night', inventory: { ...stage2, cobblestone: 4 }, blocks: [log] })), 'build_shelter')
   assert.equal(teacherSubtask(chain({ phase: 'dusk', inventory: stage2, blocks: [log] })), 'explore_toward(down)')
-  assert.equal(teacherSubtask(chain({ phase: 'night', inventory: stage2, pos: { x: 0, y: 10, z: 0 } })), 'wait')
+  // no refuge offered (no blocks, too deep to dig in, no base): nothing is withheld and the teacher plays on as by day
+  const noRefuge = chain({ phase: 'night', inventory: stage2, pos: { x: 0, y: 10, z: 0 } })
+  assert.equal(teacherSubtask(noRefuge), teacherSubtask({ ...noRefuge, phase: 'midday' }))
   // threats still come first
   assert.equal(teacherSubtask(chain({ phase: 'night', inventory: { ...stage2, cobblestone: 4 }, nearestHostile: { name: 'zombie', dist: 6, dir: 'west', dy: 0 } })), 'fight(threat)')
   // underground: unchanged (the chain teacher keeps mining)
@@ -186,4 +188,13 @@ test('chain teacher: crafts a spare stone pickaxe before digging', () => {
   assert.equal(teacherSubtask(chain({ inventory: inv })), 'craft(stone_pickaxe)')
   assert.equal(teacherSubtask(chain({ inventory: { ...inv, stone_pickaxe: 1 } })), 'explore_toward(down)')
   assert.equal(teacherSubtask(chain({ inventory: { iron_pickaxe: 1, stick: 2 }, blocks: [stone] })), 'mine_stone')
+})
+
+test('chain teacher, night on the surface with no refuge: keeps gathering instead of idling (fix round 1)', () => {
+  const o = chain({ phase: 'night', inventory: {}, blocks: [log] })
+  assert.ok(options(o).some(x => x.id === 'gather_wood'))
+  assert.equal(teacherSubtask(o), 'gather_wood')
+  const armed = chain({ phase: 'night', inventory: { stone_pickaxe: 1, cobblestone: 4 }, blocks: [log] })
+  assert.ok(!options(armed).some(x => x.id === 'gather_wood'))
+  assert.ok(options(armed).some(x => x.id === 'build_shelter'))
 })

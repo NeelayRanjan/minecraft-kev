@@ -98,14 +98,15 @@ function pick(obs) {
 }
 
 // Night protocol (chain mode, every stage): at dusk and night on the surface, hide (shelter, else dig in, else walk
-// home, else wait); in the last minute before dusk, shelter early when it is offered. Underground: nothing (null).
+// home, else play on as by day); in the last minute before dusk, shelter early when it is offered. Underground: nothing (null).
 function pickNight(obs) {
   const night = nightOnSurface(obs)
   if (!night && !shelterSoon(obs)) return null
   const offered = new Set(options(obs).map(o => o.id))
   if (offered.has('build_shelter')) return 'build_shelter'
   if (!night) return null
-  return ['explore_toward(down)', 'return_to_base'].find(id => offered.has(id)) || 'wait'
+  // No refuge offered: the surface work is not withheld either, so play on (null falls through to pick/pickChain).
+  return ['explore_toward(down)', 'return_to_base'].find(id => offered.has(id)) || null
 }
 
 // Spare pickaxe (chain mode, stage >= 1): before a choice that digs, make a stone pickaxe to fall back on when the iron

@@ -184,3 +184,19 @@ test('chain mode: a spare stone pickaxe is offered at stage >= 1 when none is he
   assert.equal(ids(chain({ inventory: inv })).filter(id => id === 'craft(stone_pickaxe)').length, 1, 'offered once')
   assert.ok(!ids(chain({ inventory: { ...inv, stone_pickaxe: 1 } })).includes('craft(stone_pickaxe)'))
 })
+
+test('chain mode, night on the surface: surface work is withheld only when a refuge is offered (fix round 1)', () => {
+  const bare = ids(chain({ phase: 'night', inventory: {}, blocks: [logSeen] }))
+  assert.ok(bare.includes('gather_wood') && bare.includes('explore_toward(surface)'), 'no pickaxe, no blocks, no base: nothing withheld')
+  const armed = ids(chain({ phase: 'night', inventory: { stone_pickaxe: 1, cobblestone: 4 }, blocks: [logSeen] }))
+  assert.ok(!armed.includes('gather_wood') && armed.includes('build_shelter'))
+  // a refuge the supervisor just withheld does not count
+  const w = ids(chain({ phase: 'night', inventory: { iron_pickaxe: 1 }, pos: { x: 0, y: 10, z: 0 }, blocks: [logSeen] }))
+  assert.ok(w.includes('gather_wood'), 'too deep for explore_toward(down), no blocks, no base')
+})
+test('chain mode: build_shelter by hand on dirt/grass/sand with a block and no pickaxe; experiment 1 unchanged', () => {
+  const hand = ids(chain({ phase: 'night', standingOn: 'grass_block', inventory: { dirt: 2 }, blocks: [logSeen] }))
+  assert.ok(hand.includes('build_shelter') && !hand.includes('gather_wood'))
+  assert.ok(!ids(chain({ phase: 'night', standingOn: 'stone', inventory: { dirt: 2 } })).includes('build_shelter'), 'stone needs a pickaxe')
+  assert.ok(!ids(baseObs({ phase: 'night', standingOn: 'grass_block', inventory: { dirt: 2 } })).includes('build_shelter'), 'experiment 1 keeps the pickaxe rule')
+})
