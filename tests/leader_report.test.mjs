@@ -56,7 +56,15 @@ test('summarizeLeaderLog: header fields come from meta', () => {
 test('summarizeLeaderLog: action mix counts one of each kind, no dropped', () => {
   const s = summarizeLeaderLog(syntheticLog())
   assert.equal(s.stats.calls, 3)
-  assert.deepEqual(s.stats.actionMix, { continue: 1, override: 1, stale: 1, invalid: 0, error: 0, dropped: 0 })
+  assert.deepEqual(s.stats.actionMix, { continue: 1, override: 1, stale: 1, invalid: 0, error: 0, blocked: 0, dropped: 0 })
+})
+
+test('summarizeLeaderLog: blocked calls are counted in the action mix', () => {
+  const log = syntheticLog()
+  log.leader.push({ t_asked: 50, t_answered: 52, current_id: 'flee(threat)', action: 'mine_iron', kind: 'blocked', id: 'mine_iron', reason: 'threat', why: 'x', thinking: '', latency_ms: 1200, prompt_chars: 500, truncated: false })
+  const s = summarizeLeaderLog(log)
+  assert.equal(s.stats.actionMix.blocked, 1)
+  assert.match(renderReport(s), /\| blocked \| 1 \|/)
 })
 
 test('summarizeLeaderLog: latency, thinking-chars and prompt-chars stats', () => {

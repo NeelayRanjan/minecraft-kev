@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { TRIGGERS, LeaderTrigger, buildLeaderMessages, leaderSchema, applyAnswer, parseLeaderAnswer, pickEvent, subtaskStats, LEADER_SYSTEM } from '../agent/leader.js'
+import { TRIGGERS, LeaderTrigger, buildLeaderMessages, leaderSchema, applyAnswer, parseLeaderAnswer, pickEvent, subtaskStats, recentFailure, LEADER_SYSTEM } from '../agent/leader.js'
 import { EpisodeLog } from '../agent/logger.js'
 
 // ---- trigger policies ------------------------------------------------------------------------------------------
@@ -76,6 +76,44 @@ test('applyAnswer pins stale: once the subtask the leader judged has ended, any 
   assert.equal(applyAnswer({ answer: { action: 'continue' }, currentId: 'explore_toward(deep)', askedCurrentId: 'mine_iron', offered }).kind, 'stale')
   // asked while idle, still idle: the override applies at the next decision
   assert.deepEqual(applyAnswer({ answer: { action: 'mine_iron' }, currentId: null, askedCurrentId: null, offered }), { kind: 'override', id: 'mine_iron' })
+})
+
+// ---- guards -------------------------------------------------------------------------------------------------------
+const guardOffered = [{ id: 'mine_iron' }, { id: 'mine_stone' }, { id: 'flee(threat)' }, { id: 'fight(threat)' }, { id: 'pillar_up' }, { id: 'explore_toward(down)' }]
+
+test('threat guard: no override away from fight, flee or pillar_up while a hostile is near', () => {
+  const base = { askedCurrentId: 'flee(threat)', currentId: 'flee(threat)', offered: guardOffered }
+  assert.deepEqual(applyAnswer({ ...base, answer: { action: 'mine_iron' }, threatNear: true }), { kind: 'blocked', id: 'mine_iron', reason: 'threat' })
+  assert.deepEqual(applyAnswer({ ...base, answer: { action: 'mine_iron' }, threatNear: false }), { kind: 'override', id: 'mine_iron' })
+  assert.deepEqual(applyAnswer({ ...base, answer: { action: 'continue' }, threatNear: true }), { kind: 'continue', id: null })
+  for (const cur of ['fight(threat)', 'pillar_up'])
+    assert.equal(applyAnswer({ answer: { action: 'mine_stone' }, currentId: cur, askedCurrentId: cur, offered: guardOffered, threatNear: true }).kind, 'blocked', cur)
+  // switching INTO a threat response is allowed
+  assert.deepEqual(applyAnswer({ answer: { action: 'flee(threat)' }, currentId: 'mine_stone', askedCurrentId: 'mine_stone', offered: guardOffered, threatNear: true }), { kind: 'override', id: 'flee(threat)' })
+  // stale and invalid still win over the guard
+  assert.equal(applyAnswer({ ...base, currentId: 'mine_stone', answer: { action: 'mine_iron' }, threatNear: true }).kind, 'stale')
+})
+
+test('recent-failure guard: no re-push of an id whose last or second-to-last attempt failed to path', () => {
+  const base = { answer: { action: 'mine_iron' }, currentId: 'mine_stone', askedCurrentId: 'mine_stone', offered: guardOffered }
+  for (const r of ['no_path', 'target_gone', 'timeout', 'not_found'])
+    assert.deepEqual(applyAnswer({ ...base, recentResults: [{ id: 'mine_iron', result: r }] }), { kind: 'blocked', id: 'mine_iron', reason: 'recent_failure' }, r)
+  // failure in the second-to-last attempt of that id (other ids in between) still blocks
+  assert.equal(applyAnswer({ ...base, recentResults: [{ id: 'mine_iron', result: 'no_path' }, { id: 'mine_stone', result: 'ok' }, { id: 'mine_iron', result: 'ok' }] }).kind, 'blocked')
+  // ok, then no_path three attempts of that id ago, ok most recently: the last two attempts are ok, ok
+  assert.deepEqual(applyAnswer({ ...base, recentResults: [{ id: 'mine_iron', result: 'no_path' }, { id: 'mine_iron', result: 'ok' }, { id: 'mine_iron', result: 'ok' }] }), { kind: 'override', id: 'mine_iron' })
+  // other failure kinds and other ids do not block
+  assert.equal(applyAnswer({ ...base, recentResults: [{ id: 'mine_iron', result: 'took_damage' }, { id: 'mine_iron', result: 'interrupted' }] }).kind, 'override')
+  assert.equal(applyAnswer({ ...base, recentResults: [{ id: 'mine_stone', result: 'no_path' }] }).kind, 'override')
+  assert.equal(applyAnswer({ ...base }).kind, 'override', 'no recentResults: no guard')
+  // continue is never blocked, even when the running subtask failed before
+  assert.equal(applyAnswer({ ...base, answer: { action: 'continue' }, recentResults: [{ id: 'mine_stone', result: 'no_path' }] }).kind, 'continue')
+})
+
+test('recentFailure: the failing result among the last two attempts of an id, or null', () => {
+  assert.equal(recentFailure('mine_iron', [{ id: 'mine_iron', result: 'timeout' }, { id: 'mine_iron', result: 'ok' }]), 'timeout')
+  assert.equal(recentFailure('mine_iron', [{ id: 'mine_iron', result: 'ok' }]), null)
+  assert.equal(recentFailure('mine_iron', null), null)
 })
 
 test('parseLeaderAnswer reads the JSON and validates the action against the offered ids', () => {
@@ -154,6 +192,13 @@ test('buildLeaderMessages carries the chain, the arithmetic, the options, the fo
   assert.match(u, /"action"/)
 })
 
+test('buildLeaderMessages marks offered ids that failed recently', () => {
+  const u = buildLeaderMessages({ ...ctx, recentResults: [{ id: 'mine_iron', result: 'no_path' }, { id: 'explore_toward(down)', result: 'ok' }] })[1].content
+  assert.match(u, /^- mine_iron: walk to the nearest known iron ore and mine it \(failed recently: no_path, do not pick\)$/m)
+  assert.match(u, /^- explore_toward\(down\): dig a staircase down$/m)
+  assert.doesNotMatch(buildLeaderMessages(ctx)[1].content, /failed recently/)
+})
+
 test('buildLeaderMessages caps events at 30 and stats at 20 ids', () => {
   const history = Array.from({ length: 80 }, (_, i) => ({ t: i, kind: 'subtask_done', id: `x${i}`, result: 'ok' }))
   const subtaskStats = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`id${i}`, { attempts: 40 - i, ok: 1, fails: {} }]))
@@ -183,6 +228,15 @@ test('the system prompt: role, recipes, continue, override rules, wear, night, a
   assert.match(s, /500 blocks/)
   assert.match(s, /night/i)
   assert.match(s, /\{"action": "continue" \| "<subtask id>", "why": "<one sentence>"\}/)
+})
+
+test('the system prompt carries the four run-1 rules', () => {
+  const s = LEADER_SYSTEM
+  assert.ok(s.includes('Never override fight, flee or pillar_up while a hostile is within 16 m; at night the bot must be underground or in a shelter before doing anything else.'))
+  assert.ok(s.includes('Never pick a subtask whose last attempt ended no_path, target_gone, timeout or not_found; pick something that changes the situation instead (explore_toward(down), return_to_base, mine_stone).'))
+  assert.ok(s.includes('Pickaxes wear out after about 500 blocks: when the bot has an iron pickaxe and cobblestone, having a spare stone pickaxe before a long dig is worth an override to craft(stone_pickaxe); losing the iron pickaxe resets the whole chain.'))
+  assert.ok(s.includes('Override rarely: `continue` is the right answer whenever kev\'s current subtask makes progress on the current step.'))
+  assert.doesNotMatch(s, /Do not repeat an override that just failed/)
 })
 
 test('subtaskStats counts attempts, successes and failures per id from the events', () => {

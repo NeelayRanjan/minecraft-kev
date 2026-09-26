@@ -3,7 +3,7 @@
 // Pure: reads only the parsed episode-log JSON object; scripts/leader_report.mjs is the thin file-I/O CLI.
 
 const STAGE_NAMES = ['iron pickaxe', 'iron tools', 'iron armor', 'diamond tools', 'lit nether portal']
-const ACTIONS = ['continue', 'override', 'stale', 'invalid', 'error', 'dropped']
+const ACTIONS = ['continue', 'override', 'stale', 'invalid', 'error', 'blocked', 'dropped']
 
 const isNum = x => typeof x === 'number' && Number.isFinite(x)
 const nums = arr => arr.filter(isNum)

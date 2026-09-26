@@ -118,6 +118,8 @@ let lastForecast = null, withhold = []   // supervisor: kev's latest p(step done
 // leader: events since the last tick (the trigger's input), the call in flight, an override waiting for the next
 // decision, the last 5 values of each forecast (the trend line) and kev's last pick with its top alternatives.
 let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}, kevPick = null, leaderCalls = 0
+let lastObs = null   // the latest tick's obs: the leader's threat guard re-checks it when an answer arrives
+const threatNearIn = o => !!(o?.nearestHostile && o.nearestHostile.dist <= 16)
 const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
 bot.on('death', () => {
   dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); leaderNote('death')
@@ -177,7 +179,7 @@ function tick() {
     const fire = supervisor.observe({ t, p, busy: motor.busy, subtaskId: motor.current?.id })
     if (fire) { withhold = [fire.id]; elog.event({ t, kind: 'interrupt', reason: 'low_forecast', subtask: fire.id, p: +fire.p.toFixed(3), shuffled: fire.shuffled }); leaderNote('interrupt'); motor.interrupt('low_forecast'); log(`supervisor: abandon ${fire.id} (p=${fire.p.toFixed(2)}${fire.shuffled ? ', shuffled' : ''})`) }
   }
-  prevHostileDist = obs.nearestHostile?.dist ?? null
+  prevHostileDist = obs.nearestHostile?.dist ?? null; lastObs = obs
   const morning = goal !== 'nether' && obs.day > startDay && obs.timeOfDay < 12000   // the chain runs past sunrise
   if (t >= minutes * 60) { finish('time'); return }
   if (morning) { finish(doneAt != null ? 'morning_after_goal' : 'morning'); return }
@@ -258,7 +260,7 @@ function leaderTick(obs, t) {
   try {
     const opts = optionsFor(obs)
     const currentId = motor.current?.id ?? null
-    snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts }
+    snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts, threatNear: threatNearIn(obs) }
     leaderAsk = snap
     first = leaderCalls++ === 0
     const forecasts = Object.fromEntries(Object.entries(forecastHist).map(([q, h]) => [q, h[h.length - 1]]))
@@ -267,7 +269,7 @@ function leaderTick(obs, t) {
       current: motor.current ? { id: currentId, elapsedS: motor.elapsedS(), progress: motor.progress(), lastResult } : { id: null, lastResult },
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
-      minutesLeft: Math.max(0, minutes - t / 60), deaths,
+      minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
     }
   } catch (e) {
     leaderAsk = null
@@ -285,9 +287,11 @@ function leaderAnswered(snap, a, err) {
   if (finished) return
   const t = now()
   const currentId = motor.current?.id ?? null
-  const res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: snap.currentId, offered: snap.offered })
+  // Guards: a hostile near when asked or now (either blocks leaving a threat response); the live subtask-result window.
+  const threatNear = snap.threatNear || threatNearIn(lastObs)
+  const res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: snap.currentId, offered: snap.offered, threatNear, recentResults: recent })
   elog.leader.push({ t_asked: snap.t, t_answered: +t.toFixed(1), trigger: snap.event, current_id: snap.currentId, current_id_at_answer: currentId,
-    action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
+    action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, reason: res.reason ?? null, threat_near: threatNear, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
     latency_ms: a?.latency_ms ?? null, tokens: a?.tokens ?? null, prompt_tokens: a?.prompt_tokens ?? null, tps: a?.tps != null ? +a.tps.toFixed(1) : null,
     prompt_chars: a?.prompt_chars ?? null, prompt_hash: a?.prompt_hash ?? null, offered: snap.offered.map(o => o.id), think: leaderThink,
     error: err ? String(err.message || err).slice(0, 200) : null })
@@ -295,8 +299,8 @@ function leaderAnswered(snap, a, err) {
     elog.event({ t, kind: 'leader_override', from: currentId, to: res.id, why: a.why })
     pendingLeader = { id: res.id, why: a.why, t_asked: snap.t, t_answered: +t.toFixed(1), latency_ms: a.latency_ms, thinking_chars: a.thinking?.length ?? 0 }
     if (motor.busy) motor.interrupt('leader')
-  } else elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
-  log(`leader (${snap.event}, ${a?.latency_ms ?? '-'} ms): ${res.kind}${res.id ? ` -> ${res.id}` : ''}${a?.why ? ` (${a.why})` : ''}${err ? ` error: ${err.message}` : ''}`)
+  } else elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
+  log(`leader (${snap.event}, ${a?.latency_ms ?? '-'} ms): ${res.kind}${res.id ? ` -> ${res.id}` : ''}${res.reason ? ` [${res.reason}]` : ''}${a?.why ? ` (${a.why})` : ''}${err ? ` error: ${err.message}` : ''}`)
 }
 
 // Chain mode: the stage_done events are the one source of truth. stage_reached is the highest stage index entered

@@ -37,12 +37,29 @@ export function pickEvent(events) {
 
 // What an answer does, judged against what is running now. askedCurrentId is the subtask the leader was shown (or, when
 // asked while idle, the one kev started right after); if that has ended, the answer is about a situation that is gone.
-export function applyAnswer({ answer, currentId, askedCurrentId, offered }) {
+// Two guards (run 1: prompt rules alone did not hold) turn an otherwise valid override into 'blocked':
+// - threat: the bot is in a threat response (fight, flee, pillar_up) with a hostile near (threatNear) and the answer
+//   is something else; switching INTO a threat response stays allowed;
+// - recent_failure: the answer's id failed to path (or timed out) in one of its last two attempts (recentResults: the
+//   runner's last subtask completions {id, result}, oldest first).
+export const THREAT_RESPONSES = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
+export const PATH_FAILURES = new Set(['no_path', 'target_gone', 'timeout', 'not_found'])
+
+// The failing result among the last two attempts of id in recentResults, or null.
+export function recentFailure(id, recentResults) {
+  const mine = (recentResults || []).filter(r => r && r.id === id).slice(-2)
+  const bad = mine.reverse().find(r => PATH_FAILURES.has(r.result))
+  return bad ? bad.result : null
+}
+
+export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [] }) {
   const action = answer?.action ?? null
   if (!action) return { kind: 'invalid', id: null }
   if ((currentId ?? null) !== (askedCurrentId ?? null)) return { kind: 'stale', id: null }
   if (action === 'continue' || action === currentId) return { kind: 'continue', id: null }
   if (!offered.some(o => o.id === action)) return { kind: 'invalid', id: action }
+  if (threatNear && THREAT_RESPONSES.has(currentId)) return { kind: 'blocked', id: action, reason: 'threat' }
+  if (recentFailure(action, recentResults)) return { kind: 'blocked', id: action, reason: 'recent_failure' }
   return { kind: 'override', id: action }
 }
 
@@ -90,16 +107,17 @@ The goal is a chain of five stages, in order (craft at a crafting table; 1 log =
 4. Diamond tools: dig down to diamond level (y -58) and mine diamond ore with an iron pickaxe. Diamond pickaxe = 3 diamonds + 2 sticks; diamond sword = 2 diamonds + 1 stick; diamond axe = 3 diamonds + 2 sticks.
 5. Lit nether portal: bucket = 3 ingots; fill it with water; make 10 obsidian by pouring water on lava source blocks, then mine the obsidian with the diamond pickaxe; flint and steel = 1 ingot + 1 flint (mine gravel for flint); frame = 10 obsidian + 4 corner blocks (any block); light it with the flint and steel.
 
-"continue" means kev's current subtask is fine, or an override would not help. Most answers should be "continue".
+"continue" means kev's current subtask is fine, or an override would not help.
 Override only with a concrete reason:
 - kev is looping: the same subtask keeps failing the same way, or it alternates without progress;
 - a cheaper route exists (for example the ore or table it needs is already known and close);
 - danger: low health, a hostile close, night on the surface;
 - a prerequisite is missing (it cannot finish the step without something else first);
 - the current step's forecast is low AND a better option is offered.
-Never override into wait. Do not repeat an override that just failed; try something that changes the situation instead.
-Pickaxes wear out (about 500 blocks each): keep a spare stone pickaxe before long digs, and make a new one before the old breaks.
-At night stay underground or build a shelter; on the surface mobs kill.
+Never override into wait. Never pick a subtask whose last attempt ended no_path, target_gone, timeout or not_found; pick something that changes the situation instead (explore_toward(down), return_to_base, mine_stone).
+Never override fight, flee or pillar_up while a hostile is within 16 m; at night the bot must be underground or in a shelter before doing anything else.
+Pickaxes wear out after about 500 blocks: when the bot has an iron pickaxe and cobblestone, having a spare stone pickaxe before a long dig is worth an override to craft(stone_pickaxe); losing the iron pickaxe resets the whole chain.
+Override rarely: \`continue\` is the right answer whenever kev's current subtask makes progress on the current step.
 
 Answer with JSON only: {"action": "continue" | "<subtask id>", "why": "<one sentence>"}`
 
@@ -128,11 +146,12 @@ function renderEvent(e) {
     case 'leader_stale': return `${T(e.t)} leader answer came too late (subtask had ended)`
     case 'leader_invalid': return `${T(e.t)} leader answer invalid`
     case 'leader_dropped': return `${T(e.t)} leader pick ${e.id} no longer offered, kev chose`
+    case 'leader_blocked': return `${T(e.t)} leader pick ${e.action} blocked (${e.reason === 'threat' ? 'threat response running with a hostile near' : 'it failed recently'})`
     default: return `${T(e.t)} ${e.kind}`
   }
 }
 const SHOWN_EVENTS = new Set(['subtask_done', 'subtask_error', 'interrupt', 'death', 'respawn', 'goal_done', 'stage_done',
-  'leader_override', 'leader_continue', 'leader_stale', 'leader_invalid', 'leader_dropped', 'kev_error'])
+  'leader_override', 'leader_continue', 'leader_stale', 'leader_invalid', 'leader_dropped', 'leader_blocked', 'kev_error'])
 
 function renderNeeds(need) {
   if (!need) return []
@@ -179,7 +198,7 @@ function renderStats(stats = {}) {
 }
 
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
-  subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0 }) {
+  subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [] }) {
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
   const own = ownHistory.slice(-5).map(h => `${T(h.t)} ${h.action ?? '(no answer)'}${h.kind && h.kind !== h.action ? ` (${h.kind})` : ''}${h.why ? `: ${h.why}` : ''}`)
@@ -192,7 +211,10 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
     'KEV FORECASTS', none(renderForecasts(forecasts, forecastTrend, kevPick)), '',
     'YOUR PREVIOUS DECISIONS', none(own), '',
     'TIME', `${minutesLeft != null ? minutesLeft.toFixed(1) : '?'} minutes left in the episode; deaths so far: ${deaths}`, '',
-    'SUBTASKS OFFERED NOW', options.map(o => `- ${o.id}: ${o.desc}`).join('\n'), '',
+    'SUBTASKS OFFERED NOW', options.map(o => {
+      const bad = recentFailure(o.id, recentResults)
+      return `- ${o.id}: ${o.desc}${bad ? ` (failed recently: ${bad}, do not pick)` : ''}`
+    }).join('\n'), '',
     'Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}',
   ].join('\n')
   return [{ role: 'system', content: LEADER_SYSTEM }, { role: 'user', content: user }]
