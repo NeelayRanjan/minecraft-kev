@@ -38,9 +38,9 @@ const ARMS = {
   // qwen3-vl:8b in Ollama thinks even with think:false (its content is empty until the thinking ends), so the vision arms
   // need a large token budget; --num-predict overrides all arms.
   text27b: { model: arg('text-model', 'qwen38-27b-iq2s'), images: null, numCtx: 4096, numPredict: Number(arg('num-predict', 200)) },
-  vl_text: { model: vlModel, images: null, numCtx: 8192, numPredict: Number(arg('num-predict', 2000)) },
-  vl_mosaic: { model: vlModel, images: 'mosaic', numCtx: 8192, numPredict: Number(arg('num-predict', 2000)) },
-  vl_frames: { model: vlModel, images: 'frames', numCtx: 16384, numPredict: Number(arg('num-predict', 2000)) },
+  vl_text: { model: vlModel, images: null, numCtx: 8192, numPredict: Number(arg('num-predict', 300)) },
+  vl_mosaic: { model: vlModel, images: 'mosaic', numCtx: 8192, numPredict: Number(arg('num-predict', 300)) },
+  vl_frames: { model: vlModel, images: 'frames', numCtx: 16384, numPredict: Number(arg('num-predict', 300)) },
 }
 
 const readJsonl = p => fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
@@ -157,7 +157,9 @@ function requestBody(arm, call) {
   let user = call.user, images
   if (a.images === 'mosaic') { user = `${VIDEO_NOTE}\n\n${user}`; images = [b64(call.mosaic_path)] }
   if (a.images === 'frames') { user = `${FRAMES_NOTE.replace('AGES', call.frame_ages.map(ageLabel).join(', '))}\n\n${user}`; images = call.frame_paths.map(b64) }
-  const messages = [{ role: 'system', content: call.system ?? LEADER_SYSTEM }, { role: 'user', content: user, ...(images ? { images } : {}) }]
+  // qwen3-vl's Ollama build thinks regardless of think:false; a trailing assistant turn with an empty think block makes it
+  // answer directly (36 tokens instead of 2,000 of unfinished thinking). Harmless for the text 27B, so applied to every arm.
+  const messages = [{ role: 'system', content: call.system ?? LEADER_SYSTEM }, { role: 'user', content: user, ...(images ? { images } : {}) }, { role: 'assistant', content: '<think>\n\n</think>\n' }]
   return { model: a.model, messages, stream: false, format: leaderSchema(options), think: false,
     options: { temperature: 0.2, num_predict: a.numPredict, num_ctx: a.numCtx }, keep_alive: '30m' }
 }
@@ -202,7 +204,7 @@ async function describe(calls) {
     let row
     try {
       const body = await post({ model: vlModel, stream: false, think: false, keep_alive: '30m', options: { temperature: 0.2, num_predict: 1500, num_ctx: 8192 },
-        messages: [{ role: 'user', content: `${VIDEO_NOTE}\n\nDescribe in two sentences what the bot has been doing in this video.`, images: [fs.readFileSync(path.join(ROOT, c.mosaic_path)).toString('base64')] }] })
+        messages: [{ role: 'user', content: `${VIDEO_NOTE}\n\nDescribe in two sentences what the bot has been doing in this video.`, images: [fs.readFileSync(path.join(ROOT, c.mosaic_path)).toString('base64')] }, { role: 'assistant', content: '<think>\n\n</think>\n' }] })
       row = { t_asked: c.t_asked, text: (body?.message?.content ?? '').trim(), latency_ms: Date.now() - t0 }
     } catch (e) { row = { t_asked: c.t_asked, text: null, error: String(e.message || e).slice(0, 300) } }
     fs.appendFileSync(p, JSON.stringify(row) + '\n'); have.set(tkey(c.t_asked), row)
