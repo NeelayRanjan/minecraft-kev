@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EpisodeLog, oneHot, fromKev } from '../agent/logger.js'
+import { steerQuestions } from '../agent/steer.js'
 
 test('oneHot shapes every question type like the parent project', () => {
   const qs = { a: { type: 'choice', criteria: { x: '', y: '' } }, b: { type: 'noul' }, c: { type: 'score', criteria: ['l', 'm', 'h'] } }
@@ -52,4 +53,72 @@ test('toJSON carries meta, frames, decisions with labels, events and the timelin
   assert.equal(j.frames.length, 1); assert.equal(j.events.length, 1); assert.equal(j.timeline.length, 2)
   assert.equal(j.decisions[0].labels.damage_next_20s, 0)
   assert.equal(j.decisions[0].answers.damage_next_20s.label, 0)
+})
+
+// Steering records (kev-steers Task 2): frames at t=0..40 (1 Hz); the bot sits far from every target through
+// t=24, then from t=25 on it sits within 3 m of the near target (10,64,10). Three steering decisions:
+//   t=0, near target  -> within 30 s (window (0,30]) a frame (t=25..30) is close: reach_target_30s = true
+//   t=5, far target   -> 30 s of frames exist (window (5,35], endT 40 >= 35) and none is close: false
+//   t=30, far target  -> window (30,60] needs frames past t=40 that don't exist yet: censored (null), dropped
+const nearTarget = { x: 10, y: 64, z: 10 }
+const farTarget = { x: 1000, y: 64, z: 1000 }
+function buildSteerLog () {
+  const log = new EpisodeLog({ seed: 9, policy: 'kev' })
+  for (let t = 0; t <= 40; t++) log.frame(t < 25 ? { t, x: 0, y: 64, z: 0 } : { t, x: 10, y: 64, z: 10 })
+  log.steerDecision({ t: 0, walkId: 'w1', state_text: 'steer-s0', target: { name: 'table', pos: nearTarget }, qs: steerQuestions(), answers: null, label: 'north', chosen: 'north', source: 'teacher', latency_ms: 12 })
+  log.steerDecision({ t: 5, walkId: 'w1', state_text: 'steer-s5', target: { name: 'ore', pos: farTarget }, qs: steerQuestions(), answers: null, label: 'east', chosen: 'east', source: 'teacher', latency_ms: 12 })
+  log.steerDecision({ t: 30, walkId: 'w1', state_text: 'steer-s30', target: { name: 'ore', pos: farTarget }, qs: steerQuestions(), answers: null, label: 'stop', chosen: 'stop', source: 'teacher', latency_ms: 12 })
+  return log
+}
+
+test('labelSteer fills steer and reach_target_30s labels, true/false/censored, and is idempotent', () => {
+  const log = buildSteerLog()
+  log.labelSteer()
+  assert.deepEqual(log.steer[0].labels, { steer: 'north', reach_target_30s: true })
+  assert.deepEqual(log.steer[1].labels, { steer: 'east', reach_target_30s: false })
+  assert.deepEqual(log.steer[2].labels, { steer: 'stop', reach_target_30s: null })
+  const before = JSON.stringify(log.steer)
+  log.labelSteer()
+  assert.equal(JSON.stringify(log.steer), before)
+})
+
+test('toSteerRecords drops the censored decision and keeps both questions with their labels', () => {
+  const log = buildSteerLog()
+  const recs = log.toSteerRecords()
+  assert.equal(recs.length, 2)
+  assert.equal(recs[0].state, 'steer-s0')
+  assert.equal(recs[0].questions.steer.label, 'north')
+  assert.equal(recs[0].questions.steer.type, 'choice')
+  assert.ok(recs[0].questions.steer.criteria)
+  assert.equal(recs[0].questions.reach_target_30s.label, true)
+  assert.equal(recs[0].questions.reach_target_30s.type, 'noul')
+  assert.deepEqual(recs[0]._meta, { seed: 9, t: 0, walkId: 'w1' })
+  assert.equal(recs[1].state, 'steer-s5')
+  assert.equal(recs[1].questions.steer.label, 'east')
+  assert.equal(recs[1].questions.reach_target_30s.label, false)
+  assert.deepEqual(recs[1]._meta, { seed: 9, t: 5, walkId: 'w1' })
+})
+
+test('toJSON carries the full steer entries including state_text', () => {
+  const log = buildSteerLog()
+  const j = log.toJSON()
+  assert.equal(j.steer.length, 3)
+  assert.equal(j.steer[0].state_text, 'steer-s0')
+  assert.equal(j.steer[0].target.name, 'table')
+  assert.deepEqual(j.steer[0].target.pos, nearTarget)
+  assert.equal(j.steer[2].labels.reach_target_30s, null)
+})
+
+test('steering decisions do not affect toRecords (the 1 Hz stream)', () => {
+  const plain = new EpisodeLog({ seed: 1, policy: 'teacher' })
+  plain.sample(s(0)); plain.sample(s(30)); plain.sample(s(50, { step: 2 })); plain.sample(s(70, { step: 2 }))
+  plain.decision({ t: 0, state_text: 's0', decision: true, qs: { next_subtask: { type: 'choice', instructions: 'q', criteria: { a: 'A', wait: 'W' } } }, labels: { next_subtask: 'a' }, answers: {}, chosen: 'a', source: 'teacher' })
+
+  const withSteer = new EpisodeLog({ seed: 1, policy: 'teacher' })
+  withSteer.sample(s(0)); withSteer.sample(s(30)); withSteer.sample(s(50, { step: 2 })); withSteer.sample(s(70, { step: 2 }))
+  withSteer.decision({ t: 0, state_text: 's0', decision: true, qs: { next_subtask: { type: 'choice', instructions: 'q', criteria: { a: 'A', wait: 'W' } } }, labels: { next_subtask: 'a' }, answers: {}, chosen: 'a', source: 'teacher' })
+  for (let t = 0; t <= 40; t++) withSteer.frame({ t, x: 0, y: 64, z: 0 })
+  withSteer.steerDecision({ t: 0, walkId: 'w1', state_text: 'steer-s0', target: { name: 'table', pos: nearTarget }, qs: steerQuestions(), answers: null, label: 'north', chosen: 'north', source: 'teacher', latency_ms: 12 })
+
+  assert.equal(JSON.stringify(withSteer.toRecords()), JSON.stringify(plain.toRecords()))
 })
