@@ -9,6 +9,8 @@ import { stageOf, chainStep, describeChain, INGOTS, DIAMONDS, STICKS } from './s
 import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
   NIGHT_REFUGES, LOW_AIR, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
+// A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
+import { MINE, SMELT, HUNT, producerOf, isItem } from './recipes.js'
 
 // Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
 // args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
@@ -56,6 +58,29 @@ const THREAT = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
 const ALWAYS = new Set([...THREAT, 'eat', 'build_shelter', 'wait'])
 const isMove = id => id.startsWith('explore_toward(') || id === 'return_to_base'
 const keepOnly = (options, keep) => options.filter(o => keep.has(o.id) || ALWAYS.has(o.id))
+
+// The option hook for the plugin primitives (hunt(<mob>), mine(<block>), smelt_item(<item>), receive(<item>),
+// go_to_player(<name>), craft_item(<item>)): a provider (obs, goal) -> [{ id, name, arg, desc }] registered by the
+// plugin registry. The new kinds' filters add the provider's options that serve the goal (`relevant`) to the kept
+// set; a provider that throws offers nothing. As go_to does, they keep the night refuges at dusk/night on the surface
+// and, under low air, only the way out of the water (no plugin options: options() withholds all but the escapes).
+let optionProvider = () => []
+export function registerOptionProvider(fn) { optionProvider = typeof fn === 'function' ? fn : () => [] }
+export function pluginOptions(obs, goal) {
+  try { return optionProvider(obs, goal) || [] } catch { return [] }
+}
+const goalOf = (kind, arg, count, g) => ({ kind, arg, count, ...(g?.from ? { from: g.from } : {}) })
+function keepWithPlugins(obs, goal, opts, keep, relevant) {
+  const own = new Set(opts.map(o => o.id))
+  if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
+  const kept = keepOnly(opts, new Set([...keep, ...opts.map(o => o.id).filter(relevant), ...(nightOnSurface(obs) ? NIGHT_REFUGES : [])]))
+  return [...kept, ...pluginOptions(obs, goal).filter(o => relevant(o.id) && !own.has(o.id))]
+}
+const firstPlugin = (obs, goal, relevant) => pluginOptions(obs, goal).map(o => o.id).find(relevant) ?? null
+const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
+// The legacy crafting and gathering options (a non-legacy craft keeps them: its ingredients may need them)
+const LEGACY_WORK = new Set(Object.values(PRODUCERS))
+const isLegacyWork = o => LEGACY_WORK.has(o.id) || o.name === 'craft'
 
 // How much of an item the bot has, in the option layer's arithmetic (logs and planks of any species, deepslate
 // cobble counts as cobblestone, worn armor counts, a water bucket is a bucket).
@@ -153,10 +178,23 @@ function baseStep(obs, label) {
   return { index: local, of: 4, text: d == null ? `${label} (no base known)` : `${label} (${Math.round(d)} m away)` }
 }
 const DAY = new Set(['morning', 'midday', 'afternoon'])
+// Plan-book vocabularies (agent/recipes.js): a species of planks is counted exactly (a wood-specific recipe never
+// plans on another wood's planks); MINE items come through the plugin's mine(<block>) options; a non-legacy craft
+// through craft_item(<item>).
+const exactPlanks = item => item !== 'planks' && item.endsWith('_planks')
+const gHave = (obs, item) => exactPlanks(item) ? (obs.inventory?.[item] || 0) : have(obs, item)
+const mined = item => !!MINE[item]
+const mineRelevant = item => { const ids = new Set(MINE[item].blocks.map(b => `mine(${b})`)); return id => ids.has(id) }
+const legacyCraft = item => !!RECIPES[item]
+const moves = opts => opts.map(o => o.id).filter(isMove)
+const huntVerb = item => HUNT[item]?.via === 'shear' ? 'shear' : 'hunt'
+const playerOf = arg => { const m = /^player:(\w{1,16})$/.exec(arg ?? ''); return m ? m[1] : null }
+const giver = g => g?.from ?? 'a player'
 
 // Each kind: done(obs, arg, count), filter(obs, arg, options, count), step(obs, arg, count) -> {index, of, text} with
 // index of+1 meaning done, teacher(obs, arg, count) -> id|null (optional), describe(obs, arg, count) -> text, stuckS
-// (seconds, or a function of (arg, count)). The two defaults are never pushed.
+// (seconds, or a function of (arg, count)). The two defaults are never pushed. The stack passes the goal entry as a
+// last argument to each (receive's describe reads g.from; the plugin filters hand it to the option provider).
 export const GOAL_KINDS = {
   chain: {
     done: obs => stageOf(obs).done, filter: (obs, arg, opts) => opts, step: obs => chainStep(obs),
@@ -166,11 +204,21 @@ export const GOAL_KINDS = {
     done: obs => !!obs.inventory?.iron_pickaxe, filter: (obs, arg, opts) => opts, step: obs => techStep(obs),
     teacher: obs => teacherSubtask(obs), describe: () => null, stuckS: Infinity,   // serialize.js keeps its experiment-1 line
   },
+  // A legacy RECIPES key keeps experiment 1 / chain behaviour (count ignored); any other minecraft-data recipe is
+  // crafted by the plugin's craft_item(<item>) option, its ingredients coming from earlier plan steps.
   craft_item: {
-    done: (obs, item) => have(obs, item) >= 1,
-    filter: (obs, item, opts) => keepOnly(opts, new Set([...wanted(obs, item, 1, new Set()), ...opts.map(o => o.id).filter(isMove)])),
-    // 1..4 by the share of the direct ingredients held, 5 once craftable (6 = done)
-    step: (obs, item) => {
+    done: (obs, item, count) => have(obs, item) >= (legacyCraft(item) ? 1 : count ?? 1),
+    filter: (obs, item, opts, count, g) => legacyCraft(item)
+      ? keepOnly(opts, new Set([...wanted(obs, item, 1, new Set()), ...opts.map(o => o.id).filter(isMove)]))
+      : keepWithPlugins(obs, goalOf('craft_item', item, count, g), opts, new Set([...opts.filter(isLegacyWork).map(o => o.id), ...moves(opts)]),
+        id => id === `craft_item(${item})`),
+    // 1..4 by the share of the direct ingredients held, 5 once craftable (6 = done); non-legacy: 1..4 by the count held
+    step: (obs, item, count) => {
+      if (!legacyCraft(item)) {
+        const n = have(obs, item), c = count ?? 1
+        if (n >= c) return { index: 6, of: 5, text: `${humanize(item)} crafted` }
+        return { index: 1 + Math.min(3, Math.floor(4 * n / c)), of: 5, text: `craft ${c > 1 ? `${c} ` : ''}${humanize(item)} (have ${n})` }
+      }
       if (have(obs, item) >= 1) return { index: 6, of: 5, text: `${humanize(item)} crafted` }
       const recipe = Object.entries(RECIPES[item] || {})
       const total = recipe.reduce((n, [, q]) => n + q, 0)
@@ -179,19 +227,24 @@ export const GOAL_KINDS = {
       const short = recipe.filter(([ing, q]) => have(obs, ing) < q).map(([ing, q]) => `${q} ${humanize(ing)} (have ${have(obs, ing)})`)
       return { index: 1 + Math.min(3, Math.floor(4 * held / Math.max(1, total))), of: 5, text: `get the ingredients for ${humanize(item)}: ${short.join(', ')}` }
     },
-    teacher: (obs, item) => acquire(obs, item),
-    describe: (obs, item) => `craft ${humanize(item)}`,
+    teacher: (obs, item, count, g) => legacyCraft(item) ? acquire(obs, item)
+      : firstPlugin(obs, goalOf('craft_item', item, count, g), id => id === `craft_item(${item})`),
+    describe: (obs, item, count) => legacyCraft(item) ? `craft ${humanize(item)}`
+      : `craft ${(count ?? 1) > 1 ? `${count} ` : ''}${humanize(item)} (have ${have(obs, item)})`,
     stuckS: 300,
   },
   gather: {
-    done: (obs, item, count) => have(obs, item) >= count,
-    filter: (obs, item, opts, count) => keepOnly(opts, new Set([PRODUCERS[item], ...wanted(obs, item, count - have(obs, item), new Set()),
-      ...opts.map(o => o.id).filter(isMove)])),
+    done: (obs, item, count) => gHave(obs, item) >= count,
+    filter: (obs, item, opts, count, g) => mined(item)
+      ? keepWithPlugins(obs, goalOf('gather', item, count, g), opts, new Set(moves(opts)), mineRelevant(item))
+      : exactPlanks(item) ? keepOnly(opts, new Set(['gather_wood', 'craft(planks)', ...moves(opts)]))
+      : keepOnly(opts, new Set([PRODUCERS[item], ...wanted(obs, item, count - have(obs, item), new Set()), ...moves(opts)])),
     // fifths of the count held: 1..5 (6 = done)
-    step: (obs, item, count) => ({ index: 1 + Math.floor(5 * Math.min(have(obs, item), count) / count), of: 5,
-      text: `gather ${count} ${humanize(item)} (have ${have(obs, item)})` }),
-    teacher: (obs, item) => acquire(obs, item),
-    describe: (obs, item, count) => `gather ${count} ${humanize(item)} (have ${have(obs, item)})`,
+    step: (obs, item, count) => ({ index: fifths(gHave(obs, item), count), of: 5,
+      text: `gather ${count} ${humanize(item)} (have ${gHave(obs, item)})` }),
+    teacher: (obs, item, count, g) => mined(item) ? firstPlugin(obs, goalOf('gather', item, count, g), mineRelevant(item))
+      : exactPlanks(item) ? (have(obs, 'log') > 0 ? 'craft(planks)' : acquire(obs, 'log')) : acquire(obs, item),
+    describe: (obs, item, count) => `gather ${count} ${humanize(item)} (have ${gHave(obs, item)})`,
     stuckS: (item, count) => Math.max(300, Math.min(600, 20 * count)),
   },
   find: {
@@ -204,15 +257,20 @@ export const GOAL_KINDS = {
     describe: (obs, block) => `find ${humanize(block)}`,
     stuckS: 480,
   },
+  // go_to(player:<name>): walk to a player (the plugin's go_to_player(<name>)), done within 3 m (obs.players).
   go_to: {
     done: (obs, place) => {
+      const who = playerOf(place)
+      if (who) return (obs.players?.[who]?.dist ?? Infinity) <= 3
       const y = goToY(place)
       if (y != null) return Math.abs((obs.pos?.y ?? 0) - y) <= 2
       return place === 'base' ? nearBase(obs) : place === 'surface' ? !obs.underground : (obs.pos?.y ?? 0) <= DIAMOND_LEVEL_Y
     },
     // The night refuges stay at dusk/night on the surface (options() withholds the surface work because one is offered)
     // and explore_toward(surface) stays under low air (it is the way out of the water): never only wait.
-    filter: (obs, place, opts) => {
+    filter: (obs, place, opts, count, g) => {
+      const who = playerOf(place)
+      if (who) return keepWithPlugins(obs, goalOf('go_to', place, count, g), opts, new Set(), id => id === `go_to_player(${who})`)
       const y = goToY(place)
       const above = y != null ? (obs.pos?.y ?? 0) > y : place !== 'surface'
       return keepOnly(opts, new Set(place === 'base' ? opts.map(o => o.id).filter(isMove)
@@ -220,6 +278,12 @@ export const GOAL_KINDS = {
           ...(nightOnSurface(obs) ? NIGHT_REFUGES : []), ...((obs.oxygen ?? 20) <= LOW_AIR ? ['explore_toward(surface)'] : [])]))
     },
     step: (obs, place) => {
+      const who = playerOf(place)
+      if (who) {
+        const d = obs.players?.[who]?.dist
+        if (d != null && d <= 3) return { index: 5, of: 4, text: `with ${who}` }
+        return { index: d == null || d > 64 ? 1 : d > 32 ? 2 : d > 16 ? 3 : 4, of: 4, text: d == null ? `go to ${who} (not in sight)` : `go to ${who} (${Math.round(d)} m away)` }
+      }
       const y = goToY(place)
       if (y != null) {
         const cur = obs.pos?.y ?? 0
@@ -233,17 +297,19 @@ export const GOAL_KINDS = {
       return { index: 1 + Math.max(0, Math.min(7, Math.floor((64 - cur) / 16))), of: 8, text: `go down to diamond level (y -58), now at y ${Math.round(cur)}` }
     },
     teacher: (obs, place) => {
+      if (playerOf(place)) return `go_to_player(${playerOf(place)})`
       const y = goToY(place)
       if (y != null) return (obs.pos?.y ?? 0) > y ? (counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)') : 'explore_toward(surface)'
       return place === 'base' ? 'return_to_base' : place === 'surface' ? 'explore_toward(surface)'
         : counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)'
     },
     describe: (obs, place) => {
+      if (playerOf(place)) return `go to ${playerOf(place)}`
       const y = goToY(place)
       if (y != null) return `go to y ${y}`
       return place === 'diamond_level' ? 'go to diamond level' : place === 'base' ? 'go to base' : 'go to the surface'
     },
-    stuckS: 240,
+    stuckS: place => playerOf(place) ? 120 : 240,
   },
   survive_night: {
     done: obs => DAY.has(obs.phase),
@@ -275,6 +341,46 @@ export const GOAL_KINDS = {
     describe: () => 'build a nether portal frame',
     stuckS: 600,
   },
+  // hunt(<drop>, n): arg is the drop (recipes.HUNT key: white_wool, leather, ...); the plugin's hunt(<mob>) options.
+  hunt: {
+    done: (obs, item, count) => have(obs, item) >= count,
+    filter: (obs, item, opts, count, g) => keepWithPlugins(obs, goalOf('hunt', item, count, g), opts, new Set(moves(opts)),
+      id => HUNT[item].mobs.some(m => id === `hunt(${m})`)),
+    step: (obs, item, count) => ({ index: fifths(have(obs, item), count), of: 5, text: GOAL_KINDS.hunt.describe(obs, item, count) }),
+    teacher: (obs, item, count, g) => firstPlugin(obs, goalOf('hunt', item, count, g), id => HUNT[item].mobs.some(m => id === `hunt(${m})`))
+      ?? `hunt(${HUNT[item].mobs[0]})`,
+    describe: (obs, item, count) => `${huntVerb(item)} ${HUNT[item].mobs[0]} for ${count} ${humanize(item)} (have ${have(obs, item)})`,
+    stuckS: 300,
+  },
+  // smelt_item(<product>, n): recipes.SMELT products (iron_ingot stays gather(iron_ingot)); a furnace, fuel, then the
+  // plugin's smelt_item(<product>). The input comes from an earlier plan step.
+  smelt_item: {
+    done: (obs, item, count) => have(obs, item) >= count,
+    filter: (obs, item, opts, count, g) => {
+      const keep = new Set(['gather_wood', 'mine_coal', ...moves(opts)]), noFurnace = !furnaceNear(obs) && counts(obs).furnace === 0
+      if (noFurnace) wanted(obs, 'furnace', 1, keep)
+      return keepWithPlugins(obs, goalOf('smelt_item', item, count, g), opts, keep,
+        id => id === `smelt_item(${item})` || (noFurnace && id === 'craft_item(furnace)'))
+    },
+    step: (obs, item, count) => ({ index: fifths(have(obs, item), count), of: 5, text: `smelt ${count} ${humanize(item)} (have ${have(obs, item)})` }),
+    teacher: (obs, item) => {
+      const c = counts(obs)
+      if (!furnaceNear(obs) && c.furnace === 0) return acquire(obs, 'furnace')
+      if (!hasFuel(c)) return seen(obs, isCoal, 32) ? 'mine_coal' : acquire(obs, 'log')
+      return have(obs, SMELT[item]) >= 1 ? `smelt_item(${item})` : null
+    },
+    describe: (obs, item, count) => `smelt ${count} ${humanize(item)} (have ${have(obs, item)})`,
+    stuckS: 300,
+  },
+  // receive(<item>, n) from a player (goal.from): the plugin's receive(<item>) waits for the drop and picks it up.
+  receive: {
+    done: (obs, item, count) => have(obs, item) >= count,
+    filter: (obs, item, opts, count, g) => keepWithPlugins(obs, goalOf('receive', item, count, g), opts, new Set(), id => id === `receive(${item})`),
+    step: (obs, item, count, g) => ({ index: fifths(have(obs, item), count), of: 5, text: GOAL_KINDS.receive.describe(obs, item, count, g) }),
+    teacher: (obs, item) => `receive(${item})`,
+    describe: (obs, item, count, g) => `get ${count} ${humanize(item)} from ${giver(g)} (have ${have(obs, item)})`,
+    stuckS: 90,
+  },
 }
 const stuckOf = (k, g) => typeof GOAL_KINDS[k].stuckS === 'function' ? GOAL_KINDS[k].stuckS(g.arg, g.count) : GOAL_KINDS[k].stuckS
 const DEFAULTS = new Set(['chain', 'iron_pickaxe'])
@@ -290,17 +396,26 @@ const DIAMOND_GOAL = (kind, arg) => (kind === 'gather' && arg === 'diamond') || 
 
 // {ok: true} | {ok: true, goal, note} (the goal clamped; note says why, for the chat reply) | {ok: false, reason}
 // (reason phrased for the audience). obs (optional) enables the stage gates.
-export function validateGoal({ kind, arg, count } = {}, obs = null) {
+const countOk = n => Number.isInteger(n) && n >= 1 && n <= 64
+const BAD_COUNT = { ok: false, reason: 'count must be an integer from 1 to 64' }
+// Items the MINE table knows but a gather goal refuses (emerald ore: mountains only, too rare to search for).
+const NOT_GATHERED = { emerald: 'cannot gather emerald (too rare)' }
+export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
   if (!GOAL_KINDS[kind]) return { ok: false, reason: `unknown goal kind ${kind}` }
   if (DEFAULTS.has(kind)) return { ok: false, reason: `${kind} is the default goal and cannot be pushed` }
   const stage = obs ? stageOf(obs).index : null
   if (stage != null && DIAMOND_GOAL(kind, arg) && stage < 3)
     return { ok: false, reason: obs.inventory?.iron_pickaxe ? 'needs iron tools and full iron armor first' : 'needs an iron pickaxe first' }
   switch (kind) {
-    case 'craft_item': return RECIPES[arg] ? { ok: true } : { ok: false, reason: `cannot craft ${arg}` }
+    case 'craft_item':
+      if (RECIPES[arg]) return { ok: true }
+      if (!isItem(arg)) return { ok: false, reason: `unknown item ${arg}` }
+      if (producerOf(arg)?.kind !== 'craft_item') return { ok: false, reason: `cannot craft ${humanize(arg)}` }
+      return count == null || countOk(count) ? { ok: true } : BAD_COUNT
     case 'gather': {
-      if (!PRODUCERS[arg]) return { ok: false, reason: `cannot gather ${arg}` }
-      if (!Number.isInteger(count) || count < 1 || count > 64) return { ok: false, reason: 'count must be an integer from 1 to 64' }
+      if (NOT_GATHERED[arg]) return { ok: false, reason: NOT_GATHERED[arg] }
+      if (!PRODUCERS[arg] && producerOf(arg)?.kind !== 'gather') return { ok: false, reason: `cannot gather ${arg}` }
+      if (!countOk(count)) return BAD_COUNT
       if (arg === 'flint' && stage != null && stage < 4) return { ok: false, reason: 'flint comes later, when the bot builds the portal' }
       const cap = capOf(arg)
       if (cap != null && count > cap) return { ok: true, goal: { kind, arg, count: cap }, note: `capped at ${cap} ${humanize(arg)}` }
@@ -312,8 +427,18 @@ export function validateGoal({ kind, arg, count } = {}, obs = null) {
     case 'build':
       if (!STRUCTURES[arg]) return { ok: false, reason: `cannot build ${arg}` }
       return STRUCTURES[arg].executor ? { ok: true } : { ok: false, reason: 'no executor yet' }
+    case 'hunt':
+      if (!HUNT[arg]) return { ok: false, reason: 'hunt needs a hunted drop (white_wool, leather, ...)' }
+      return countOk(count) ? { ok: true } : BAD_COUNT
+    case 'smelt_item':
+      if (!SMELT[arg]) return { ok: false, reason: `cannot smelt ${arg}` }
+      return countOk(count) ? { ok: true } : BAD_COUNT
+    case 'receive':
+      if (!isItem(arg)) return { ok: false, reason: `unknown item ${arg}` }
+      if (!countOk(count)) return BAD_COUNT
+      return typeof from === 'string' && /^\w{1,16}$/.test(from) ? { ok: true } : { ok: false, reason: 'receive needs the name of the player giving it' }
     case 'go_to': {
-      if (PLACES.includes(arg)) return { ok: true }
+      if (PLACES.includes(arg) || playerOf(arg)) return { ok: true }
       const y = goToY(arg)
       if (y != null) return y >= -64 && y <= 320 ? { ok: true } : { ok: false, reason: 'y must be between -64 and 320' }
       return { ok: false, reason: `cannot go to ${arg}` }
@@ -340,7 +465,9 @@ export function nightPaused(obs, filtered) {
 
 const sourceText = src => !src ? 'Goal' : src === 'leader' ? 'Goal from the leader'
   : src.startsWith('audience:') ? `Goal from the audience (${src.slice('audience:'.length)})` : `Goal (${src})`
-const pub = g => ({ kind: g.kind, arg: g.arg ?? null, count: g.count ?? null, source: g.source, id: g.id })
+// plan_id, step_index and from appear only on plan-book and receive goals (the leader's own goals keep their shape).
+const pub = g => ({ kind: g.kind, arg: g.arg ?? null, count: g.count ?? null, source: g.source, id: g.id,
+  ...(g.plan_id != null || g.from != null ? { plan_id: g.plan_id ?? null, step_index: g.step_index ?? null, from: g.from ?? null } : {}) })
 
 // The stack: entries [default, ...pushed], top last. update() pops finished (goal_done) and stuck (goal_failed) goals.
 export class GoalStack {
@@ -351,11 +478,11 @@ export class GoalStack {
   }
   top() { return this.stack[this.stack.length - 1] }
   depth() { return this.stack.length - 1 }
-  push({ kind, arg = null, count = null, source = 'leader', t = null, obs = null }) {
-    const v = validateGoal({ kind, arg, count }, obs)
+  push({ kind, arg = null, count = null, source = 'leader', t = null, obs = null, plan_id = null, step_index = null, from = null }) {
+    const v = validateGoal({ kind, arg, count, from }, obs)
     if (!v.ok) throw new Error(`invalid goal ${kind}(${arg ?? ''}): ${v.reason}`)
     if (v.goal) count = v.goal.count   // clamped
-    const g = { kind, arg, count, source, id: this.nextId++, t, best: null, progressT: t, lastT: t }
+    const g = { kind, arg, count, source, id: this.nextId++, t, best: null, progressT: t, lastT: t, plan_id, step_index, from }
     this.stack.push(g)
     return g
   }
@@ -371,12 +498,12 @@ export class GoalStack {
     const events = []
     while (this.stack.length > 1) {
       const g = this.top(), K = GOAL_KINDS[g.kind]
-      if (K.done(obs, g.arg, g.count)) { this.pop('done'); events.push({ kind: 'goal_done', goal: pub(g), t }); continue }
-      const s = K.step(obs, g.arg, g.count).index
+      if (K.done(obs, g.arg, g.count, g)) { this.pop('done'); events.push({ kind: 'goal_done', goal: pub(g), t }); continue }
+      const s = K.step(obs, g.arg, g.count, g).index
       if (g.best == null || s > g.best || g.progressT == null) {
         if (g.best == null || s > g.best) g.best = s
         g.progressT = t
-      } else if (g.lastT != null && nightPaused(obs, K.filter(obs, g.arg, options(obs), g.count))) g.progressT += t - g.lastT   // the night rule: the clock stands still
+      } else if (g.lastT != null && nightPaused(obs, K.filter(obs, g.arg, options(obs), g.count, g))) g.progressT += t - g.lastT   // the night rule: the clock stands still
       g.lastT = t
       if (t - g.progressT >= stuckOf(g.kind, g)) { this.pop('stuck'); events.push({ kind: 'goal_failed', goal: pub(g), t, reason: 'stuck' }); continue }
       break
@@ -385,19 +512,19 @@ export class GoalStack {
   }
   step(obs) {
     const g = this.top()
-    const s = GOAL_KINDS[g.kind].step(obs, g.arg, g.count)
+    const s = GOAL_KINDS[g.kind].step(obs, g.arg, g.count, g)
     return { ...s, index: 100 * this.depth() + s.index, goal_id: g.id }
   }
   describe(obs) {
     const base = GOAL_KINDS[this.stack[0].kind].describe(obs)
     if (this.stack.length === 1) return base
-    const parts = this.stack.slice(1).reverse().map(g => `${sourceText(g.source)}: ${GOAL_KINDS[g.kind].describe(obs, g.arg, g.count)}.`)
+    const parts = this.stack.slice(1).reverse().map(g => `${sourceText(g.source)}: ${GOAL_KINDS[g.kind].describe(obs, g.arg, g.count, g)}.`)
     if (base) parts.push(base)
     return parts.join(' Then: ')
   }
   filter(obs, opts) {
     const g = this.top()
-    return GOAL_KINDS[g.kind].filter(obs, g.arg, opts, g.count)
+    return GOAL_KINDS[g.kind].filter(obs, g.arg, opts, g.count, g)
   }
   // The default entry's teacher as is (teacherSubtask validates against options itself). A pushed goal: threats, food
   // and the night protocol first, then the kind's teacher; null when the pick is not in the filtered list.
@@ -412,7 +539,7 @@ export class GoalStack {
     if (obs.food < 8 && offered.has('eat')) return 'eat'
     if ((nightOnSurface(obs) || shelterSoon(obs)) && offered.has('build_shelter')) return 'build_shelter'
     if (nightOnSurface(obs)) { const r = ['explore_toward(down)', 'return_to_base'].find(id => offered.has(id)); if (r) return r }
-    const id = K.teacher(obs, g.arg, g.count)
+    const id = K.teacher(obs, g.arg, g.count, g)
     return id && offered.has(id) ? id : null
   }
 }

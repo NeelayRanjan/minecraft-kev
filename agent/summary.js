@@ -145,6 +145,13 @@ export function summarize(bot, mcData, mem, ctx) {
   const attacker = mem.attacker && ctx.t - mem.attacker.t <= 30
     ? { kind: mem.attacker.kind, name: mem.attacker.name, dist: Math.round(mem.attacker.dist), sinceS: Math.round(ctx.t - mem.attacker.t), pos: mem.attacker.pos } : null
   if (!attacker) mem.attacker = null
+  // obs.players: other players within 64 m by name (go_to(player:<name>) is done within 3 m); not in the state text.
+  const players = {}
+  for (const [name, p] of Object.entries(bot.players || {})) {
+    if (name === bot.username || !p?.entity?.position) continue
+    const d = relTo(me, p.entity.position).dist
+    if (d <= 64) players[name] = { dist: Math.round(d * 10) / 10 }
+  }
   const inv = {}, toolWear = {}
   for (const it of bot.inventory.items()) {
     inv[it.name] = (inv[it.name] || 0) + it.count
@@ -172,7 +179,7 @@ export function summarize(bot, mcData, mem, ctx) {
     health, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
     base, memory: { ironSeen, diamondSeen: seenObs(me, mem.seen.diamond, ctx.t), lavaSeen: seenObs(me, mem.seen.lava, ctx.t), waterSeen: seenObs(me, mem.seen.water, ctx.t),
       lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading, portal: portalBuild(bot, mem) },
-    blocks, entities, nearestHostile: hostiles[0] || null, attacker,
+    blocks, entities, nearestHostile: hostiles[0] || null, attacker, players,
     current: ctx.current || null, last: ctx.last || null, withhold: ctx.withhold || [], goal, armor, portalLit, portalFrame,
     done: goal === 'nether' ? stageOf({ inventory: inv, armor, portalLit }).done : !!inv.iron_pickaxe,
   }

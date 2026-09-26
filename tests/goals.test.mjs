@@ -328,3 +328,171 @@ test('go_to(y:<n>): validateGoal parses -64..320; done, filter and teacher key o
   s.push({ kind: 'go_to', arg: 'y:12', source: 'leader', t: 0 })
   assert.equal(s.update(chain({ pos: { x: 0, y: 12, z: 0 } }), 5)[0].kind, 'goal_done')
 })
+
+// ---- Task 3: plans, new goal kinds, plan ids on the stack ---------------------------------------------------------
+import { registerOptionProvider, pluginOptions } from '../agent/goals.js'
+
+const opt = id => { const m = /^(\w+)(?:\((\w+)\))?$/.exec(id); return { id, name: m[1], arg: m[2] ?? null, desc: `plugin ${id}` } }
+function withProvider(ids, fn) {
+  registerOptionProvider(() => ids.map(opt))
+  try { fn() } finally { registerOptionProvider(null) }
+}
+
+test('validateGoal: the new kinds and vocabularies', () => {
+  for (const g of [{ kind: 'hunt', arg: 'white_wool', count: 3 }, { kind: 'smelt_item', arg: 'glass', count: 3 },
+    { kind: 'receive', arg: 'redstone', count: 4, from: 'Spacers_Choice' }, { kind: 'go_to', arg: 'player:Spacers_Choice' },
+    { kind: 'craft_item', arg: 'compass' }, { kind: 'craft_item', arg: 'oak_stairs', count: 4 }, { kind: 'gather', arg: 'redstone', count: 2 },
+    { kind: 'gather', arg: 'oak_planks', count: 6 }, { kind: 'gather', arg: 'sand', count: 3 }])
+    assert.deepEqual(validateGoal(g), { ok: true }, JSON.stringify(g))
+  const reason = g => validateGoal(g).reason
+  assert.equal(reason({ kind: 'hunt', arg: 'diamond', count: 1 }), 'hunt needs a hunted drop (white_wool, leather, ...)')
+  assert.equal(reason({ kind: 'craft_item', arg: 'grass' }), 'unknown item grass')
+  assert.equal(reason({ kind: 'craft_item', arg: 'short_grass' }), 'cannot craft short grass')
+  assert.equal(reason({ kind: 'smelt_item', arg: 'diamond', count: 1 }), 'cannot smelt diamond')
+  assert.equal(reason({ kind: 'receive', arg: 'redstone', count: 4 }), 'receive needs the name of the player giving it')
+  assert.equal(reason({ kind: 'receive', arg: 'redstone', count: 4, from: 'bad name!' }), 'receive needs the name of the player giving it')
+  assert.equal(reason({ kind: 'receive', arg: 'grass', count: 4, from: 'bob' }), 'unknown item grass')
+  assert.equal(reason({ kind: 'go_to', arg: 'player:' }), 'cannot go to player:')
+  assert.equal(reason({ kind: 'gather', arg: 'grass', count: 2 }), 'cannot gather grass')
+  for (const g of [{ kind: 'hunt', arg: 'leather' }, { kind: 'smelt_item', arg: 'glass', count: 0 }, { kind: 'receive', arg: 'redstone', count: 65, from: 'bob' },
+    { kind: 'craft_item', arg: 'compass', count: 0 }]) assert.equal(reason(g), 'count must be an integer from 1 to 64', JSON.stringify(g))
+})
+
+test('the option provider hook: default empty, a throwing provider is ignored', () => {
+  assert.deepEqual(pluginOptions(chain({}), { kind: 'hunt', arg: 'white_wool', count: 3 }), [])
+  registerOptionProvider(() => { throw new Error('boom') })
+  try { assert.deepEqual(pluginOptions(chain({}), { kind: 'hunt', arg: 'white_wool', count: 3 }), []) } finally { registerOptionProvider(null) }
+})
+
+test('hunt(white_wool, 3): keeps hunt(sheep) from the provider, drops other work; done by the wool count', () => {
+  const o = chain({ inventory: { iron_pickaxe: 1, cobblestone: 5 }, blocks: [...stone, ...logs] })
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'hunt', arg: 'white_wool', count: 3, source: 'leader', t: 0 })
+  withProvider(['hunt(sheep)', 'hunt(cow)', 'mine(redstone_ore)'], () => {
+    const kept = s.filter(o, options(o)).map(x => x.id)
+    assert.ok(kept.includes('hunt(sheep)') && kept.includes('wait'), kept.join(' '))
+    for (const id of ['hunt(cow)', 'mine(redstone_ore)', 'mine_stone', 'gather_wood']) assert.ok(!kept.includes(id), id)
+    assert.equal(s.teacher(o), 'hunt(sheep)')
+  })
+  assert.equal(s.teacher(o), null, 'no provider: hunt(sheep) is not offered')
+  assert.match(s.describe(o), /^Goal from the leader: shear sheep for 3 white wool \(have 0\)\./)
+  assert.equal(s.step(o).index, 101)
+  assert.equal(GOAL_KINDS.hunt.stuckS, 300)
+  assert.equal(s.update(chain({ inventory: { white_wool: 3 } }), 5)[0].kind, 'goal_done')
+})
+
+test('smelt_item(glass, 3): furnace first, then fuel, then smelt; done by the count', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'smelt_item', arg: 'glass', count: 3, source: 'leader', t: 0 })
+  const noFurnace = chain({ inventory: { iron_pickaxe: 1, cobblestone: 10, sand: 3, coal: 2 }, base: { crafting_table: { dist: 3 }, furnace: null }, blocks: stone })
+  withProvider(['smelt_item(glass)', 'smelt_item(stone)'], () => {
+    const kept = s.filter(noFurnace, options(noFurnace)).map(x => x.id)
+    assert.ok(kept.includes('smelt_item(glass)') && kept.includes('craft(furnace)'), kept.join(' '))
+    assert.ok(!kept.includes('smelt_item(stone)'))
+    assert.equal(s.teacher(noFurnace), 'craft(furnace)')
+    const noFuel = chain({ inventory: { iron_pickaxe: 1, sand: 3 }, base: table, blocks: [...logs, { name: 'coal_ore', dist: 8 }] })
+    assert.equal(s.teacher(noFuel), 'mine_coal')
+    const ready = chain({ inventory: { iron_pickaxe: 1, sand: 3, coal: 2 }, base: table })
+    assert.equal(s.teacher(ready), 'smelt_item(glass)')
+  })
+  assert.equal(GOAL_KINDS.smelt_item.stuckS, 300)
+  assert.equal(s.update(chain({ inventory: { glass: 3 } }), 5)[0].kind, 'goal_done')
+})
+
+test('receive(redstone, 4, from): only receive(redstone) and the always-kept options; from reaches pub', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  const g = s.push({ kind: 'receive', arg: 'redstone', count: 4, from: 'Spacers_Choice', source: 'audience:Spacers_Choice', t: 0, plan_id: 7, step_index: 2 })
+  assert.equal(g.from, 'Spacers_Choice'); assert.equal(g.plan_id, 7); assert.equal(g.step_index, 2)
+  const o = chain({ inventory: { iron_pickaxe: 1, cobblestone: 5 }, blocks: [...stone, ...logs], base: { crafting_table: { dist: 30 }, furnace: null } })
+  withProvider(['receive(redstone)', 'receive(coal)'], () => {
+    const kept = s.filter(o, options(o)).map(x => x.id)
+    assert.deepEqual(kept.filter(id => !['wait', 'eat', 'build_shelter'].includes(id)), ['receive(redstone)'])
+    assert.equal(s.teacher(o), 'receive(redstone)')
+  })
+  assert.match(s.describe(o), /^Goal from the audience \(Spacers_Choice\): get 4 redstone from Spacers_Choice \(have 0\)\./)
+  assert.equal(GOAL_KINDS.receive.stuckS, 90)
+  const ev = s.update(chain({ inventory: { redstone: 4 } }), 5)
+  assert.deepEqual(ev[0].goal, { kind: 'receive', arg: 'redstone', count: 4, source: 'audience:Spacers_Choice', id: 1, plan_id: 7, step_index: 2, from: 'Spacers_Choice' })
+})
+
+test('go_to(player:<name>): done within 3 m; filter go_to_player(<name>); stuck after 120 s', () => {
+  const K = GOAL_KINDS.go_to
+  assert.equal(K.done(chain({ players: { Spacers_Choice: { dist: 2.5 } } }), 'player:Spacers_Choice'), true)
+  assert.equal(K.done(chain({ players: { Spacers_Choice: { dist: 10 } } }), 'player:Spacers_Choice'), false)
+  assert.equal(K.done(chain({}), 'player:Spacers_Choice'), false)
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'go_to', arg: 'player:Spacers_Choice', source: 'leader', t: 0 })
+  const o = chain({ inventory: { iron_pickaxe: 1 }, blocks: [...stone, ...logs], base: { crafting_table: { dist: 30 }, furnace: null }, players: { Spacers_Choice: { dist: 40 } } })
+  withProvider(['go_to_player(Spacers_Choice)', 'go_to_player(bob)'], () => {
+    const kept = s.filter(o, options(o)).map(x => x.id)
+    assert.deepEqual(kept.filter(id => !['wait', 'eat', 'build_shelter'].includes(id)), ['go_to_player(Spacers_Choice)'])
+    assert.equal(s.teacher(o), 'go_to_player(Spacers_Choice)')
+  })
+  assert.match(s.describe(o), /^Goal from the leader: go to Spacers_Choice\./)
+  assert.match(s.step(o).text, /Spacers_Choice \(40 m away\)/)
+  assert.deepEqual(s.update(o, 0), [])
+  assert.equal(s.update(o, 120)[0].reason, 'stuck')
+  const keep = new GoalStack({ goal: 'nether' })
+  keep.push({ kind: 'go_to', arg: 'base', source: 'leader', t: 0 })
+  assert.deepEqual(keep.update(o, 0), []); assert.deepEqual(keep.update(o, 200), [], 'go_to(base) keeps 240 s')
+})
+
+test('craft_item(compass): a non-legacy recipe goes through the provider; done by count', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'craft_item', arg: 'oak_stairs', count: 4, source: 'leader', t: 0 })
+  const o = chain({ inventory: { iron_pickaxe: 1, oak_planks: 6 }, blocks: [...stone, ...logs], base: table })
+  assert.equal(s.teacher(o), null)
+  withProvider(['craft_item(oak_stairs)', 'craft_item(compass)'], () => {
+    const kept = s.filter(o, options(o)).map(x => x.id)
+    assert.ok(kept.includes('craft_item(oak_stairs)') && !kept.includes('craft_item(compass)'), kept.join(' '))
+    assert.ok(kept.includes('gather_wood'), 'legacy gathering stays')
+    assert.equal(s.teacher(o), 'craft_item(oak_stairs)')
+  })
+  assert.equal(GOAL_KINDS.craft_item.done(chain({ inventory: { oak_stairs: 3 } }), 'oak_stairs', 4), false)
+  assert.equal(GOAL_KINDS.craft_item.done(chain({ inventory: { oak_stairs: 4 } }), 'oak_stairs', 4), true)
+  assert.equal(GOAL_KINDS.craft_item.done(chain({ inventory: { compass: 1 } }), 'compass', null), true)
+  assert.match(s.describe(o), /craft 4 oak stairs \(have 0\)/)
+})
+
+test('gather(redstone) through mine(<block>) plugin options; gather(oak_planks) counts that wood exactly', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'gather', arg: 'redstone', count: 2, source: 'leader', t: 0 })
+  const o = chain({ inventory: { iron_pickaxe: 1 }, blocks: [...stone, ...logs] })
+  assert.equal(s.teacher(o), null)
+  withProvider(['mine(sand)', 'mine(deepslate_redstone_ore)', 'mine(redstone_ore)'], () => {
+    const kept = s.filter(o, options(o)).map(x => x.id)
+    assert.ok(kept.includes('mine(redstone_ore)') && kept.includes('mine(deepslate_redstone_ore)') && !kept.includes('mine(sand)'), kept.join(' '))
+    assert.ok(!kept.includes('mine_stone') && !kept.includes('gather_wood'))
+    assert.equal(s.teacher(o), 'mine(deepslate_redstone_ore)')
+  })
+  const K = GOAL_KINDS.gather
+  assert.equal(K.done(chain({ inventory: { oak_planks: 2, birch_planks: 6 } }), 'oak_planks', 4), false)
+  assert.equal(K.done(chain({ inventory: { oak_planks: 4 } }), 'oak_planks', 4), true)
+  const p = new GoalStack({ goal: 'nether' })
+  p.push({ kind: 'gather', arg: 'oak_planks', count: 6, source: 'leader', t: 0 })
+  const logsHeld = chain({ inventory: { iron_pickaxe: 1, oak_log: 2 }, blocks: [...stone, ...logs] })
+  const kept = p.filter(logsHeld, options(logsHeld)).map(x => x.id)
+  assert.ok(kept.includes('gather_wood') && kept.includes('craft(planks)') && !kept.includes('mine_stone'), kept.join(' '))
+  assert.equal(p.teacher(logsHeld), 'craft(planks)')
+  assert.equal(p.teacher(chain({ inventory: { iron_pickaxe: 1 }, blocks: [...stone, ...logs] })), 'gather_wood')
+})
+
+test('push keeps plan_id and step_index; pub shows them only for plan or receive goals', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  const g = s.push({ kind: 'gather', arg: 'cobblestone', count: 8, source: 'plan', t: 0, plan_id: 3, step_index: 1 })
+  assert.equal(g.plan_id, 3); assert.equal(g.step_index, 1)
+  const ev = s.update(chain({ inventory: { cobblestone: 8 } }), 4)
+  assert.deepEqual(ev[0].goal, { kind: 'gather', arg: 'cobblestone', count: 8, source: 'plan', id: 1, plan_id: 3, step_index: 1, from: null })
+})
+
+test('plugin-backed filters: under low air only the surface climb; at night on the surface the refuges stay', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'hunt', arg: 'leather', count: 2, source: 'leader', t: 0 })
+  withProvider(['hunt(cow)'], () => {
+    const wet = chain({ inventory: ironKit, armor: armorKit, inWater: true, oxygen: 6 })
+    assert.deepEqual(s.filter(wet, options(wet)).map(o => o.id).sort(), ['explore_toward(surface)', 'wait'])
+    const night = chain({ inventory: { iron_pickaxe: 1, cobblestone: 5 }, phase: 'night', base: { crafting_table: { dist: 40 }, furnace: null } })
+    const ids = s.filter(night, options(night)).map(o => o.id)
+    assert.ok(ids.includes('return_to_base') && ids.includes('build_shelter') && ids.includes('hunt(cow)'), ids.join(' '))
+  })
+})
