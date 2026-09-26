@@ -3,11 +3,23 @@
 // answers "continue" or one subtask id from the offered list (JSON schema; nothing else is parsed). kev keeps choosing
 // at 1 Hz between leader calls; an override replaces kev's choice at the next decision point.
 //
+// Goal mode (trigger `subgoals`, goals enabled): the leader also answers push_goal (a typed goal from agent/goals.js,
+// validated by validateGoal), pop_goal or cannot (a reason the audience reads), and sees the goal stack and the
+// unanswered audience requests (chat text appears only in that section of its prompt, never in kev's state).
+//
 // Pure: the runner (agent/run_episode.mjs) owns the transport (planner.js askLeader), the timing and the motor.
+import { GOAL_KINDS, validateGoal, RECIPES, PRODUCERS, FINDABLE_NOW, PLACES, STRUCTURES } from './goals.js'
 
-export const TRIGGERS = ['periodic15', 'events', 'periodic30_interrupts']
-const PERIOD = { periodic15: 15, periodic30_interrupts: 30 }
-const EVENT_TRIGGERS = { events: new Set(['subtask_done', 'subtask_error', 'death']), periodic30_interrupts: new Set(['interrupt', 'death']) }
+export const TRIGGERS = ['periodic15', 'events', 'periodic30_interrupts', 'subgoals']
+const PERIOD = { periodic15: 15, periodic30_interrupts: 30, subgoals: 120 }
+const EVENT_TRIGGERS = {
+  events: new Set(['subtask_done', 'subtask_failed', 'subtask_error', 'death']),
+  periodic30_interrupts: new Set(['interrupt', 'death']),
+  subgoals: new Set(['goal_done', 'goal_failed', 'subtask_failed', 'interrupt', 'death', 'audience_request']),
+}
+// subgoals: at most one call per SPACING s, except for these events (which also skip the FIRST_AT wait)
+const SPACING = { subgoals: 20 }
+const BYPASS = { subgoals: new Set(['death', 'interrupt', 'audience_request']) }
 const FIRST_AT = 20   // periodic modes: let the bot start before the first call
 
 // When to ask. The runner calls due() once per tick with the most important event of that tick (pickEvent) and
@@ -17,21 +29,30 @@ export class LeaderTrigger {
     if (!TRIGGERS.includes(mode)) throw new Error(`unknown leader mode ${mode}`)
     this.mode = mode
     this.lastAsk = PERIOD[mode] ? FIRST_AT - PERIOD[mode] : null
+    this.everAsked = false
   }
   due({ t, event = null, inFlight = false }) {
     this.reason = null   // why the last due() fired: the event, or 'periodic'
     if (inFlight) return false
+    const spacing = SPACING[this.mode]
+    if (spacing != null) {
+      if (event && BYPASS[this.mode].has(event)) { this.reason = event; return true }
+      if (t < FIRST_AT || (this.everAsked && t - this.lastAsk < spacing)) return false
+    }
     if (event && EVENT_TRIGGERS[this.mode]?.has(event)) { this.reason = event; return true }
     const period = PERIOD[this.mode]
     if (period != null && t - this.lastAsk >= period) { this.reason = 'periodic'; return true }
     return false
   }
-  asked(t) { this.lastAsk = t }
+  asked(t) { this.lastAsk = t; this.everAsked = true }
 }
 
-const EVENT_RANK = ['death', 'interrupt', 'subtask_error', 'subtask_done']
-export function pickEvent(events) {
-  for (const e of EVENT_RANK) if (events.includes(e)) return e
+// The most important event of a tick. With a mode, events that mode ignores are skipped, so a goal_done does not
+// shadow a subtask_done in the events mode.
+const EVENT_RANK = ['death', 'interrupt', 'audience_request', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
+export function pickEvent(events, mode = null) {
+  const cares = mode ? EVENT_TRIGGERS[mode] : null
+  for (const e of EVENT_RANK) if (events.includes(e) && (!cares || cares.has(e))) return e
   return null
 }
 
@@ -52,9 +73,25 @@ export function recentFailure(id, recentResults) {
   return bad ? bad.result : null
 }
 
-export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [] }) {
+// Goal answers (goalsEnabled only) are about the goal stack, not the running subtask, so they are never stale:
+// push_goal carries the validated goal {kind, arg, count} (invalid with validateGoal's reason, prefixed with the goal,
+// otherwise); pop_goal (the runner decides whether a pushed goal is there to pop) and cannot pass `why` through.
+export const GOAL_ACTIONS = ['push_goal', 'pop_goal', 'cannot']
+const goalText = ({ kind, arg, count } = {}) => `${kind}${arg != null || count != null ? `(${[arg, count].filter(x => x != null).join(', ')})` : ''}`
+
+export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [], goalsEnabled = false }) {
   const action = answer?.action ?? null
   if (!action) return { kind: 'invalid', id: null }
+  if (goalsEnabled && GOAL_ACTIONS.includes(action)) {
+    const why = typeof answer.why === 'string' ? answer.why : ''
+    if (action !== 'push_goal') return { kind: action, id: null, why }
+    const raw = answer.goal
+    if (!raw || typeof raw !== 'object') return { kind: 'invalid', id: action, reason: 'push_goal without a goal' }
+    const goal = { kind: raw.kind ?? null, arg: raw.arg == null || raw.arg === '' ? null : raw.arg, count: raw.count ?? null }
+    const v = validateGoal(goal)
+    if (!v.ok) return { kind: 'invalid', id: action, reason: `${goalText(goal)}: ${v.reason}` }
+    return { kind: 'push_goal', id: null, goal, why }
+  }
   if ((currentId ?? null) !== (askedCurrentId ?? null)) return { kind: 'stale', id: null }
   if (action === 'continue' || action === currentId) return { kind: 'continue', id: null }
   if (!offered.some(o => o.id === action)) return { kind: 'invalid', id: action }
@@ -63,13 +100,25 @@ export function applyAnswer({ answer, currentId, askedCurrentId, offered, threat
   return { kind: 'override', id: action }
 }
 
-export const leaderSchema = options => ({
+export const PUSHABLE_KINDS = Object.keys(GOAL_KINDS).filter(k => k !== 'chain' && k !== 'iron_pickaxe')
+
+export const leaderSchema = (options, { goals = false } = {}) => goals ? {
+  type: 'object',
+  properties: {
+    action: { type: 'string', enum: ['continue', ...GOAL_ACTIONS, ...options.map(o => o.id)] },
+    goal: { type: 'object', properties: { kind: { type: 'string', enum: PUSHABLE_KINDS }, arg: { type: 'string' }, count: { type: 'integer' } }, required: ['kind'] },
+    why: { type: 'string' },
+  },
+  required: ['action'],
+} : {
   type: 'object',
   properties: { action: { type: 'string', enum: ['continue', ...options.map(o => o.id)] }, why: { type: 'string' } },
   required: ['action'],
-})
+}
 
-export function parseLeaderAnswer(text, options) {
+// With goals, the goal actions are accepted and `goal` ({kind, arg, count} as sent, or null) is returned for
+// applyAnswer to validate; without, the result is {action, why} exactly as before.
+export function parseLeaderAnswer(text, options, { goals = false } = {}) {
   if (typeof text !== 'string') return { action: null, why: '' }
   let s = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(s)
@@ -80,8 +129,12 @@ export function parseLeaderAnswer(text, options) {
   try { obj = JSON.parse(s.slice(start, end + 1)) } catch { return { action: null, why: '' } }
   const why = typeof obj.why === 'string' ? obj.why.slice(0, 300) : ''
   const a = typeof obj.action === 'string' ? obj.action.trim() : null
-  const ok = a === 'continue' || options.some(o => o.id === a)
-  return { action: ok ? a : null, why }
+  const ok = a === 'continue' || options.some(o => o.id === a) || (goals && GOAL_ACTIONS.includes(a))
+  if (!goals) return { action: ok ? a : null, why }
+  const gl = obj.goal && typeof obj.goal === 'object' ? obj.goal : null
+  const goal = gl ? { kind: typeof gl.kind === 'string' ? gl.kind : null, arg: typeof gl.arg === 'string' ? gl.arg : null,
+    count: Number.isInteger(gl.count) ? gl.count : null } : null
+  return { action: ok ? a : null, why, goal }
 }
 
 // Per subtask id this episode: attempts, successes and failures by result, from the runner's events.
@@ -98,7 +151,7 @@ export function subtaskStats(events) {
   return out
 }
 
-export const LEADER_SYSTEM = `You supervise a Minecraft survival bot. A small model, kev, drives it: every second kev picks the next subtask from a declared list, and a scripted motor layer carries it out. You see more context than kev and think slower. Each time you are asked, either let kev carry on ("continue") or override with one subtask id from the offered list; your pick replaces kev's at once.
+const LEADER_RULES = `You supervise a Minecraft survival bot. A small model, kev, drives it: every second kev picks the next subtask from a declared list, and a scripted motor layer carries it out. You see more context than kev and think slower. Each time you are asked, either let kev carry on ("continue") or override with one subtask id from the offered list; your pick replaces kev's at once.
 
 The goal is a chain of five stages, in order (craft at a crafting table; 1 log = 4 planks, 2 planks = 4 sticks):
 1. Iron pickaxe: wood, crafting table, wooden pickaxe, cobblestone, stone pickaxe, raw iron (needs a stone pickaxe), furnace (8 cobblestone), smelt with fuel (coal, planks or logs), iron pickaxe = 3 iron ingots + 2 sticks.
@@ -117,9 +170,33 @@ Override only with a concrete reason:
 Never override into wait. Never pick a subtask whose last attempt ended no_path, target_gone, timeout or not_found; pick something that changes the situation instead (explore_toward(down), return_to_base, mine_stone).
 Never override fight, flee or pillar_up with anything other than another of those three while a hostile is within 16 m; at night the bot must be underground or in a shelter before doing anything else.
 Pickaxes wear out after about 500 blocks: when the bot has an iron pickaxe and cobblestone, having a spare stone pickaxe before a long dig is worth an override to craft(stone_pickaxe); losing the iron pickaxe resets the whole chain.
-Override rarely: \`continue\` is the right answer whenever kev's current subtask makes progress on the current step.
+Override rarely: \`continue\` is the right answer whenever kev's current subtask makes progress on the current step.`
+
+export const LEADER_SYSTEM = `${LEADER_RULES}
 
 Answer with JSON only: {"action": "continue" | "<subtask id>", "why": "<one sentence>"}`
+
+// Goal mode: the same rules, then the goal rules with the declared vocabularies (from goals.js), then the answer format.
+const list = xs => xs.join(', ')
+export const LEADER_SYSTEM_GOALS = `${LEADER_RULES}
+
+Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and on top any goals pushed by you or asked for by the audience (players chatting with the bot). kev works on the top goal until it is done or stuck, then the one below resumes. Besides "continue" and a subtask id you can answer:
+- push_goal with a typed goal: {"action": "push_goal", "goal": {"kind": ..., "arg": ..., "count": ...}, "why": ...};
+- pop_goal: drop the top pushed goal when it is pointless now (its materials are lost, night has fallen on the surface, it keeps failing);
+- cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.
+Goal kinds and their arguments (nothing else is accepted):
+- craft_item, arg one of: ${list(Object.keys(RECIPES))};
+- gather, arg one of: ${list(Object.keys(PRODUCERS))}; count an integer from 1 to 64;
+- find, arg one of: ${list(FINDABLE_NOW)};
+- go_to, arg one of: ${list(PLACES)};
+- build, arg one of: ${list(Object.keys(STRUCTURES).filter(k => STRUCTURES[k].executor))};
+- survive_night, return_to_base: no arg.
+Answer every audience request with exactly one push_goal or one cannot (with a reason the audience will read); if the request names something outside these lists, answer cannot and say what the bot can do instead.
+Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
+Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot.
+"continue" remains the default when there is no request and the goals make progress.
+
+Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>}, "why": "<one sentence>"} (goal only with push_goal)`
 
 const humanize = s => String(s).replace(/_/g, ' ')
 const STAGE_NAMES = ['iron pickaxe', 'iron tools', 'iron armor', 'diamond tools', 'lit nether portal']
@@ -139,7 +216,11 @@ function renderEvent(e) {
     case 'interrupt': return `${T(e.t)} interrupted: ${e.reason}${e.subtask ? ` (${e.subtask})` : ''}`
     case 'death': return `${T(e.t)} DIED`
     case 'respawn': return `${T(e.t)} respawned`
-    case 'goal_done': return `${T(e.t)} GOAL REACHED`
+    case 'goal_done': return e.goal ? `${T(e.t)} goal #${e.goal.id} ${goalText(e.goal)} done` : `${T(e.t)} GOAL REACHED`
+    case 'goal_failed': return `${T(e.t)} goal #${e.goal?.id} ${goalText(e.goal)} failed${e.reason ? ` (${e.reason})` : ''}`
+    case 'goal_pushed': return `${T(e.t)} goal #${e.goal?.id} ${goalText(e.goal)} pushed by ${sanitizeChat(e.goal?.source ?? '?', 40)}`
+    case 'goal_popped': return `${T(e.t)} goal #${e.goal?.id} ${goalText(e.goal)} popped${e.reason ? ` (${e.reason})` : ''}`
+    case 'leader_cannot': return `${T(e.t)} leader declined a request${e.why ? ` (${sanitizeChat(e.why, 120)})` : ''}`
     case 'stage_done': return e.stage >= 5 ? `${T(e.t)} stage 5: CHAIN DONE` : `${T(e.t)} reached stage ${e.stage}: now on ${STAGE_NAMES[e.stage] ?? e.stage}`
     case 'leader_override': return `${T(e.t)} leader override: ${e.from ?? 'idle'} -> ${e.to}${e.why ? ` (${e.why})` : ''}`
     case 'leader_continue': return `${T(e.t)} leader: continue${e.why ? ` (${e.why})` : ''}`
@@ -151,7 +232,36 @@ function renderEvent(e) {
   }
 }
 const SHOWN_EVENTS = new Set(['subtask_done', 'subtask_error', 'interrupt', 'death', 'respawn', 'goal_done', 'stage_done',
-  'leader_override', 'leader_continue', 'leader_stale', 'leader_invalid', 'leader_dropped', 'leader_blocked', 'kev_error'])
+  'leader_override', 'leader_continue', 'leader_stale', 'leader_invalid', 'leader_dropped', 'leader_blocked', 'kev_error',
+  'goal_failed', 'goal_pushed', 'goal_popped', 'leader_cannot'])
+
+// Chat text for the prompt: no special-token markers, one line, capped.
+export const sanitizeChat = (s, max = 200) => String(s ?? '').replace(/<\||\|>/g, '').replace(/[\r\n]+/g, ' ').slice(0, max)
+
+// The GOAL STACK section's input from a GoalStack: its describe text and the pushed goals, top first, with progress.
+export function goalStackView(stack, obs) {
+  return {
+    text: stack.describe(obs),
+    pushed: stack.stack.slice(1).reverse().map(g => ({ id: g.id, kind: g.kind, arg: g.arg, count: g.count, source: g.source, t: g.t,
+      progress: GOAL_KINDS[g.kind].step(obs, g.arg, g.count).text })),
+  }
+}
+
+function renderGoalStack(view) {
+  const out = [view.text || '(chain only)']
+  for (const g of view.pushed || [])
+    out.push(`#${g.id} ${goalText(g)} from ${sanitizeChat(g.source, 40)}, pushed at ${g.t != null ? T(g.t) : 't=?'}, progress ${g.progress}`)
+  if (!view.pushed?.length) out.push('no pushed goals')
+  return out
+}
+
+const MAX_REQUESTS = 5
+function renderRequests(requests = []) {
+  if (!requests.length) return ['(none)']
+  const out = requests.slice(0, MAX_REQUESTS).map(r => `${T(r.t)} ${sanitizeChat(r.name, 40)}: ${sanitizeChat(r.text)}`)
+  if (requests.length > MAX_REQUESTS) out.push(`(${requests.length - MAX_REQUESTS} more waiting)`)
+  return out
+}
 
 function renderNeeds(need) {
   if (!need) return []
@@ -198,24 +308,28 @@ function renderStats(stats = {}) {
 }
 
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
-  subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [] }) {
+  subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [] }) {
+  const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
   const own = ownHistory.slice(-5).map(h => `${T(h.t)} ${h.action ?? '(no answer)'}${h.kind && h.kind !== h.action ? ` (${h.kind})` : ''}${h.why ? `: ${h.why}` : ''}`)
   const user = [
     'STATE', stateText, '',
     'GOAL CHAIN', chainText, ...renderNeeds(need), '',
+    ...(goals ? ['GOAL STACK', ...renderGoalStack(goalStack), ''] : []),
     'CURRENT SUBTASK', ...renderCurrent(current), '',
     'RECENT EVENTS (oldest first)', none(events), '',
     'SUBTASK STATS THIS EPISODE', none(renderStats(stats)), '',
     'KEV FORECASTS', none(renderForecasts(forecasts, forecastTrend, kevPick)), '',
     'YOUR PREVIOUS DECISIONS', none(own), '',
     'TIME', `${minutesLeft != null ? minutesLeft.toFixed(1) : '?'} minutes left in the episode; deaths so far: ${deaths}`, '',
+    ...(goals ? ['AUDIENCE REQUESTS (unanswered)', ...renderRequests(requests), ''] : []),
     'SUBTASKS OFFERED NOW', options.map(o => {
       const bad = recentFailure(o.id, recentResults)
       return `- ${o.id}: ${o.desc}${bad ? ` (failed recently: ${bad}, do not pick)` : ''}`
     }).join('\n'), '',
-    'Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}',
+    goals ? 'Reply with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "<subtask id from the list>", "goal": {...} (push_goal only), "why": "<one sentence>"}'
+      : 'Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}',
   ].join('\n')
-  return [{ role: 'system', content: LEADER_SYSTEM }, { role: 'user', content: user }]
+  return [{ role: 'system', content: goals ? LEADER_SYSTEM_GOALS : LEADER_SYSTEM }, { role: 'user', content: user }]
 }
