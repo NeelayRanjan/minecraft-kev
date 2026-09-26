@@ -85,8 +85,11 @@ test('quantities are net of the inventory, count clamped to 64', () => {
 test('legacy items: gather for producers, craft_item for the legacy recipes (never minecraft-data)', () => {
   assert.deepEqual(producerOf('iron_ingot'), { kind: 'gather', item: 'iron_ingot' })
   assert.deepEqual(producerOf('sticks'), { kind: 'gather', item: 'stick' })
-  assert.deepEqual(producerOf('spruce_log'), { kind: 'gather', item: 'log' })
-  assert.deepEqual(producerOf('birch_planks'), { kind: 'gather', item: 'planks' })
+  assert.deepEqual(producerOf('log'), { kind: 'gather', item: 'log' })
+  assert.deepEqual(producerOf('planks'), { kind: 'gather', item: 'planks' })
+  assert.deepEqual(producerOf('spruce_log'), { kind: 'gather', item: 'spruce_log' })
+  assert.deepEqual(producerOf('birch_planks'), { kind: 'gather', item: 'birch_planks' })
+  assert.equal(producerOf('crimson_planks'), null)   // not a goals.WOODS species: gather_wood cannot reach it
   assert.equal(producerOf('iron_pickaxe').kind, 'craft_item')
   assert.equal(producerOf('redstone').kind, 'gather')
   assert.equal(producerOf('glass').kind, 'smelt_item')
@@ -112,4 +115,20 @@ test('tables and tiers', () => {
   assert.equal(isItem('oak_log'), true)
   for (const item of [...Object.keys(MINE), ...Object.keys(SMELT), ...Object.values(SMELT), ...Object.keys(HUNT)])
     if (item !== 'log') assert.ok(isItem(item), item)
+})
+
+test('wood-specific recipes count planks by exact species; tag recipes take the held species', () => {
+  const stairs = ids(expandItem('oak_stairs', 4, { birch_planks: 6 }, TABLE))
+  assert.deepEqual(stairs, ['gather(oak_planks, 6)', 'craft_item(oak_stairs, 4)'])
+  assert.deepEqual(ids(expandItem('oak_boat', 1, { spruce_planks: 5 }, TABLE)), ['gather(oak_planks, 5)', 'craft_item(oak_boat, 1)'])
+  assert.deepEqual(ids(expandItem('chest', 1, { spruce_planks: 8 }, TABLE)), ['craft_item(chest, 1)'])
+  assert.deepEqual(ids(expandItem('chest', 1, {}, TABLE)), ['gather(oak_planks, 8)', 'craft_item(chest, 1)'])
+  // the legacy path still takes any wood: a crafting table from birch planks
+  assert.deepEqual(ids(expandItem('crafting_table', 1, { birch_planks: 4 })), ['craft_item(crafting_table, 1)'])
+})
+
+test('count <= 0 or not a number: nothing to do; a bad item name is missing, never a throw', () => {
+  for (const c of [0, -3, NaN, 'x', undefined]) assert.deepEqual(expandItem('compass', c, {}), { steps: [], missing: [], tree: '' })
+  for (const it of [undefined, null, '', 42]) assert.deepEqual(expandItem(it, 1, {}), { steps: [], missing: [String(it)], tree: '' })
+  assert.deepEqual(expandItem('not_a_thing', 1, {}).missing, ['not_a_thing'])
 })

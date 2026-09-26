@@ -5,11 +5,13 @@
 // coal, raw_iron, iron_ingot, diamond, flint, obsidian; each is a `gather(<item>, n)` step whose option layer handles
 // its own tools), the legacy recipes (goals.RECIPES: `craft_item` expanded through those tables, never through
 // minecraft-data), then MINE (a gather step with a pickaxe tier), SMELT, HUNT, and finally a minecraft-data 1.20.4
-// recipe. Planks of any wood count toward a plank ingredient and are gathered as `planks`, logs likewise as `log`,
-// and `sticks` is the item `stick`.
+// recipe. On the legacy path planks of any wood count toward `planks` (gathered as `planks`), logs likewise as `log`,
+// and `sticks` is the item `stick`; a minecraft-data ingredient names its species and is counted and gathered exactly
+// (`gather(oak_planks, n)`; only the goals.WOODS species are producible).
 //
 // Ordering rule: the walk is post-order. A step is emitted after every step its inputs need: for a craft, first its
-// ingredients in recipe order (first appearance in the grid, row by row), then the crafting table if the grid is
+// ingredients in recipe order (first appearance in the grid, row by row; held units by exact name, so the
+// variant whose wood the bot holds wins), then the crafting table if the grid is
 // larger than 2x2; for a smelt, its input then the furnace; for a hunt, the shears; for a MINE gather, the pickaxe
 // tiers it lacks (to reach tier t the walk first reaches tier t-1: wooden before stone before iron). Steps with the
 // same (kind, arg) merge: the count adds up and the step keeps the position of its first emission.
@@ -19,7 +21,7 @@
 // Not modelled: furnace fuel (the smelt goal handles it), tools other than pickaxes and shears, deepslate variants.
 // goals.js may import this module (a cycle): the goals tables are only read inside functions, never at load time.
 import mcDataFor from 'minecraft-data'
-import { PRODUCERS, RECIPES } from './goals.js'
+import { PRODUCERS, RECIPES, WOODS } from './goals.js'
 import { TABLE_ITEMS } from './subtasks.js'
 
 const md = mcDataFor('1.20.4')
@@ -45,9 +47,14 @@ const PICKAXE_TIER = { wooden_pickaxe: 1, golden_pickaxe: 1, stone_pickaxe: 2, i
 const PICKAXE_FOR = { 1: 'wooden_pickaxe', 2: 'stone_pickaxe', 3: 'iron_pickaxe', 4: 'diamond_pickaxe' }
 const MAX_COUNT = 64
 
-// The name a step and the inventory arithmetic use: every log is `log`, every plank `planks`, sticks are `stick`.
-const group = item => item === 'log' || item.endsWith('_log') ? 'log'
-  : item === 'planks' || item.endsWith('_planks') ? 'planks' : item === 'sticks' ? 'stick' : item
+// Wood: the generic names `log`, `planks`, `sticks`/`stick` (the legacy path: goals.RECIPES ingredients, the legacy
+// gathers, charcoal's input) accept any species, held units counted over every `*_log` / `*_planks`. A species name
+// (`oak_planks`, what every minecraft-data recipe names, one variant recipe per wood for tag ingredients) is counted
+// and gathered by its exact name, so a wood-specific recipe (oak_stairs, oak_boat) never plans on birch planks.
+const GENERIC = { log: 'log', planks: 'planks', sticks: 'stick', stick: 'stick' }
+const group = item => GENERIC[item] ?? (item.endsWith('_log') ? 'log' : item.endsWith('_planks') ? 'planks' : item)
+const isSpecies = item => item.endsWith('_log') || item.endsWith('_planks')
+const woodOk = item => WOODS.some(w => item === `${w}_log` || item === `${w}_planks`)   // gather_wood can reach it
 
 export function tierHeld(inventory = {}) {
   let best = 0
@@ -75,8 +82,9 @@ function mdRecipes(item) {
 
 export function producerOf(item) {
   if (typeof item !== 'string') return null
-  const g = group(item)
-  if (PRODUCERS[g] || PRODUCERS[item] || g === 'log' || g === 'planks' || g === 'stick') return { kind: 'gather', item: g }
+  if (GENERIC[item]) return { kind: 'gather', item: GENERIC[item] }
+  if (isSpecies(item)) return woodOk(item) ? { kind: 'gather', item } : null
+  if (PRODUCERS[item]) return { kind: 'gather', item }
   if (RECIPES[item]) return { kind: 'craft_item', item, legacy: true }
   if (MINE[item]) return { kind: 'gather', item, mine: MINE[item] }
   if (SMELT[item]) return { kind: 'smelt_item', item, input: SMELT[item] }
@@ -106,8 +114,7 @@ function producible(item) {
       }
     }
   }
-  const g = group(item)
-  return producibleSet.has(item) || producibleSet.has(g) || g === 'log' || g === 'planks' || !!PRODUCERS[g]
+  return producibleSet.has(item) || !!GENERIC[item]
 }
 
 // The first leaf that cannot be produced, descending through the first recipe of an unproducible item.
@@ -120,18 +127,21 @@ function missingLeaf(item, seen = new Set()) {
 }
 
 export function expandItem(item, count, inventory = {}, { placed = { crafting_table: false, furnace: false } } = {}) {
-  const want = Math.max(1, Math.min(MAX_COUNT, Math.floor(Number(count)) || 1))
+  if (typeof item !== 'string' || !item) return { steps: [], missing: [String(item)], tree: '' }
+  const n0 = Math.floor(Number(count))
+  if (!Number.isFinite(n0) || n0 <= 0) return { steps: [], missing: [], tree: '' }   // 0, negatives, NaN: nothing to do
+  const want = Math.min(MAX_COUNT, n0)
   const inv = { ...inventory }
   const steps = [], index = new Map(), lines = []
   const held = name => {
-    const g = group(name)
-    if (g === 'log' || g === 'planks' || g === 'stick')
+    const g = GENERIC[name]
+    if (g)
       return Object.entries(inv).reduce((s, [k, v]) => s + (group(k) === g ? v : 0), 0)
     return inv[name] || 0
   }
-  const take = (name, n) => {   // consume n (<= held) from the copy: the exact name first, then any of its group
-    const g = group(name)
-    for (const k of [name, ...Object.keys(inv).filter(k => k !== name && group(k) === g && (g === 'log' || g === 'planks' || g === 'stick'))]) {
+  const take = (name, n) => {   // consume n (<= held) from the copy: the exact name first, then (generic names) any species
+    const g = GENERIC[name]
+    for (const k of [name, ...(g ? Object.keys(inv).filter(k => k !== name && group(k) === g) : [])]) {
       const t = Math.min(n, inv[k] || 0)
       inv[k] = (inv[k] || 0) - t; n -= t
       if (n === 0) return
@@ -197,8 +207,7 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
       const usable = mdRecipes(name).filter(rc => rc.ingredients.every(([n]) => producible(n) && !stack.has(n)))
       if (!usable.length) { missing = missingLeaf(name); return false }
       const score = rc => { const c = Math.ceil(r / rc.yield); return rc.ingredients.reduce((s, [n, q]) => s + Math.min(held(n), q * c), 0) }
-      const exact = rc => { const c = Math.ceil(r / rc.yield); return rc.ingredients.reduce((s, [n, q]) => s + Math.min(inv[n] || 0, q * c), 0) }
-      recipe = usable.reduce((best, rc) => score(rc) > score(best) || (score(rc) === score(best) && exact(rc) > exact(best)) ? rc : best)
+      recipe = usable.reduce((best, rc) => score(rc) > score(best) ? rc : best)
     }
     const crafts = Math.ceil(r / recipe.yield)
     for (const [ing, q] of recipe.ingredients) if (!need(ing, q * crafts, depth)) return false
