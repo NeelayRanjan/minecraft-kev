@@ -21,12 +21,24 @@ calls: 275
 | stale | 79 |
 | invalid | 0 |
 | error | 0 |
+| blocked | 0 |
 | dropped | 2 |
 
 latency p50 / p90 / max: 3305.0 / 3568.0 / 19088.0 ms
 thinking chars (median, over calls with any): -
 prompt chars (median): 9408
 truncated: 0
+
+## Milestone 2
+
+(iron pickaxe and survive the first night)
+
+| field | value |
+|---|---|
+| iron pickaxe at | 179.7s |
+| first morning at | 1199.9s |
+| deaths before first morning | 0 |
+| passed | yes |
 
 ## Override outcomes
 
