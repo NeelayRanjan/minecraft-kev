@@ -15,10 +15,14 @@ export function startRecorder(bot, { output, fps = 5, width = 448, height = 448,
   const viewer = new Viewer(renderer)
   if (!viewer.setVersion(bot.version)) throw new Error(`prismarine-viewer does not support ${bot.version}`)
   const updateEntity = viewer.updateEntity.bind(viewer)
-  // The viewer only has meshes/textures for a subset of entities; anything else throws, sometimes asynchronously from
-  // a texture load (a witch's splash potion crashed an episode). Render a whitelist of common mobs and players only.
-  const RENDER = new Set(['player', 'zombie', 'skeleton', 'creeper', 'spider', 'cave_spider', 'enderman', 'witch', 'slime', 'husk', 'drowned', 'stray',
-    'zombie_villager', 'pillager', 'cow', 'pig', 'sheep', 'chicken', 'horse', 'donkey', 'wolf', 'cat', 'ocelot', 'rabbit', 'squid', 'bat', 'villager', 'iron_golem', 'fox', 'goat', 'bee'])
+  // The viewer has meshes/textures for the entities in its entities.json (94 in 1.20.4); anything else throws, sometimes
+  // asynchronously from a texture load (a witch's splash potion crashed an episode). Render every mob and player the
+  // viewer knows, but no projectiles, vehicles or dropped things: those are the ones that crashed, and they carry no
+  // information a leader needs. (2026-09-25: the user wants all mobs visible for the vision experiments.)
+  const NOT_RENDERED = new Set(['arrow', 'boat', 'chest_minecart', 'command_block_minecart', 'hopper_minecart', 'minecart', 'tnt_minecart', 'dragon_fireball', 'fireball',
+    'small_fireball', 'egg', 'ender_pearl', 'eye_of_ender', 'experience_bottle', 'experience_orb', 'firework_rocket', 'fishing_bobber', 'leash_knot', 'llama_spit',
+    'potion', 'shulker_bullet', 'snowball', 'trident', 'wither_skull', 'evoker_fangs', 'armor_stand'])
+  const RENDER = new Set(Object.keys(require('prismarine-viewer/viewer/lib/entity/entities.json')).filter(n => !NOT_RENDERED.has(n)))
   viewer.updateEntity = e => { if (!RENDER.has(e?.name)) return; try { updateEntity(e) } catch {} }
   const cam = () => { viewer.setFirstPersonCamera(bot.entity.position, bot.entity.yaw, bot.entity.pitch); worldView.updatePosition(bot.entity.position) }
   const worldView = new WorldView(bot.world, viewDistance, bot.entity.position)
