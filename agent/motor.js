@@ -23,6 +23,13 @@ export function fleeHeading(hostilePos, botPos) {
   const dx = botPos.x - hostilePos.x, dz = botPos.z - hostilePos.z
   return Math.abs(dx) >= Math.abs(dz) ? (dx >= 0 ? 'east' : 'west') : (dz >= 0 ? 'south' : 'north')
 }
+// The point flee() runs from: a hostile mob's position when one is found, else (fix round 1: flee never fled a
+// player-only attacker, since nearestHostileEntity/obs.nearestHostile are mob-only) the attacker's live entity
+// position when it's a player still tracked in bot.players, else the position recorded in obs.attacker at
+// detection. null when there is nothing to flee from. Pure given the already-resolved inputs.
+export function fleeTargetPos({ hostilePos, attacker, livePlayerPos } = {}) {
+  return hostilePos ?? livePlayerPos ?? attacker?.pos ?? null
+}
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const ok = detail => ({ result: 'ok', detail })
 const fail = (result, detail) => ({ result, detail })
@@ -559,6 +566,22 @@ export class Motor {
     this.mem.heading = HEADING_ORDER[(HEADING_ORDER.indexOf(this.mem.heading) + 1) % 4]
   }
 
+  // Rotate through up to 4 cardinal headings, starting at `startHeading` (default this.mem.heading), until
+  // goalAtFn([hx, hz]) (a goal cell, headingVec()'s shape) is dry (wetNear false), or all 4 are wet. Used by
+  // explore_toward(down), explore_toward(surface) and flee, which all had this same rotate-until-dry loop (fix
+  // round 1). Returns {heading, turns} (turns === 4: every heading was wet, heading is back to startHeading).
+  // commit (default true, explore_toward's persistent heading so the next call resumes from here): write
+  // mem.heading on every turn; false (flee) tries headings locally and leaves committing the result to the caller.
+  turnUntilDry(goalAtFn, { commit = true, startHeading = this.mem.heading } = {}) {
+    let heading = startHeading, turns = 0
+    while (turns < 4 && this.wetNear(goalAtFn(HEADINGS[heading]))) {
+      heading = HEADING_ORDER[(HEADING_ORDER.indexOf(heading) + 1) % 4]
+      turns++
+      if (commit) this.mem.heading = heading
+    }
+    return { heading, turns }
+  }
+
   // ---- executors -------------------------------------------------------------------------------------------------
   exec = {
     async gather_wood() {
@@ -740,11 +763,10 @@ export class Motor {
           // the pathfinder dug under water. Turn away from a wet goal (up to four headings); all wet: the staircase,
           // which stops at liquid itself.
           const goalAt = ([hx, hz]) => new Vec3(Math.floor(me.x) + 6 * hx, Math.floor(me.y) - 4, Math.floor(me.z) + 6 * hz)
-          let turns = 0
-          while (turns < 4 && this.wetNear(goalAt(this.headingVec()))) { this.rotateHeading(); turns++ }
-          if (turns > 0) this.log(`down: water at the goal, ${turns === 4 ? 'every heading wet' : `turned ${this.mem.heading}`}`)
+          const { heading, turns } = this.turnUntilDry(goalAt)
+          if (turns > 0) this.log(`down: water at the goal, ${turns === 4 ? 'every heading wet' : `turned ${heading}`}`)
           if (turns === 4) { await this.digStaircase(4); return ok(`y ${this.bot.entity.position.y.toFixed(0)}`) }
-          const c = goalAt(this.headingVec())
+          const c = goalAt(HEADINGS[heading])
           try { await this.goto(new goals.GoalNear(c.x, c.y, c.z, 1), this.dryMovements) } catch (e) { if (e?.name === 'NoPath') { this.rotateHeading(); await this.digStaircase(4) } else throw e }
           return ok(`y ${this.bot.entity.position.y.toFixed(0)}`)
         }
@@ -782,11 +804,10 @@ export class Motor {
       if (this.mem.lastPath && this.mem.lastPath !== 'ok') this.rotateHeading()
       // The live session waded into the sea on this walk too: turn away from a wet goal first, like explore_toward(down).
       const goalAt = ([hx, hz]) => new Vec3(Math.floor(me.x) + 24 * hx, Math.floor(me.y), Math.floor(me.z) + 24 * hz)
-      let wetTurns = 0
-      while (wetTurns < 4 && this.wetNear(goalAt(this.headingVec()))) { this.rotateHeading(); wetTurns++ }
-      if (wetTurns > 0) this.log(`surface: water ahead, ${wetTurns === 4 ? 'every heading wet' : `turned ${this.mem.heading}`}`)
+      const { heading, turns: wetTurns } = this.turnUntilDry(goalAt)
+      if (wetTurns > 0) this.log(`surface: water ahead, ${wetTurns === 4 ? 'every heading wet' : `turned ${heading}`}`)
       if (wetTurns === 4) return fail('no_path', 'water ahead')
-      const [sx, sz] = this.headingVec()
+      const [sx, sz] = HEADINGS[heading]
       try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 24 * sx, Math.floor(me.z) + 24 * sz)) } catch (e) { this.rotateHeading(); throw e }
       return ok('walked 24 m')
     },
@@ -851,17 +872,20 @@ export class Motor {
 
     async flee(_, obs) {
       const h = this.nearestHostileEntity()
-      const p = h ? h.position : obs?.nearestHostile?.pos
+      const attacker = obs?.attacker
+      // A player attacker has no entry in nearestHostileEntity/obs.nearestHostile (mob-only): bot.players tracks
+      // its live position while the player is still around; obs.attacker.pos (set when the hit landed) is the
+      // fallback once they've gone out of range or logged off.
+      const livePlayerPos = !h && attacker?.kind === 'player' ? this.bot.players[attacker.name]?.entity?.position : null
+      const p = fleeTargetPos({ hostilePos: h ? h.position : obs?.nearestHostile?.pos, attacker, livePlayerPos })
       if (!p) return fail('target_gone')
       // r2_leader: fleeing waded straight into the sea when the direction away from the hostile happened to be
       // wet (GoalInvert does not know about water). Try the heading pointing away from the hostile first, then
       // rotate (like explore_toward's wet checks) until one is dry 8 m out; if every heading is wet, refuse to
       // flee at all so the breaker withholds it and the other threat responses (fight, pillar_up) stay offered.
       const me = this.bot.entity.position
-      let heading = fleeHeading(p, me)
-      const goalCell = hd => { const [hx, hz] = HEADINGS[hd]; return me.floored().offset(hx * 8, 0, hz * 8) }
-      let turns = 0
-      while (turns < 4 && this.wetNear(goalCell(heading))) { heading = HEADING_ORDER[(HEADING_ORDER.indexOf(heading) + 1) % 4]; turns++ }
+      const goalAt = ([hx, hz]) => me.floored().offset(hx * 8, 0, hz * 8)
+      const { heading, turns } = this.turnUntilDry(goalAt, { commit: false, startHeading: fleeHeading(p, me) })
       if (turns > 0) this.log(`flee: water away from the hostile, ${turns === 4 ? 'every heading wet' : `turned to ${heading}`}`)
       if (turns === 4) return fail('no_path', 'water all around')
       this.mem.heading = heading
@@ -1163,24 +1187,10 @@ export class Motor {
     return b.entity.isInWater ? 'stuck' : 'left'
   }
 
-  // Swim straight at the top of block `p` holding forward and jump (in water, jump rises and a horizontal collision
-  // lifts the bot out onto a rim at the water line) until out of the water and on the ground, for at most `ms`.
-  async swimTo(p, ms = 8000) {
-    const b = this.bot, target = p.offset(0.5, 1.5, 0.5), t0 = Date.now()
-    try {
-      while (Date.now() - t0 < ms) {
-        this.check()
-        if (!b.entity.isInWater && b.entity.onGround) return true
-        await b.look(Math.atan2(-(target.x - b.entity.position.x), -(target.z - b.entity.position.z)), 0, true)
-        b.setControlState('forward', true); b.setControlState('jump', true)
-        await sleep(100)
-      }
-    } finally { b.setControlState('forward', false); b.setControlState('jump', false) }
-    return !b.entity.isInWater
-  }
-
-  // Swim toward `target` (any point, however far) holding forward and jump, for at most `ms`; used by leaveWater
-  // when no shore is within its search radius. Returns once out of the water and on the ground, else after ms.
+  // Swim toward `target` (any point, however far) holding forward and jump (in water, jump rises and a horizontal
+  // collision lifts the bot out onto a rim at the water line), for at most `ms`. Returns once out of the water and
+  // on the ground, else after ms. Used directly by leaveWater when no shore is within its search radius, and by
+  // swimTo (the last stretch to a specific shore rim) below.
   async swimToward(target, ms = 30_000) {
     const b = this.bot, t0 = Date.now()
     try {
@@ -1195,6 +1205,9 @@ export class Motor {
     } finally { b.setControlState('forward', false); b.setControlState('jump', false) }
     return !b.entity.isInWater
   }
+
+  // Swim straight at the top of block `p` (fix round 1: was a near-duplicate of swimToward's loop; now delegates).
+  swimTo(p, ms = 8000) { return this.swimToward(p.offset(0.5, 1.5, 0.5), ms) }
 
   // Place a filler block in the empty cell `cell` against its solid neighbour below or beside it; true when the cell is
   // solid afterwards. false without a filler or a neighbour to place against.

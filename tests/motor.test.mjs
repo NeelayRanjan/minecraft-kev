@@ -170,13 +170,61 @@ test('dropBelow / dropAhead: floor present, a hole, a deep drop, liquid under th
   assert.deepEqual(dropBelow(world2(new Map(col(5, 0, 20, ['air', 'air']))), ahead), { drop: 2, liquid: null })
 })
 
-import { fleeHeading } from '../agent/motor.js'
+import { fleeHeading, fleeTargetPos } from '../agent/motor.js'
 test('fleeHeading: the cardinal heading pointing away from the hostile', () => {
   assert.equal(fleeHeading({ x: 10, y: 64, z: 0 }, { x: 0, y: 64, z: 0 }), 'west', 'hostile to the east: flee west')
   assert.equal(fleeHeading({ x: -10, y: 64, z: 0 }, { x: 0, y: 64, z: 0 }), 'east', 'hostile to the west: flee east')
   assert.equal(fleeHeading({ x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: 0 }), 'north', 'hostile to the south: flee north')
   assert.equal(fleeHeading({ x: 0, y: 64, z: -10 }, { x: 0, y: 64, z: 0 }), 'south', 'hostile to the north: flee south')
   assert.equal(fleeHeading({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 0 }), 'east', 'coincident: a tie picks east/west')
+})
+
+// Fix round 1: flee() never fled a player-only attacker (nearestHostileEntity/obs.nearestHostile are mob-only).
+test('fleeTargetPos: a hostile mob wins; else a live player entity; else the recorded attacker position; else null', () => {
+  const hostilePos = { x: 1, y: 64, z: 1 }, livePlayerPos = { x: 5, y: 64, z: 0 }
+  const attacker = { kind: 'player', name: 'x', pos: { x: 9, y: 64, z: 0 } }
+  assert.deepEqual(fleeTargetPos({ hostilePos, attacker, livePlayerPos }), hostilePos, 'a hostile mob beats a player attacker')
+  assert.deepEqual(fleeTargetPos({ hostilePos: null, attacker, livePlayerPos }), livePlayerPos, 'the live entity beats the recorded position')
+  assert.deepEqual(fleeTargetPos({ hostilePos: null, attacker, livePlayerPos: null }), attacker.pos, 'no live entity: the recorded position')
+  assert.equal(fleeTargetPos({ hostilePos: null, attacker: null, livePlayerPos: null }), null)
+  assert.equal(fleeTargetPos(), null)
+})
+
+test('flee: with no hostile mob, flees from a player attacker\'s live bot.players entity, then its recorded position, else target_gone', async () => {
+  const md = mcDataFor('1.20.4')
+  const obs = { attacker: { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 0, pos: { x: 9, y: 64, z: 0 } } }
+
+  const bot1 = { ...fakeBot(), entities: {}, players: { Spacers_Choice: { entity: { position: { x: 5, y: 64, z: 0 } } } } }
+  const r1 = await new Motor(bot1, md, new EpisodeMemory()).run('flee', obs)
+  assert.equal(r1.result, 'ok', JSON.stringify(r1))
+
+  const bot2 = { ...fakeBot(), entities: {}, players: {} }   // no live entity: falls back to obs.attacker.pos
+  const r2 = await new Motor(bot2, md, new EpisodeMemory()).run('flee', obs)
+  assert.equal(r2.result, 'ok', JSON.stringify(r2))
+
+  const bot3 = { ...fakeBot(), entities: {}, players: {} }   // nothing to flee from at all
+  const r3 = await new Motor(bot3, md, new EpisodeMemory()).run('flee', {})
+  assert.equal(r3.result, 'target_gone')
+})
+
+test('turnUntilDry: rotates through headings until dry, or reports every heading wet; commit false leaves mem.heading alone', () => {
+  const bot = { ...fakeBot(), entities: {} }
+  const motor = new Motor(bot, mcDataFor('1.20.4'), new EpisodeMemory())
+  const goalAt = ([hx, hz]) => ({ x: hx * 8, y: 64, z: hz * 8 })
+
+  motor.mem.heading = 'north'
+  motor.wetNear = c => c.x === 0 && c.z === -8   // only the north goal cell is wet
+  assert.deepEqual(motor.turnUntilDry(goalAt), { heading: 'east', turns: 1 })
+  assert.equal(motor.mem.heading, 'east', 'commit (default) writes mem.heading')
+
+  motor.mem.heading = 'north'
+  motor.wetNear = () => true   // every heading wet
+  assert.deepEqual(motor.turnUntilDry(goalAt), { heading: 'north', turns: 4 })
+
+  motor.mem.heading = 'south'
+  motor.wetNear = c => c.x === 0 && c.z === -8
+  assert.deepEqual(motor.turnUntilDry(goalAt, { commit: false, startHeading: 'north' }), { heading: 'east', turns: 1 })
+  assert.equal(motor.mem.heading, 'south', 'commit: false leaves mem.heading untouched')
 })
 
 test('isGravityBlock: sand, gravel, concrete powder', () => {

@@ -106,11 +106,11 @@ test('obs.attacker: a health drop with a player 2 m away is a player attacker fo
   // the player hits the bot
   bot.health = 18
   obs = summarize(bot, mcData, mem, { t: 5, current: null, last: null, goal: 'iron_pickaxe' })
-  assert.deepEqual(obs.attacker, { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 0 })
+  assert.deepEqual(obs.attacker, { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 0, pos: { x: 2, y: 64, z: 0 } })
   assert.equal(obs.nearestHostile, null, 'a player is never obs.nearestHostile')
   // remembered (sinceS grows) while health stays flat
   obs = summarize(bot, mcData, mem, { t: 20, current: null, last: null, goal: 'iron_pickaxe' })
-  assert.deepEqual(obs.attacker, { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 15 })
+  assert.deepEqual(obs.attacker, { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 15, pos: { x: 2, y: 64, z: 0 } })
   // gone after 30 s
   obs = summarize(bot, mcData, mem, { t: 36, current: null, last: null, goal: 'iron_pickaxe' })
   assert.equal(obs.attacker, null)

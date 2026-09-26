@@ -132,16 +132,18 @@ export function summarize(bot, mcData, mem, ctx) {
     .filter(e => e.kind && e.dist <= 32).sort((a, b) => a.dist - b.dist).slice(0, 6)
   const hostiles = entities.filter(e => e.kind === 'hostile')
   // obs.attacker (live session lesson: a player who hit the bot was never a threat): on a tick health drops with any
-  // entity within 4 m, remember it (kind, name, the distance at detection) for 30 s; obs.nearestHostile is unchanged
-  // and still only ever hostile mobs.
+  // entity within 4 m, remember it (kind, name, the distance at detection, and its position so flee can run from a
+  // player attacker: motor.js's nearestHostileEntity/obs.nearestHostile are mob-only, fix round 1) for 30 s;
+  // obs.nearestHostile is unchanged and still only ever hostile mobs.
   const health = bot.health ?? 20
   if (mem.lastHealth != null && health < mem.lastHealth) {
     const near = nearestEntity(bot.entities, bot.entity, me, 4)
-    if (near) mem.attacker = { kind: attackerKind(near.e, mcData), name: near.e.name || near.e.username || 'unknown', dist: near.dist, t: ctx.t }
+    if (near) mem.attacker = { kind: attackerKind(near.e, mcData), name: near.e.name || near.e.username || 'unknown', dist: near.dist,
+      pos: { x: near.e.position.x, y: near.e.position.y, z: near.e.position.z }, t: ctx.t }
   }
   mem.lastHealth = health
   const attacker = mem.attacker && ctx.t - mem.attacker.t <= 30
-    ? { kind: mem.attacker.kind, name: mem.attacker.name, dist: Math.round(mem.attacker.dist), sinceS: Math.round(ctx.t - mem.attacker.t) } : null
+    ? { kind: mem.attacker.kind, name: mem.attacker.name, dist: Math.round(mem.attacker.dist), sinceS: Math.round(ctx.t - mem.attacker.t), pos: mem.attacker.pos } : null
   if (!attacker) mem.attacker = null
   const inv = {}, toolWear = {}
   for (const it of bot.inventory.items()) {
