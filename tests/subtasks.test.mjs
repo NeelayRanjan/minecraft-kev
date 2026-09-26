@@ -129,3 +129,22 @@ test('experiment-1 mode never offers chain options', () => {
   const o = baseObs({ inventory: { iron_pickaxe: 1, iron_ingot: 8, stick: 4, crafting_table: 1 } })
   assert.ok(!ids(o).some(id => id.includes('iron_sword') || id === 'mine_diamond'))
 })
+test('chain mode never offers a craft for an item already held or worn; craft(iron_pickaxe) only replaces a lost one', () => {
+  const rich = { iron_ingot: 10, stick: 4, crafting_table: 1, diamond: 3 }
+  assert.ok(!ids(chain({ inventory: { iron_pickaxe: 1, iron_sword: 1, ...rich } })).includes('craft(iron_sword)'), 'sword held')
+  assert.ok(ids(chain({ inventory: { iron_pickaxe: 1, iron_sword: 1, ...rich } })).includes('craft(iron_axe)'), 'the axe is still missing')
+  const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }
+  assert.ok(!ids(chain({ inventory: { ...kit, ...rich }, armor: { iron_helmet: 1 } })).includes('craft(iron_helmet)'), 'helmet worn')
+  assert.ok(!ids(chain({ inventory: { ...kit, ...rich, water_bucket: 1 } })).includes('craft(bucket)'), 'a full bucket is a bucket')
+  assert.ok(!ids(chain({ inventory: { iron_sword: 1, iron_axe: 1, diamond_pickaxe: 1, ...rich } })).includes('craft(iron_pickaxe)'), 'iron pickaxe broke, a diamond one is held')
+  assert.ok(!ids(chain({ inventory: { ...kit, ...rich } })).includes('craft(iron_pickaxe)'), 'iron pickaxe held')
+  assert.ok(ids(chain({ inventory: { stone_pickaxe: 1, iron_sword: 1, ...rich } })).includes('craft(iron_pickaxe)'), 'no iron or better pickaxe left: offered as a replacement')
+})
+test('chain mode never offers mine_obsidian against a frame being built or complete', () => {
+  const kit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1, flint_and_steel: 1 }
+  const armor = { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }
+  const blocks = [{ name: 'obsidian', dist: 3, dir: 'east', dy: 0, reachable: true }]
+  const memory = { portal: { origin: { x: 0, y: 64, z: 0 }, axis: 'x', placed: 6 } }
+  assert.ok(!ids(chain({ inventory: { ...kit, obsidian: 2 }, armor, blocks, memory })).includes('mine_obsidian'), 'build in progress')
+  assert.ok(!ids(chain({ inventory: kit, armor, blocks, portalFrame: { dist: 2, dir: 'north', dy: 0 } })).includes('mine_obsidian'), 'frame complete')
+})

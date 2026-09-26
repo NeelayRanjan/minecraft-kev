@@ -582,7 +582,12 @@ export class Motor {
     },
 
     // collectOne refuses obsidian without a diamond pickaxe (NoHarvestTool -> no_materials).
-    async mine_obsidian() { return this.mineKind(this.obsidianIds, 16, 10, n => n === 'obsidian', 'obsidian') },
+    // The bot's own frame (mem.portal, built or half built) is never a candidate.
+    async mine_obsidian() {
+      const mp = this.mem.portal
+      const frame = mp ? new Set(portalLayout(new Vec3(mp.origin.x, mp.origin.y, mp.origin.z), mp.axis).obsidian.map(v => `${v.x},${v.y},${v.z}`)) : null
+      return this.mineKind(this.obsidianIds, 16, 10, n => n === 'obsidian', 'obsidian', frame)
+    },
 
     async craft(item) {
       const md = this.md
@@ -695,7 +700,13 @@ export class Motor {
           try { await this.digStaircase(4) } catch (e) { if (e?.name === 'NoPath') { this.rotateHeading(); await this.digStaircase(4) } else throw e }
           return ok(`y ${this.bot.entity.position.y.toFixed(0)}`)
         }
+        // A* stops at cost h(start) + searchRadius. Twelve steps of deepslate at 2 digs each cost ~80 with a diamond
+        // pickaxe and more with the stone one thriftyPickaxe spends first, past the usual 64: when the search finished
+        // before the bot set off on a partial path (a fast CPU), the tunnel was noPath every time. Widen it here only.
+        const radius = this.bot.pathfinder.searchRadius
+        this.bot.pathfinder.searchRadius = 160
         try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 12 * fx, Math.floor(me.z) + 12 * fz)) } catch (e) { if (e?.name === 'NoPath') this.rotateHeading(); throw e }
+        finally { this.bot.pathfinder.searchRadius = radius }
         return ok(`tunnelled at y ${this.bot.entity.position.y.toFixed(0)}`)
       }
       // surface. Underground (no sky light) it climbs first: the first chain run walked 24 m sideways at y 50 over and
@@ -831,7 +842,15 @@ export class Motor {
     async cast_obsidian() {
       const b = this.bot
       if (!this.item('water_bucket')) return fail('no_materials', 'no water bucket')
-      const src = this.pickLavaSource(24)
+      let src = this.pickLavaSource(24)
+      const seen = this.mem.seen?.lava
+      if (!src && seen) {   // like mine_iron and fill_bucket: walk to the remembered lava, and forget it if it is gone
+        // or cannot be reached, so the teacher goes looking again (explore_toward(deep)) instead of retrying it forever
+        try { await this.goto(new goals.GoalNear(seen.pos.x, seen.pos.y, seen.pos.z, 4)) } catch (e) { if (!(e instanceof Abort)) this.mem.seen.lava = null; throw e }
+        this.check()
+        src = this.pickLavaSource(16)
+        if (!src) { this.mem.seen.lava = null; return fail('target_gone', 'no lava source at the remembered spot') }
+      }
       if (!src) return fail('target_gone', 'no lava source within 24 m')
       const p = src.position
       if (b.entity.position.floored().y < p.y || b.entity.position.distanceTo(p.offset(0.5, 0, 0.5)) > 3.5) {
@@ -964,13 +983,13 @@ export class Motor {
     return best
   }
 
-  async mineKind(ids, maxDistance, n, gainedPred, what) {
+  async mineKind(ids, maxDistance, n, gainedPred, what, exclude = null) {
     await this.equipBestPickaxe()
     const before = this.countBy(gainedPred)
     let lastErr = null, found = false
     for (let i = 0; i < n; i++) {
       this.check()
-      const block = this.pickBlock(ids, maxDistance)
+      const block = this.pickBlock(ids, maxDistance, exclude)
       if (!block) break
       found = true
       try { await this.collectOne(block) } catch (e) { lastErr = e; break }
@@ -985,8 +1004,10 @@ export class Motor {
   // Nearest exposed block of the kind (one the bot can see), else the nearest at all. The count is large because
   // findBlocks stops at it while walking chunk sections nearest-first, so a small count misses a nearer block in the
   // next section (natural gravel in the bot's own section hid a patch 4 m away).
-  pickBlock(ids, maxDistance) {
-    const cands = this.bot.findBlocks({ matching: ids, maxDistance, count: 256 })
+  // `exclude`: a Set of "x,y,z" keys never to pick (the bot's own portal frame).
+  pickBlock(ids, maxDistance, exclude = null) {
+    let cands = this.bot.findBlocks({ matching: ids, maxDistance, count: 256 })
+    if (exclude) cands = cands.filter(p => !exclude.has(`${p.x},${p.y},${p.z}`))
     if (!cands.length) return null
     const me = this.bot.entity.position
     cands.sort((a, b) => me.distanceTo(a) - me.distanceTo(b))

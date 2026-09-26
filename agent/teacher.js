@@ -153,7 +153,7 @@ function pickChain(obs) {
     }
     return c.blocks >= 4 ? 'build_portal' : stone()
   }
-  if (has(obs, isObsidian, 16)) return 'mine_obsidian'
+  if (!build && has(obs, isObsidian, 16)) return 'mine_obsidian'   // never the bot's own half-built frame
   if (!c.bucket && !c.waterBucket) return canCraft('bucket', c) ? needTable('bucket') : getIron()
   if (c.bucket && !c.waterBucket) return (has(obs, isWater, 24) || obs.memory?.waterSeen) ? 'fill_bucket(water)' : 'explore_toward(surface)'
   if (c.waterBucket) return (has(obs, isLava, 24) || obs.memory?.lavaSeen) ? 'cast_obsidian' : (obs.pos.y > -50 ? 'explore_toward(deep)' : 'explore_toward(surface)')

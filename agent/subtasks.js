@@ -145,8 +145,11 @@ function addChain(obs, out, c) {
   const add = (name, arg = null) => { const id = optionId(name, arg); out.push({ id, name, arg, desc: DESC[id] }) }
   const need = needs(obs)
   const stage = stageOf(obs).index
+  // Never re-craft what is already held or worn (kev crafted a second iron sword in the first leader run, 2 ingots
+  // lost); a bucket counts as held while it is full of water.
+  const owned = item => (obs.inventory?.[item] || 0) + (obs.armor?.[item] || 0) > 0 || (item === 'bucket' && c.waterBucket > 0)
   for (const item of CHAIN_CRAFTABLE) {
-    if (!canCraft(item, c)) continue
+    if (owned(item) || !canCraft(item, c)) continue
     if (TABLE_ITEMS.has(item) && !tableNear(obs) && c.table === 0) continue
     add('craft', item)
   }
@@ -157,7 +160,9 @@ function addChain(obs, out, c) {
   if (stage === 4 && c.flint === 0 && !c.flintAndSteel && seen(obs, isGravel, 16)) add('mine_gravel')
   if (c.bucket >= 1 && (seen(obs, isWater, 24) || obs.memory?.waterSeen)) add('fill_bucket', 'water')
   if (c.waterBucket >= 1 && (seen(obs, isLava, 24) || obs.memory?.lavaSeen) && c.obsidian < 10) add('cast_obsidian')
-  if (c.hasDiamondPickaxe && seen(obs, isObsidian, 16) && c.obsidian < 10) add('mine_obsidian')
+  // Not while a frame stands or is being built: the nearest obsidian would be the frame itself (motor.js also skips
+  // the frame's cells when mem.portal is set).
+  if (c.hasDiamondPickaxe && seen(obs, isObsidian, 16) && c.obsidian < 10 && !obs.memory?.portal && !obs.portalFrame) add('mine_obsidian')
   // A build in progress (memory.portal) stays offered with the obsidian still missing; corner blocks are only
   // required for a fresh frame (an interrupted one may already have them).
   const build = obs.memory?.portal
@@ -191,6 +196,7 @@ export function options(obs) {
   if (c.hasStonePickaxe && (seen(obs, isIron, 32) || obs.memory?.ironSeen) && mineIronOk) add('mine_iron')
   for (const item of CRAFTABLE) {
     if (!canCraft(item, c)) continue
+    if (chainMode && item === 'iron_pickaxe' && c.hasIronPickaxe) continue   // a replacement only when no iron or diamond pickaxe is left
     if (TABLE_ITEMS.has(item) && !tableNear(obs) && c.table === 0) continue
     add('craft', item)
   }
