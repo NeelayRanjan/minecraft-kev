@@ -76,7 +76,7 @@ const chainObs = () => baseObs({ goal: 'nether', inventory: { iron_pickaxe: 1, i
 
 test('chain golden: goal-chain first line, worn armor, diamond ore', () => {
   const text = serialize(chainObs())
-  assert.equal(text.split('\n')[0], 'Minecraft survival, day 1. Goal chain: iron tools (done), iron armor (1 of 4 pieces), diamond tools, lit nether portal. Current stage: iron armor, step 21 of 47: get 19 iron ingots (have 3).')
+  assert.equal(text.split('\n')[0], 'Minecraft survival, day 1. Goal chain: iron tools (done), iron armor (1 of 4 pieces), diamond tools, lit nether portal. Current stage: iron armor, step 23 of 47: get 19 iron ingots (have 3).')
   assert.ok(text.split('\n').includes('wearing: iron helmet.'), text)
   const lines = text.split('\n')
   assert.equal(lines[lines.indexOf('wearing: iron helmet.') - 1].startsWith('holding: '), true)

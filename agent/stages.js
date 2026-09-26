@@ -25,8 +25,8 @@ export const DIAMONDS = { diamond_pickaxe: 3, diamond_sword: 2, diamond_axe: 3 }
 export const STICKS = { iron_sword: 1, iron_axe: 2, diamond_pickaxe: 2, diamond_sword: 1, diamond_axe: 2 }
 
 const STAGE_LABELS = { iron_pickaxe: 'iron pickaxe', iron_tools: 'iron tools', iron_armor: 'iron armor', diamond_tools: 'diamond tools', nether_portal: 'lit nether portal' }
-const PORTAL_TEXT = { 41: 'craft a bucket', 42: 'fill the bucket with water', 43: 'make 10 obsidian from lava',
-  44: 'mine 10 obsidian', 45: 'get flint and craft flint and steel', 46: 'build the frame', 47: 'light the portal' }
+const PORTAL_TEXT = { 41: 'craft a bucket', 42: 'fill the bucket with water', 45: 'get flint and craft flint and steel',
+  46: 'build the frame', 47: 'light the portal' }   // 43/44 (obsidian) carry their own text, see portalStep
 
 // Inventory count plus worn armor: a helmet on the head counts the same as one in the pack.
 const owns = (obs, item) => (obs.inventory?.[item] || 0) + (obs.armor?.[item] || 0)
@@ -83,55 +83,57 @@ function canCraftItem(obs, item) {
   return (inv.iron_ingot || 0) >= (INGOTS[item] || 0) && sticksOk
 }
 
-function ironToolsStep(obs) {
+// Stages 1-3 index by how many of the stage's items are already owned (k), so crafting any item, in any order,
+// moves the step forward and nothing in ordinary progress moves it back: stage 1 is 11 + 2k (+1 once a missing item is
+// craftable), stage 2 is 21 + 2k (+1), stage 3 is 31 + 3k (reach diamond level), 32 + 3k (mine), 33 + 3k (craft).
+// The craft text names the first craftable missing item (the teacher's pick), else the first missing one.
+function itemStep(obs, items, base, stride, stageId) {
   const n = needs(obs)
-  const next = n.missing[0]
-  if (!canCraftItem(obs, next)) {
-    const held = obs.inventory?.iron_ingot || 0
-    return { index: 11, of: 47, text: `get ${n.ingots + held} iron ingots (have ${held})`, stage: STAGES[1] }
-  }
-  return { index: 11 + IRON_TOOLS.indexOf(next), of: 47, text: `craft ${humanize(next)}`, stage: STAGES[1] }
+  const k = items.filter(i => owns(obs, i) > 0).length
+  const affordable = n.missing.find(i => canCraftItem(obs, i))
+  if (affordable) return { index: base + stride * k + stride - 1, of: 47, text: `craft ${humanize(affordable)}`, stage: stageId }
+  return { index: base + stride * k + stride - 2, of: 47, k, next: n.missing[0], n, stage: stageId }
 }
+const primaryShort = (obs, item) => item.startsWith('diamond_')
+  ? (obs.inventory?.diamond || 0) < (DIAMONDS[item] || 0)
+  : (obs.inventory?.iron_ingot || 0) < (INGOTS[item] || 0)
 
-function armorStep(obs) {
-  const n = needs(obs)
-  const next = n.missing[0]
-  if (!canCraftItem(obs, next)) {
-    const held = obs.inventory?.iron_ingot || 0
-    return { index: 21, of: 47, text: `get ${n.ingots + held} iron ingots (have ${held})`, stage: STAGES[2] }
-  }
-  return { index: 22 + ARMOR.indexOf(next), of: 47, text: `craft ${humanize(next)}`, stage: STAGES[2] }
+function ironStep(obs, items, base, stageId) {
+  const s = itemStep(obs, items, base + 1, 2, stageId)
+  if (s.text) return s
+  const held = obs.inventory?.iron_ingot || 0
+  const text = primaryShort(obs, s.next) ? `get ${s.n.ingots + held} iron ingots (have ${held})` : 'make sticks'
+  return { index: s.index, of: 47, text, stage: stageId }
 }
 
 function diamondStep(obs) {
-  const n = needs(obs)
-  const next = n.missing[0]
+  const s = itemStep(obs, DIAMOND_TOOLS, 31, 3, STAGES[3])
+  if (s.text) return s
+  if (!primaryShort(obs, s.next)) return { index: s.index, of: 47, text: 'make sticks', stage: STAGES[3] }
   const y = obs.pos?.y ?? 0
-  const diamondSeen = (obs.blocks || []).some(b => b.name === 'diamond_ore' || b.name === 'deepslate_diamond_ore')
-  if (y > -50 && !diamondSeen) return { index: 31, of: 47, text: 'reach diamond level (y -58)', stage: STAGES[3] }
-  if (!canCraftItem(obs, next)) return { index: 32, of: 47, text: `mine ${n.diamonds} diamonds`, stage: STAGES[3] }
-  return { index: 33 + DIAMOND_TOOLS.indexOf(next), of: 47, text: `craft ${humanize(next)}`, stage: STAGES[3] }
+  const known = (obs.blocks || []).some(b => b.name === 'diamond_ore' || b.name === 'deepslate_diamond_ore') || !!obs.memory?.diamondSeen
+  if (y > -50 && !known) return { index: s.index - 1, of: 47, text: 'reach diamond level (y -58)', stage: STAGES[3] }
+  return { index: s.index, of: 47, text: `mine ${s.n.diamonds} diamonds`, stage: STAGES[3] }
 }
 
+// Stage 4, in the order the steps are done. A complete frame is 47 and a frame build in progress 46 whatever the
+// buckets hold (the placed obsidian has left the inventory). Once any obsidian is held the bucket state no longer
+// matters: 43 below 5 obsidian, 44 from 5 to 9 (the text says whether obsidian is in sight to mine or must be cast),
+// so seeing or losing sight of obsidian never moves the step.
 function portalStep(obs) {
   const inv = obs.inventory || {}
-  const bucket = inv.bucket || 0
-  const waterBucket = inv.water_bucket || 0
   const obsidian = inv.obsidian || 0
   const flintSteel = inv.flint_and_steel || 0
-  const obsidianSeen = (obs.blocks || []).some(b => b.name === 'obsidian')
-  const step = i => ({ index: i, of: 47, text: PORTAL_TEXT[i], stage: STAGES[4] })
-  // obsidian target reached: go straight to flint/frame/light, whatever the bucket state (the tolerant case).
-  if (obsidian >= 10) {
-    if (!flintSteel) return step(45)
-    if (!obs.portalFrame) return step(46)
-    return step(47)
+  const step = (i, text = PORTAL_TEXT[i]) => ({ index: i, of: 47, text, stage: STAGES[4] })
+  if (obs.portalFrame) return step(47)
+  if (obs.memory?.portal) return step(46)
+  if (obsidian >= 10) return flintSteel ? step(46) : step(45)
+  if (obsidian > 0 || inv.water_bucket) {
+    const obsidianSeen = (obs.blocks || []).some(b => b.name === 'obsidian')
+    return step(obsidian >= 5 ? 44 : 43, `${obsidianSeen ? 'mine' : 'make'} 10 obsidian${obsidianSeen ? '' : ' from lava'} (have ${obsidian})`)
   }
-  if (obs.memory?.portal && flintSteel && !obs.portalFrame) return step(46)   // a frame build in progress
-  if (!bucket && !waterBucket) return step(41)
-  if (bucket && !waterBucket) return step(42)
-  if (obsidianSeen) return step(44)
-  return step(43)   // water_bucket held, no obsidian seen nearby: make it from lava
+  if (!inv.bucket) return step(41)
+  return step(42)
 }
 
 // Monotone step 1..47 across the whole chain (48 = done); stage 0 delegates to the tech-tree teacher.
@@ -142,8 +144,8 @@ export function chainStep(obs) {
     const t = techStep(obs)
     return { index: t.index, of: 47, text: t.text, stage: STAGES[0] }
   }
-  if (index === 1) return ironToolsStep(obs)
-  if (index === 2) return armorStep(obs)
+  if (index === 1) return ironStep(obs, ['iron_sword', 'iron_axe'], 10, STAGES[1])
+  if (index === 2) return ironStep(obs, ARMOR, 20, STAGES[2])
   if (index === 3) return diamondStep(obs)
   return portalStep(obs)
 }
