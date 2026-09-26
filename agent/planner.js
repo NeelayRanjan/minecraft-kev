@@ -89,7 +89,7 @@ export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'q
   const t0 = Date.now()
   const res = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: false, format: leaderSchema(ctx.options), think, options: { temperature, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '60m' }),
+    body: JSON.stringify({ model, messages, stream: false, format: leaderSchema(ctx.options), think, options: { temperature, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '90m' }),
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`leader ${res.status}: ${(await res.text()).slice(0, 200)}`)

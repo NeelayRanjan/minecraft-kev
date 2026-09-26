@@ -39,7 +39,7 @@ export function pickEvent(events) {
 // asked while idle, the one kev started right after); if that has ended, the answer is about a situation that is gone.
 // Two guards (run 1: prompt rules alone did not hold) turn an otherwise valid override into 'blocked':
 // - threat: the bot is in a threat response (fight, flee, pillar_up) with a hostile near (threatNear) and the answer
-//   is something else; switching INTO a threat response stays allowed;
+//   is not itself a threat response; switching into or between threat responses stays allowed;
 // - recent_failure: the answer's id failed to path (or timed out) in one of its last two attempts (recentResults: the
 //   runner's last subtask completions {id, result}, oldest first).
 export const THREAT_RESPONSES = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
@@ -58,7 +58,7 @@ export function applyAnswer({ answer, currentId, askedCurrentId, offered, threat
   if ((currentId ?? null) !== (askedCurrentId ?? null)) return { kind: 'stale', id: null }
   if (action === 'continue' || action === currentId) return { kind: 'continue', id: null }
   if (!offered.some(o => o.id === action)) return { kind: 'invalid', id: action }
-  if (threatNear && THREAT_RESPONSES.has(currentId)) return { kind: 'blocked', id: action, reason: 'threat' }
+  if (threatNear && THREAT_RESPONSES.has(currentId) && !THREAT_RESPONSES.has(action)) return { kind: 'blocked', id: action, reason: 'threat' }
   if (recentFailure(action, recentResults)) return { kind: 'blocked', id: action, reason: 'recent_failure' }
   return { kind: 'override', id: action }
 }
@@ -115,7 +115,7 @@ Override only with a concrete reason:
 - a prerequisite is missing (it cannot finish the step without something else first);
 - the current step's forecast is low AND a better option is offered.
 Never override into wait. Never pick a subtask whose last attempt ended no_path, target_gone, timeout or not_found; pick something that changes the situation instead (explore_toward(down), return_to_base, mine_stone).
-Never override fight, flee or pillar_up while a hostile is within 16 m; at night the bot must be underground or in a shelter before doing anything else.
+Never override fight, flee or pillar_up with anything other than another of those three while a hostile is within 16 m; at night the bot must be underground or in a shelter before doing anything else.
 Pickaxes wear out after about 500 blocks: when the bot has an iron pickaxe and cobblestone, having a spare stone pickaxe before a long dig is worth an override to craft(stone_pickaxe); losing the iron pickaxe resets the whole chain.
 Override rarely: \`continue\` is the right answer whenever kev's current subtask makes progress on the current step.
 

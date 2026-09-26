@@ -88,6 +88,10 @@ test('threat guard: no override away from fight, flee or pillar_up while a hosti
   assert.deepEqual(applyAnswer({ ...base, answer: { action: 'continue' }, threatNear: true }), { kind: 'continue', id: null })
   for (const cur of ['fight(threat)', 'pillar_up'])
     assert.equal(applyAnswer({ answer: { action: 'mine_stone' }, currentId: cur, askedCurrentId: cur, offered: guardOffered, threatNear: true }).kind, 'blocked', cur)
+  // switching between threat responses with a hostile near is an override, not blocked
+  assert.deepEqual(applyAnswer({ ...base, answer: { action: 'pillar_up' }, threatNear: true }), { kind: 'override', id: 'pillar_up' })
+  assert.deepEqual(applyAnswer({ ...base, answer: { action: 'fight(threat)' }, threatNear: true }), { kind: 'override', id: 'fight(threat)' })
+  assert.deepEqual(applyAnswer({ answer: { action: 'flee(threat)' }, currentId: 'fight(threat)', askedCurrentId: 'fight(threat)', offered: guardOffered, threatNear: true }), { kind: 'override', id: 'flee(threat)' })
   // switching INTO a threat response is allowed
   assert.deepEqual(applyAnswer({ answer: { action: 'flee(threat)' }, currentId: 'mine_stone', askedCurrentId: 'mine_stone', offered: guardOffered, threatNear: true }), { kind: 'override', id: 'flee(threat)' })
   // stale and invalid still win over the guard
@@ -232,7 +236,7 @@ test('the system prompt: role, recipes, continue, override rules, wear, night, a
 
 test('the system prompt carries the four run-1 rules', () => {
   const s = LEADER_SYSTEM
-  assert.ok(s.includes('Never override fight, flee or pillar_up while a hostile is within 16 m; at night the bot must be underground or in a shelter before doing anything else.'))
+  assert.ok(s.includes('Never override fight, flee or pillar_up with anything other than another of those three while a hostile is within 16 m; at night the bot must be underground or in a shelter before doing anything else.'))
   assert.ok(s.includes('Never pick a subtask whose last attempt ended no_path, target_gone, timeout or not_found; pick something that changes the situation instead (explore_toward(down), return_to_base, mine_stone).'))
   assert.ok(s.includes('Pickaxes wear out after about 500 blocks: when the bot has an iron pickaxe and cobblestone, having a spare stone pickaxe before a long dig is worth an override to craft(stone_pickaxe); losing the iron pickaxe resets the whole chain.'))
   assert.ok(s.includes('Override rarely: `continue` is the right answer whenever kev\'s current subtask makes progress on the current step.'))
