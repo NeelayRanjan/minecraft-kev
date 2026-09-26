@@ -34,5 +34,11 @@
     "name": "kev_2",
     "level": 4,
     "bypassesPlayerLimit": false
+  },
+  {
+    "uuid": "6d1fbcd1-6ea5-3da4-b90b-0a4a62d83f6f",
+    "name": "Spacers_Choice",
+    "level": 4,
+    "bypassesPlayerLimit": false
   }
 ]

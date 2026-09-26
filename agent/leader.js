@@ -268,7 +268,9 @@ export function parseChatMessage(jsonMsg, position, botName) {
   if (position !== 'chat' || !jsonMsg) return null
   let name = null, text = null
   if (jsonMsg.translate != null) {
-    if (jsonMsg.translate !== 'chat.type.text' || !Array.isArray(jsonMsg.with) || jsonMsg.with.length < 2) return null
+    // vanilla sends chat.type.text; Paper 1.20.4 sends the literal format string '<%s> %s' as the translate key
+    const key = String(jsonMsg.translate)
+    if ((key !== 'chat.type.text' && !/^<%s> %s$/.test(key)) || !Array.isArray(jsonMsg.with) || jsonMsg.with.length < 2) return null
     name = plain(jsonMsg.with[0]).trim(); text = plain(jsonMsg.with[1])
   } else {
     const m = /^<(\w{1,16})> (.*)$/s.exec(plain(jsonMsg))

@@ -466,6 +466,10 @@ test('parseChatMessage: player chat -> {name, text}; console say, system lines a
   const own = new ChatMessage({ translate: 'chat.type.text', with: [{ text: 'kev_80' }, { text: 'On it: gather 8 cobblestone.' }] })
   assert.equal(parseChatMessage(own, 'chat', 'kev_80'), null)
   assert.deepEqual(parseChatMessage(new ChatMessage({ text: '<bob> hi there' }), 'chat', 'kev_80'), { name: 'bob', text: 'hi there' })   // preformatted
+  // Paper 1.20.4 (seen on the live server 2026-09-26): the translate key is the literal format string, the name a bare string
+  const paper = new ChatMessage({ translate: '<%s> %s', with: ['Spacers_Choice', { text: 'get 12 logs' }] })
+  assert.deepEqual(parseChatMessage(paper, 'chat', 'kev_80'), { name: 'Spacers_Choice', text: 'get 12 logs' })
+  assert.equal(parseChatMessage(new ChatMessage({ translate: '<%s> %s', with: ['kev_80', { text: 'On it.' }] }), 'chat', 'kev_80'), null)
   assert.equal(parseChatMessage(new ChatMessage({ text: '[Server] hi' }), 'chat', 'kev_80'), null)
   assert.equal(parseChatMessage(new ChatMessage({ translate: 'chat.type.text', with: [{ text: 'alice' }, { text: '  ' }] }), 'chat', 'kev_80'), null)
 })
