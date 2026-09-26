@@ -126,7 +126,7 @@ if (liveViewPort) {
 // ---- state ------------------------------------------------------------------------------------------------------
 const t0 = Date.now()
 const now = () => (Date.now() - t0) / 1000
-let dead = false, deaths = 0, prevHostileDist = null, prevOxygen = null, subtaskStartHealth = null, ticking = false, doneAt = null, startDay = Number(bot.time.day)
+let dead = false, deaths = 0, prevHostileDist = null, subtaskStartHealth = null, ticking = false, doneAt = null, startDay = Number(bot.time.day)
 let stageReached = 0   // chain mode: the highest stageOf(obs).index seen (a stage_done event on each increase)
 let lastResult = null, recent = []   // recent: the last REPEAT_WINDOW attempts {id, result}, oldest first (livelock breaker)
 let lastForecast = null, withhold = []   // supervisor: kev's latest p(step done in 60 s) {t, p}; the subtask it abandoned, withheld at the next decision
@@ -227,14 +227,14 @@ function tick() {
     ...(doneIds.length ? { goals_done: doneIds } : {}) })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead,
-    oxygen: obs.oxygen, prevOxygen })
+    oxygen: obs.oxygen })
   if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); leaderNote('interrupt'); motor.interrupt(why) }
   else if (motor.busy) {   // the supervisor replans on a forecast that has stayed low (a stale forecast counts as none)
     const p = lastForecast && t - lastForecast.t <= 3 ? lastForecast.p : null
     const fire = supervisor.observe({ t, p, busy: motor.busy, subtaskId: motor.current?.id })
     if (fire) { withhold = [fire.id]; elog.event({ t, kind: 'interrupt', reason: 'low_forecast', subtask: fire.id, p: +fire.p.toFixed(3), shuffled: fire.shuffled }); leaderNote('interrupt'); motor.interrupt('low_forecast'); log(`supervisor: abandon ${fire.id} (p=${fire.p.toFixed(2)}${fire.shuffled ? ', shuffled' : ''})`) }
   }
-  prevHostileDist = obs.nearestHostile?.dist ?? null; prevOxygen = obs.oxygen ?? null; lastObs = obs
+  prevHostileDist = obs.nearestHostile?.dist ?? null; lastObs = obs
   const morning = goal !== 'nether' && obs.day > startDay && obs.timeOfDay < 12000   // the chain runs past sunrise
   if (t >= minutes * 60) { finish('time'); return }
   if (morning) { finish(doneAt != null ? 'morning_after_goal' : 'morning'); return }

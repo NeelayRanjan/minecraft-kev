@@ -201,10 +201,14 @@ test('chain teacher, night on the surface with no refuge: keeps gathering instea
 
 test('drowning: in water with air at 10/20 or less, surface if offered, else wait', () => {
   assert.equal(teacherSubtask(baseObs({ inWater: true, oxygen: 8, inventory: { oak_log: 1 } })), 'explore_toward(surface)')
-  // at night on the surface explore_toward(surface) is withheld (chain mode): wait, which floats and swims to shore
+  // at night on the surface low air drops the refuges, so explore_toward(surface) is not withheld; withheld by the
+  // livelock breaker, the teacher waits (the wait floats and swims to shore)
   const night = baseObs({ goal: 'nether', phase: 'night', timeOfDay: 18000, inWater: true, oxygen: 6, inventory: { stone_pickaxe: 1 } })
-  assert.ok(!options(night).some(o => o.id === 'explore_toward(surface)'))
-  assert.equal(teacherSubtask(night), 'wait')
+  assert.equal(teacherSubtask(night), 'explore_toward(surface)')
+  const fails = Array.from({ length: 3 }, () => ({ id: 'explore_toward(surface)', result: 'no_path' }))
+  const stuck = { ...night, last: { id: 'explore_toward(surface)', result: 'no_path', recent: fails } }
+  assert.ok(!options(stuck).some(o => o.id === 'explore_toward(surface)'), 'withheld after three failures')
+  assert.equal(teacherSubtask(stuck), 'wait')
   // enough air: the usual choice
   assert.notEqual(teacherSubtask(baseObs({ inWater: true, oxygen: 18, blocks: [log] })), 'explore_toward(surface)')
 })

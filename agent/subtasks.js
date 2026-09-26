@@ -24,6 +24,8 @@ export const isNight = obs => obs.phase === 'dusk' || obs.phase === 'night'
 export const nightOnSurface = obs => obs.goal === 'nether' && isNight(obs) && !obs.underground
 export const shelterSoon = obs => obs.goal === 'nether' && obs.phase === 'afternoon' && !obs.underground
   && obs.secondsToDusk != null && obs.secondsToDusk <= SHELTER_EARLY_S
+export const LOW_AIR = 10   // of 20: policy.DROWNING_OXYGEN
+const LOW_AIR_OPTIONS = new Set(['wait', 'fight', 'flee', 'pillar_up', 'eat'])
 export const NIGHT_REFUGES = ['build_shelter', 'explore_toward(down)', 'return_to_base']   // withhold only when one is offered
 export const HAND_DIGGABLE = new Set(['dirt', 'grass_block', 'coarse_dirt', 'podzol', 'sand', 'red_sand'])
 export const FOOD = new Set(['bread', 'apple', 'cooked_beef', 'beef', 'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton',
@@ -225,6 +227,8 @@ export function options(obs) {
   if (c.blocks >= 1 && canDigIn && (isNight(obs) || shelterSoon(obs))) add('build_shelter')
   if (chainMode) addChain(obs, out, c)
   add('wait')
+  // Low on air (both modes; oxygen defaults to 20): only the ways out of the water, the threat responses and eat.
+  if ((obs.oxygen ?? 20) <= LOW_AIR) for (let i = out.length - 1; i >= 0; i--) if (!LOW_AIR_OPTIONS.has(out[i].name) && out[i].id !== 'explore_toward(surface)') out.splice(i, 1)
   const stuck = stuckOn(obs)
   for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)   // a subtask the supervisor just abandoned (agent/supervisor.js)
   // Only when a refuge survives the filters: with none (no pickaxe, no blocks, no base) the bot keeps working instead of
