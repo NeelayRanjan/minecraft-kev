@@ -1,0 +1,214 @@
+// Producer tables and the recipe expander (pure). expandItem('compass', 1, inventory) turns a request into an ordered
+// list of typed goal steps, net of the inventory, so the LLM leader never does the arithmetic.
+//
+// Producers, in priority order (producerOf): the legacy producers (goals.PRODUCERS: logs, planks, sticks, cobblestone,
+// coal, raw_iron, iron_ingot, diamond, flint, obsidian; each is a `gather(<item>, n)` step whose option layer handles
+// its own tools), the legacy recipes (goals.RECIPES: `craft_item` expanded through those tables, never through
+// minecraft-data), then MINE (a gather step with a pickaxe tier), SMELT, HUNT, and finally a minecraft-data 1.20.4
+// recipe. Planks of any wood count toward a plank ingredient and are gathered as `planks`, logs likewise as `log`,
+// and `sticks` is the item `stick`.
+//
+// Ordering rule: the walk is post-order. A step is emitted after every step its inputs need: for a craft, first its
+// ingredients in recipe order (first appearance in the grid, row by row), then the crafting table if the grid is
+// larger than 2x2; for a smelt, its input then the furnace; for a hunt, the shears; for a MINE gather, the pickaxe
+// tiers it lacks (to reach tier t the walk first reaches tier t-1: wooden before stone before iron). Steps with the
+// same (kind, arg) merge: the count adds up and the step keeps the position of its first emission.
+// The walk consumes a copy of the inventory as it allocates, and adds what it produces (surplus of a craft yield or a
+// hunt, the crafted table, furnace, shears and pickaxes), so every quantity is net.
+//
+// Not modelled: furnace fuel (the smelt goal handles it), tools other than pickaxes and shears, deepslate variants.
+// goals.js may import this module (a cycle): the goals tables are only read inside functions, never at load time.
+import mcDataFor from 'minecraft-data'
+import { PRODUCERS, RECIPES } from './goals.js'
+import { TABLE_ITEMS } from './subtasks.js'
+
+const md = mcDataFor('1.20.4')
+
+export const MINE = {   // drop item -> how to get it (items already produced by a legacy option are NOT here: see goals.PRODUCERS)
+  raw_copper: { blocks: ['copper_ore', 'deepslate_copper_ore'], tool: 'stone', where: 'ore' },
+  raw_gold: { blocks: ['gold_ore', 'deepslate_gold_ore'], tool: 'iron', where: 'ore' },
+  redstone: { blocks: ['redstone_ore', 'deepslate_redstone_ore'], tool: 'iron', where: 'ore' },
+  lapis_lazuli: { blocks: ['lapis_ore', 'deepslate_lapis_ore'], tool: 'stone', where: 'ore' },
+  emerald: { blocks: ['emerald_ore', 'deepslate_emerald_ore'], tool: 'iron', where: 'ore' },
+  sand: { blocks: ['sand'], tool: 'none', where: 'surface' }, gravel: { blocks: ['gravel'], tool: 'none', where: 'surface' },
+  dirt: { blocks: ['dirt', 'grass_block'], tool: 'none', where: 'surface' }, clay_ball: { blocks: ['clay'], tool: 'none', where: 'surface' },
+  cobblestone: null, coal: null, raw_iron: null, diamond: null, flint: null, obsidian: null,   // legacy: goals.PRODUCERS
+}
+export const SMELT = { copper_ingot: 'raw_copper', gold_ingot: 'raw_gold', glass: 'sand', stone: 'cobblestone', charcoal: 'log', brick: 'clay_ball',
+  smooth_stone: 'stone', cooked_beef: 'beef', cooked_porkchop: 'porkchop', cooked_chicken: 'chicken', cooked_mutton: 'mutton' }   // iron_ingot stays legacy smelt(iron_ingot)
+export const HUNT = { white_wool: { mobs: ['sheep'], via: 'shear', tool: 'shears', per: 2 }, mutton: { mobs: ['sheep'], via: 'kill', per: 1 },
+  leather: { mobs: ['cow'], via: 'kill', per: 1 }, beef: { mobs: ['cow'], via: 'kill', per: 2 }, porkchop: { mobs: ['pig'], via: 'kill', per: 2 },
+  feather: { mobs: ['chicken'], via: 'kill', per: 1 }, chicken: { mobs: ['chicken'], via: 'kill', per: 1 }, string: { mobs: ['spider'], via: 'kill', per: 1 },
+  ink_sac: { mobs: ['squid'], via: 'kill', per: 2 } }
+export const TOOL_TIER = { none: 0, wood: 1, stone: 2, iron: 3, diamond: 4 }
+const PICKAXE_TIER = { wooden_pickaxe: 1, golden_pickaxe: 1, stone_pickaxe: 2, iron_pickaxe: 3, diamond_pickaxe: 4, netherite_pickaxe: 4 }
+const PICKAXE_FOR = { 1: 'wooden_pickaxe', 2: 'stone_pickaxe', 3: 'iron_pickaxe', 4: 'diamond_pickaxe' }
+const MAX_COUNT = 64
+
+// The name a step and the inventory arithmetic use: every log is `log`, every plank `planks`, sticks are `stick`.
+const group = item => item === 'log' || item.endsWith('_log') ? 'log'
+  : item === 'planks' || item.endsWith('_planks') ? 'planks' : item === 'sticks' ? 'stick' : item
+
+export function tierHeld(inventory = {}) {
+  let best = 0
+  for (const [name, t] of Object.entries(PICKAXE_TIER)) if ((inventory[name] || 0) > 0 && t > best) best = t
+  return best
+}
+
+export const isItem = name => typeof name === 'string' && md.itemsByName[name] !== undefined
+
+// minecraft-data recipes as { ingredients: [[name, perCraft]] in recipe order, yield, table }.
+const recipeCache = new Map()
+function mdRecipes(item) {
+  if (recipeCache.has(item)) return recipeCache.get(item)
+  const id = md.itemsByName[item]?.id
+  const out = (id === undefined ? [] : md.recipes[id] || []).map(r => {
+    const cells = r.inShape ? r.inShape.flat() : r.ingredients || []
+    const q = new Map()
+    for (const c of cells) if (c !== null && c !== undefined) { const n = md.items[c].name; q.set(n, (q.get(n) || 0) + 1) }
+    const table = r.inShape ? r.inShape.length > 2 || r.inShape.some(row => row.length > 2) : cells.length > 4
+    return { ingredients: [...q], yield: r.result.count || 1, table }
+  })
+  recipeCache.set(item, out)
+  return out
+}
+
+export function producerOf(item) {
+  if (typeof item !== 'string') return null
+  const g = group(item)
+  if (PRODUCERS[g] || PRODUCERS[item] || g === 'log' || g === 'planks' || g === 'stick') return { kind: 'gather', item: g }
+  if (RECIPES[item]) return { kind: 'craft_item', item, legacy: true }
+  if (MINE[item]) return { kind: 'gather', item, mine: MINE[item] }
+  if (SMELT[item]) return { kind: 'smelt_item', item, input: SMELT[item] }
+  if (HUNT[item]) return { kind: 'hunt', item, ...HUNT[item] }
+  const recipes = mdRecipes(item)
+  return recipes.length ? { kind: 'craft_item', item, recipes: recipes.length } : null
+}
+
+// Which items can be produced at all: a least fixed point over the whole recipe graph, computed once (a recipe counts
+// when all its ingredients are producible), so cycles (iron_nugget <-> iron_ingot, bed and wool dyeing) terminate.
+let producibleSet = null
+function producible(item) {
+  if (!producibleSet) {
+    producibleSet = new Set()
+    const pending = []
+    for (const { name } of md.itemsArray) {
+      const p = producerOf(name)
+      if (!p) continue
+      if (p.kind === 'craft_item' && !p.legacy) pending.push(name); else producibleSet.add(name)
+    }
+    // Smelt inputs and legacy recipe ingredients are all producers already; only minecraft-data recipes iterate.
+    for (let changed = true; changed;) {
+      changed = false
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const name = pending[i]
+        if (mdRecipes(name).some(r => r.ingredients.every(([n]) => producible(n)))) { producibleSet.add(name); pending.splice(i, 1); changed = true }
+      }
+    }
+  }
+  const g = group(item)
+  return producibleSet.has(item) || producibleSet.has(g) || g === 'log' || g === 'planks' || !!PRODUCERS[g]
+}
+
+// The first leaf that cannot be produced, descending through the first recipe of an unproducible item.
+function missingLeaf(item, seen = new Set()) {
+  if (seen.has(item)) return item
+  seen.add(item)
+  if (!producerOf(item)) return item
+  for (const [n] of mdRecipes(item)[0]?.ingredients || []) if (!producible(n)) return missingLeaf(n, seen)
+  return item
+}
+
+export function expandItem(item, count, inventory = {}, { placed = { crafting_table: false, furnace: false } } = {}) {
+  const want = Math.max(1, Math.min(MAX_COUNT, Math.floor(Number(count)) || 1))
+  const inv = { ...inventory }
+  const steps = [], index = new Map(), lines = []
+  const held = name => {
+    const g = group(name)
+    if (g === 'log' || g === 'planks' || g === 'stick')
+      return Object.entries(inv).reduce((s, [k, v]) => s + (group(k) === g ? v : 0), 0)
+    return inv[name] || 0
+  }
+  const take = (name, n) => {   // consume n (<= held) from the copy: the exact name first, then any of its group
+    const g = group(name)
+    for (const k of [name, ...Object.keys(inv).filter(k => k !== name && group(k) === g && (g === 'log' || g === 'planks' || g === 'stick'))]) {
+      const t = Math.min(n, inv[k] || 0)
+      inv[k] = (inv[k] || 0) - t; n -= t
+      if (n === 0) return
+    }
+  }
+  const give = (name, n) => { if (n > 0) inv[name] = (inv[name] || 0) + n }
+  const emit = (kind, arg, n) => {
+    const key = `${kind}(${arg})`
+    if (index.has(key)) steps[index.get(key)].count += n
+    else { index.set(key, steps.length); steps.push({ kind, arg, count: n }) }
+  }
+  const stack = new Set()
+  let missing = null
+
+  // Make `n` of `name` available in the copy, then consume them. Returns false (and sets `missing`) on a dead end.
+  function need(name, n, depth) {
+    if (missing) return false
+    const have = Math.min(held(name), n)
+    const r = n - have
+    const pad = '  '.repeat(depth)
+    if (have) take(name, have)
+    if (r <= 0) { lines.push(`${pad}${name} x${n}: held`); return true }
+    const p = producerOf(name)
+    if (!p || !producible(name) || stack.has(name)) { missing = missingLeaf(name); return false }
+    lines.push(`${pad}${name} x${r}${have ? ` (held ${have})` : ''} <- ${p.kind}`)
+    stack.add(name)
+    const ok = produce(name, r, p, depth + 1)
+    stack.delete(name)
+    return ok
+  }
+  const hasStation = s => !!placed?.[s] || held(s) > 0
+  const station = (s, depth) => hasStation(s) || (need(s, 1, depth) && (give(s, 1), true))
+  function tier(t, depth) {   // hold a pickaxe of tier >= t, reaching tier t-1 first
+    if (tierHeld(inv) >= t) return true
+    if (t > 1 && !tier(t - 1, depth)) return false
+    const pick = PICKAXE_FOR[t]
+    if (!need(pick, 1, depth)) return false
+    give(pick, 1)
+    return true
+  }
+  function produce(name, r, p, depth) {
+    if (p.kind === 'gather') {
+      if (p.mine && TOOL_TIER[p.mine.tool] > 0 && !tier(TOOL_TIER[p.mine.tool], depth)) return false
+      emit('gather', p.item, r)
+      return true
+    }
+    if (p.kind === 'smelt_item') {
+      if (!need(p.input, r, depth) || !station('furnace', depth)) return false
+      emit('smelt_item', name, r)
+      return true
+    }
+    if (p.kind === 'hunt') {
+      if (p.tool && !(held(p.tool) > 0 || (need(p.tool, 1, depth) && (give(p.tool, 1), true)))) return false
+      const mobs = Math.ceil(r / p.per)
+      give(name, mobs * p.per - r)
+      emit('hunt', p.mobs[0], mobs)
+      return true
+    }
+    // craft_item: the legacy table (yield 1: planks and sticks are gathered) or the best minecraft-data recipe
+    let recipe
+    if (p.legacy) recipe = { ingredients: Object.entries(RECIPES[name]).map(([n, q]) => [group(n), q]), yield: 1, table: TABLE_ITEMS.has(name) }
+    else {
+      const usable = mdRecipes(name).filter(rc => rc.ingredients.every(([n]) => producible(n) && !stack.has(n)))
+      if (!usable.length) { missing = missingLeaf(name); return false }
+      const score = rc => { const c = Math.ceil(r / rc.yield); return rc.ingredients.reduce((s, [n, q]) => s + Math.min(held(n), q * c), 0) }
+      const exact = rc => { const c = Math.ceil(r / rc.yield); return rc.ingredients.reduce((s, [n, q]) => s + Math.min(inv[n] || 0, q * c), 0) }
+      recipe = usable.reduce((best, rc) => score(rc) > score(best) || (score(rc) === score(best) && exact(rc) > exact(best)) ? rc : best)
+    }
+    const crafts = Math.ceil(r / recipe.yield)
+    for (const [ing, q] of recipe.ingredients) if (!need(ing, q * crafts, depth)) return false
+    if (recipe.table && !station('crafting_table', depth)) return false
+    give(name, crafts * recipe.yield - r)
+    emit('craft_item', name, r)
+    return true
+  }
+
+  need(item, want, 0)
+  if (missing) return { steps: [], missing: [missing], tree: lines.join('\n') + `\n(missing: ${missing})` }
+  return { steps, missing: [], tree: lines.join('\n') }
+}
