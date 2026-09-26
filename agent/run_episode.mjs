@@ -133,8 +133,11 @@ function startSubtask(id, source, obs) {
   elog.event({ t: now(), kind: 'subtask_start', id, source })
   if (leaderAsk && leaderAsk.bindNext) { leaderAsk.currentId = id; leaderAsk.bindNext = false }   // asked while idle: the leader judges this pick
   motor.run(id, obs).then(r => {
-    const repeats = lastResult && lastResult.id === id && lastResult.result === r.result ? lastResult.repeats + 1 : 1
-    recent = [...recent, { id, result: r.result }].slice(-REPEAT_WINDOW)
+    // A subtask the leader interrupted says nothing about whether it works: it stays out of the livelock breaker's
+    // window and its repeat count (repeats 0), else three leader interrupts would withhold it from kev and the leader.
+    const byLeader = r.result === 'interrupted' && r.detail === 'leader'
+    const repeats = byLeader ? 0 : lastResult && lastResult.id === id && lastResult.result === r.result ? lastResult.repeats + 1 : 1
+    if (!byLeader) recent = [...recent, { id, result: r.result }].slice(-REPEAT_WINDOW)
     lastResult = { id, result: r.result, repeats, recent }
     elog.event({ t: now(), kind: 'subtask_done', id, result: r.result, detail: r.detail ?? null })
     if (r.detail !== 'leader') leaderNote('subtask_done')   // the leader's own interrupt is not news to it
