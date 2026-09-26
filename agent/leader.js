@@ -207,7 +207,7 @@ Goal kinds and their arguments (nothing else is accepted):
 - go_to, arg one of: ${list(PLACES)};
 - build, arg one of: ${list(Object.keys(STRUCTURES).filter(k => STRUCTURES[k].executor))};
 - survive_night, return_to_base: no arg.
-Answer every audience request with exactly one push_goal or one cannot (with a reason the audience will read); if the request names something outside these lists, answer cannot and say what the bot can do instead.
+Answer every audience request with exactly one push_goal or one cannot (with a reason the audience will read). Map the request onto these lists first: a request for an item in the gather or craft_item lists is always a push_goal, whatever the current subtask is ("get me some logs" -> gather log count 8; "grab a bit of stone" -> gather cobblestone count 8; "make me an iron sword" -> craft_item iron_sword; "can you find diamonds" -> find diamond_ore; "come home" -> return_to_base). Without a number, use count 8. Answer cannot only when the request names something outside these lists (a block the bot cannot gather, a shape to dig, a structure to build), and then name the goal kinds above as what the bot can do instead, not the current subtasks.
 Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
 Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot.
 "continue" remains the default when there is no request and the goals make progress.
