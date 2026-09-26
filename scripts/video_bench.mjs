@@ -35,10 +35,12 @@ const callsPath = path.join(dataDir, 'calls.jsonl')
 const url = (arg('url', 'http://100.109.91.95:11434')).replace(/\/$/, '')
 const vlModel = arg('vl-model', 'qwen3-vl:8b')
 const ARMS = {
-  text27b: { model: arg('text-model', 'qwen38-27b-iq2s'), images: null, numCtx: 4096 },
-  vl_text: { model: vlModel, images: null, numCtx: 8192 },
-  vl_mosaic: { model: vlModel, images: 'mosaic', numCtx: 8192 },
-  vl_frames: { model: vlModel, images: 'frames', numCtx: 16384 },
+  // qwen3-vl:8b in Ollama thinks even with think:false (its content is empty until the thinking ends), so the vision arms
+  // need a large token budget; --num-predict overrides all arms.
+  text27b: { model: arg('text-model', 'qwen38-27b-iq2s'), images: null, numCtx: 4096, numPredict: Number(arg('num-predict', 200)) },
+  vl_text: { model: vlModel, images: null, numCtx: 8192, numPredict: Number(arg('num-predict', 2000)) },
+  vl_mosaic: { model: vlModel, images: 'mosaic', numCtx: 8192, numPredict: Number(arg('num-predict', 2000)) },
+  vl_frames: { model: vlModel, images: 'frames', numCtx: 16384, numPredict: Number(arg('num-predict', 2000)) },
 }
 
 const readJsonl = p => fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
@@ -157,7 +159,7 @@ function requestBody(arm, call) {
   if (a.images === 'frames') { user = `${FRAMES_NOTE.replace('AGES', call.frame_ages.map(ageLabel).join(', '))}\n\n${user}`; images = call.frame_paths.map(b64) }
   const messages = [{ role: 'system', content: call.system ?? LEADER_SYSTEM }, { role: 'user', content: user, ...(images ? { images } : {}) }]
   return { model: a.model, messages, stream: false, format: leaderSchema(options), think: false,
-    options: { temperature: 0.2, num_predict: 200, num_ctx: a.numCtx }, keep_alive: '30m' }
+    options: { temperature: 0.2, num_predict: a.numPredict, num_ctx: a.numCtx }, keep_alive: '30m' }
 }
 
 async function post(body, timeoutMs = 180_000) {
@@ -199,7 +201,7 @@ async function describe(calls) {
     const t0 = Date.now()
     let row
     try {
-      const body = await post({ model: vlModel, stream: false, think: false, keep_alive: '30m', options: { temperature: 0.2, num_predict: 120, num_ctx: 8192 },
+      const body = await post({ model: vlModel, stream: false, think: false, keep_alive: '30m', options: { temperature: 0.2, num_predict: 1500, num_ctx: 8192 },
         messages: [{ role: 'user', content: `${VIDEO_NOTE}\n\nDescribe in two sentences what the bot has been doing in this video.`, images: [fs.readFileSync(path.join(ROOT, c.mosaic_path)).toString('base64')] }] })
       row = { t_asked: c.t_asked, text: (body?.message?.content ?? '').trim(), latency_ms: Date.now() - t0 }
     } catch (e) { row = { t_asked: c.t_asked, text: null, error: String(e.message || e).slice(0, 300) } }
