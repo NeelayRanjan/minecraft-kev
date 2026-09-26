@@ -1,6 +1,6 @@
 // The scripted tech-tree teacher: labels for next_subtask and threat_response, and the driver during data collection.
 // Deterministic function of obs (lesson 1: choice labels from a script saturate; they are for driving).
-import { counts, options, optionId, tableNear, furnaceNear, hasFuel, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava, canCraft, TABLE_NEAR } from './subtasks.js'
+import { counts, options, optionId, nightOnSurface, shelterSoon, tableNear, furnaceNear, hasFuel, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava, canCraft, TABLE_NEAR } from './subtasks.js'
 import { needs, stageOf, IRON_TOOLS, ARMOR, DIAMOND_TOOLS, INGOTS, DIAMONDS, STICKS } from './stages.js'
 
 export const WOOD_NEEDED = 5   // logs (or planks/4): table 1, wooden pickaxe ~1.25, sticks, spare fuel and a spare table
@@ -62,7 +62,11 @@ function pick(obs) {
   if (th === 'flee') return 'flee(threat)'
   if (th === 'pillar_up') return 'pillar_up'
   if (obs.food < 8 && c.food >= 1) return 'eat'
-  if (obs.goal === 'nether' && stageOf(obs).index >= 1) return pickChain(obs)
+  if (obs.goal === 'nether') {
+    const night = pickNight(obs)
+    if (night) return night
+    if (stageOf(obs).index >= 1) return pickChain(obs)
+  }
   switch (step) {
     case 1: return wood()
     case 2: return c.planks >= 4 ? craft('crafting_table') : craft('planks')
@@ -93,10 +97,33 @@ function pick(obs) {
   }
 }
 
+// Night protocol (chain mode, every stage): at dusk and night on the surface, hide (shelter, else dig in, else walk
+// home, else wait); in the last minute before dusk, shelter early when it is offered. Underground: nothing (null).
+function pickNight(obs) {
+  const night = nightOnSurface(obs)
+  if (!night && !shelterSoon(obs)) return null
+  const offered = new Set(options(obs).map(o => o.id))
+  if (offered.has('build_shelter')) return 'build_shelter'
+  if (!night) return null
+  return ['explore_toward(down)', 'return_to_base'].find(id => offered.has(id)) || 'wait'
+}
+
+// Spare pickaxe (chain mode, stage >= 1): before a choice that digs, make a stone pickaxe to fall back on when the iron
+// one wears out (craft it, or mine the 3 cobblestone for it with the iron pickaxe).
+function spareFirst(obs, id) {
+  if (!(id === 'explore_toward(down)' || id === 'explore_toward(deep)' || id.startsWith('mine_'))) return id
+  const c = counts(obs)
+  if (obs.inventory?.stone_pickaxe) return id
+  if (options(obs).some(o => o.id === 'craft(stone_pickaxe)')) return 'craft(stone_pickaxe)'
+  if (c.cobble < 3 && c.hasIronPickaxe && has(obs, isStone, 16)) return 'mine_stone'
+  return id
+}
+
 // Chain mode (Task 4): stages 1-4 of agent/stages.js, called from pick() once the iron pickaxe is done.
 // Stage 1 (iron tools) and stage 2 (armor) share craftNext/getIron; stage 3 (diamond tools) shares craftNext
 // with its own diamond-seeking fallback; stage 4 (nether portal) is its own linear chain.
-function pickChain(obs) {
+function pickChain(obs) { return spareFirst(obs, pickChainStage(obs)) }
+function pickChainStage(obs) {
   const c = counts(obs)
   const stage = stageOf(obs).index
   const wood = () => has(obs, isLog, 48) ? 'gather_wood' : 'explore_toward(surface)'

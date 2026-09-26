@@ -15,6 +15,15 @@ export const CHAIN_CRAFTABLE = ['iron_sword', 'iron_axe', 'iron_helmet', 'iron_c
   'bucket', 'flint_and_steel', 'diamond_pickaxe', 'diamond_sword', 'diamond_axe']
 export const TABLE_ITEMS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'furnace', 'iron_pickaxe', ...CHAIN_CRAFTABLE])
 export const CRAFTABLE = ['planks', 'sticks', 'crafting_table', 'wooden_pickaxe', 'stone_pickaxe', 'furnace', 'iron_pickaxe']
+// Night protocol (chain mode only): the surface work withheld at dusk and night on the surface (leader run 1 died
+// 9 times, all at night on the surface). Underground, and in experiment 1, nothing changes.
+export const NIGHT_SURFACE_WITHHELD = new Set(['gather_wood', 'explore_toward(surface)', 'mine_gravel', 'fill_bucket(water)',
+  'cast_obsidian', 'build_portal', 'light_portal', 'mine_stone', 'mine_coal', 'mine_iron', 'mine_diamond', 'mine_obsidian'])
+export const SHELTER_EARLY_S = 60   // chain mode offers build_shelter this many seconds before dusk on the surface
+export const isNight = obs => obs.phase === 'dusk' || obs.phase === 'night'
+export const nightOnSurface = obs => obs.goal === 'nether' && isNight(obs) && !obs.underground
+export const shelterSoon = obs => obs.goal === 'nether' && obs.phase === 'afternoon' && !obs.underground
+  && obs.secondsToDusk != null && obs.secondsToDusk <= SHELTER_EARLY_S
 export const FOOD = new Set(['bread', 'apple', 'cooked_beef', 'beef', 'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton',
   'chicken', 'cooked_chicken', 'carrot', 'potato', 'baked_potato', 'sweet_berries', 'cod', 'cooked_cod', 'rotten_flesh'])
 
@@ -197,6 +206,9 @@ export function options(obs) {
   for (const item of CRAFTABLE) {
     if (!canCraft(item, c)) continue
     if (chainMode && item === 'iron_pickaxe' && c.hasIronPickaxe) continue   // a replacement only when no iron or diamond pickaxe is left
+    // Chain mode: a stone pickaxe is the spare for when the iron one wears out (run 1: stage 0 again, 9 deaths),
+    // offered at any stage until one is held.
+    if (chainMode && item === 'stone_pickaxe' && obs.inventory?.stone_pickaxe) continue
     if (TABLE_ITEMS.has(item) && !tableNear(obs) && c.table === 0) continue
     add('craft', item)
   }
@@ -206,10 +218,11 @@ export function options(obs) {
   add('explore_toward', 'surface')
   if (obs.base?.crafting_table && obs.base.crafting_table.dist > TABLE_NEAR) add('return_to_base')
   if (c.food >= 1 && obs.food < 16) add('eat')
-  if (c.blocks >= 1 && c.hasPickaxe && (obs.phase === 'dusk' || obs.phase === 'night')) add('build_shelter')
+  if (c.blocks >= 1 && c.hasPickaxe && (isNight(obs) || shelterSoon(obs))) add('build_shelter')
   if (chainMode) addChain(obs, out, c)
   add('wait')
   const stuck = stuckOn(obs)
   for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)   // a subtask the supervisor just abandoned (agent/supervisor.js)
+  if (nightOnSurface(obs)) for (const id of NIGHT_SURFACE_WITHHELD) stuck.add(id)
   return out.filter(o => !stuck.has(o.id))
 }

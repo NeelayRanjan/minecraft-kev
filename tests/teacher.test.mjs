@@ -160,3 +160,30 @@ test('a withheld mining subtask underground falls back to exploring down, not to
   // deeper than explore_toward(down) is offered: the surface fallback as before
   assert.equal(teacherSubtask({ ...under, pos: { x: 0, y: 10, z: 0 } }), 'explore_toward(surface)')
 })
+
+// Round 2: the night protocol and the spare stone pickaxe (chain mode only).
+const stage2 = { ...kit, stone_pickaxe: 1 }
+test('chain teacher, night on the surface: shelter with blocks, dig in without', () => {
+  assert.equal(teacherSubtask(chain({ phase: 'night', inventory: { ...stage2, cobblestone: 4 }, blocks: [log] })), 'build_shelter')
+  assert.equal(teacherSubtask(chain({ phase: 'dusk', inventory: stage2, blocks: [log] })), 'explore_toward(down)')
+  assert.equal(teacherSubtask(chain({ phase: 'night', inventory: stage2, pos: { x: 0, y: 10, z: 0 } })), 'wait')
+  // threats still come first
+  assert.equal(teacherSubtask(chain({ phase: 'night', inventory: { ...stage2, cobblestone: 4 }, nearestHostile: { name: 'zombie', dist: 6, dir: 'west', dy: 0 } })), 'fight(threat)')
+  // underground: unchanged (the chain teacher keeps mining)
+  assert.equal(teacherSubtask(chain({ phase: 'night', underground: true, skyLight: 0, pos: { x: 0, y: 30, z: 0 }, inventory: stage2,
+    blocks: [{ name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }] })), 'mine_iron')
+})
+test('chain teacher: shelter in the last minute before dusk', () => {
+  const o = chain({ phase: 'afternoon', secondsToDusk: 45, inventory: { ...stage2, cobblestone: 4 }, blocks: [log] })
+  assert.ok(options(o).some(x => x.id === 'build_shelter'))
+  assert.equal(teacherSubtask(o), 'build_shelter')
+})
+test('chain teacher: stage 0 at night on the surface also shelters', () => {
+  assert.equal(teacherSubtask(chain({ phase: 'night', inventory: { wooden_pickaxe: 1, cobblestone: 2 }, blocks: [stone] })), 'build_shelter')
+})
+test('chain teacher: crafts a spare stone pickaxe before digging', () => {
+  const inv = { iron_pickaxe: 1, cobblestone: 3, stick: 2, crafting_table: 1 }
+  assert.equal(teacherSubtask(chain({ inventory: inv })), 'craft(stone_pickaxe)')
+  assert.equal(teacherSubtask(chain({ inventory: { ...inv, stone_pickaxe: 1 } })), 'explore_toward(down)')
+  assert.equal(teacherSubtask(chain({ inventory: { iron_pickaxe: 1, stick: 2 }, blocks: [stone] })), 'mine_stone')
+})

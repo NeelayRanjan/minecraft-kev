@@ -148,3 +148,39 @@ test('chain mode never offers mine_obsidian against a frame being built or compl
   assert.ok(!ids(chain({ inventory: { ...kit, obsidian: 2 }, armor, blocks, memory })).includes('mine_obsidian'), 'build in progress')
   assert.ok(!ids(chain({ inventory: kit, armor, blocks, portalFrame: { dist: 2, dir: 'north', dy: 0 } })).includes('mine_obsidian'), 'frame complete')
 })
+
+// Round 2: the night protocol and the spare stone pickaxe (chain mode only).
+const logSeen = { name: 'oak_log', dist: 12, dir: 'north', dy: 0, reachable: true }
+const ironSeenB = { name: 'iron_ore', dist: 10, dir: 'north', dy: 0, reachable: true }
+const stoneSeen = { name: 'stone', dist: 5, dir: 'south', dy: -1, reachable: true }
+test('chain mode, night on the surface: surface work withheld; shelter, digging in, wait and threat responses offered', () => {
+  const o = chain({ phase: 'night', secondsToDusk: null, inventory: { iron_pickaxe: 1, cobblestone: 4 }, blocks: [logSeen, ironSeenB, stoneSeen] })
+  const i = ids(o)
+  for (const id of ['gather_wood', 'explore_toward(surface)', 'mine_iron', 'mine_stone']) assert.ok(!i.includes(id), `${id} offered at night on the surface`)
+  for (const id of ['build_shelter', 'explore_toward(down)', 'wait']) assert.ok(i.includes(id), `${id} not offered`)
+  const t = ids({ ...o, nearestHostile: { name: 'zombie', dist: 7, dir: 'west', dy: 0 } })
+  assert.ok(t.includes('flee(threat)') && t.includes('fight(threat)'))
+  assert.ok(!ids({ ...o, phase: 'dusk' }).includes('gather_wood'), 'dusk counts as night')
+})
+test('chain mode, night underground: mining stays offered', () => {
+  const o = chain({ phase: 'night', underground: true, skyLight: 0, pos: { x: 0, y: 30, z: 0 }, inventory: { iron_pickaxe: 1 }, blocks: [ironSeenB] })
+  assert.ok(ids(o).includes('mine_iron'))
+})
+test('experiment-1 mode, night on the surface: options unchanged', () => {
+  const o = baseObs({ phase: 'night', inventory: { stone_pickaxe: 1, cobblestone: 4 }, blocks: [logSeen, ironSeenB] })
+  const i = ids(o)
+  assert.ok(i.includes('gather_wood') && i.includes('mine_iron') && i.includes('explore_toward(surface)'))
+  assert.ok(!ids(baseObs({ phase: 'afternoon', secondsToDusk: 45, inventory: { stone_pickaxe: 1, cobblestone: 4 } })).includes('build_shelter'))
+})
+test('chain mode, last minute before dusk on the surface: build_shelter offered early, nothing withheld', () => {
+  const o = chain({ phase: 'afternoon', secondsToDusk: 45, inventory: { iron_pickaxe: 1, cobblestone: 4 }, blocks: [logSeen] })
+  assert.ok(ids(o).includes('build_shelter'))
+  assert.ok(ids(o).includes('gather_wood'))
+  assert.ok(!ids({ ...o, secondsToDusk: 120 }).includes('build_shelter'))
+})
+test('chain mode: a spare stone pickaxe is offered at stage >= 1 when none is held', () => {
+  const inv = { iron_pickaxe: 1, cobblestone: 3, stick: 2, crafting_table: 1 }
+  assert.ok(ids(chain({ inventory: inv })).includes('craft(stone_pickaxe)'))
+  assert.equal(ids(chain({ inventory: inv })).filter(id => id === 'craft(stone_pickaxe)').length, 1, 'offered once')
+  assert.ok(!ids(chain({ inventory: { ...inv, stone_pickaxe: 1 } })).includes('craft(stone_pickaxe)'))
+})
