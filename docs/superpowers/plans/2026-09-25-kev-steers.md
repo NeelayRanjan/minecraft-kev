@@ -1,5 +1,7 @@
 # kev steers Implementation Plan
 
+> **Status 2026-09-25 evening: shelved by the user after Tasks 1-2 (agent/steer.js and the logger stream are on the branch); resume at Task 3 after a working nether run.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** inside the walking subtasks (`explore_toward(*)`, `return_to_base`), let kev steer at 2 Hz by choosing among eight headings, jump, dig-ahead and stop, with the pathfinder's own next move as the teacher label and a 30-second "reach the target" forecast; measure four arms (pathfinder, teacher-follow, kev zero-shot, kev fine-tuned) on distance gained, time to target, damage and deaths.

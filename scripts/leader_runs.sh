@@ -13,7 +13,8 @@ cd "$(dirname "$0")/.."
 seed=${1:-3000}; minutes=${2:-60}
 KEV=${KEV:-../overcooked-kev/kev}
 LEADER_URL=${LEADER_URL:-http://100.109.91.95:11434}
-LEADER_MODEL=${LEADER_MODEL:-qwen38-27b-iq3xxs}
+LEADER_MODEL=${LEADER_MODEL:-qwen38-27b-iq2s}
+RUN_THINK=${RUN_THINK:-0}   # 1 re-enables the three thinking configurations (2026-09-25: a 27B thinking at ~45 tok/s answers in 30-70 s, after the subtask it judged has ended: 25 of 55 calls truncated, 23 stale)
 
 say() { echo "[$(date '+%F %T')] leader_runs: $*"; }
 
@@ -39,10 +40,11 @@ stage_of() {   # stage_of <name> -> a one-line stage/deaths/end-reason summary f
 
 run_config() {   # run_config <name> <leader-mode> [extra run_episode.mjs args, e.g. --leader-think --leader-num-predict 3000]
   local name=$1 mode=$2; shift 2
+  case "$*" in *--leader-think*) [ "$RUN_THINK" = 1 ] || { say "$name skipped (RUN_THINK=0)"; return 0; } ;; esac
   if [ -s "out/${name}.json" ]; then say "$name exists, skipping"; return 0; fi
   # Preload the leader model so the first call never spends the 300 s first-call budget on a cold load (~265 s for a 27B).
   local t_load=$(date +%s)
-  curl -s -m 600 "$LEADER_URL/api/generate" -d "{\"model\":\"$LEADER_MODEL\",\"prompt\":\"ok\",\"stream\":false,\"think\":false,\"options\":{\"num_ctx\":8192,\"num_predict\":2},\"keep_alive\":\"90m\"}" > /dev/null
+  curl -s -m 600 "$LEADER_URL/api/generate" -d "{\"model\":\"$LEADER_MODEL\",\"prompt\":\"ok\",\"stream\":false,\"think\":false,\"options\":{\"num_ctx\":4096,\"num_predict\":2},\"keep_alive\":\"90m\"}" > /dev/null
   say "leader model $LEADER_MODEL preloaded in $(( $(date +%s) - t_load )) s"
   say "running $name (mode=$mode${*:+, $*})"
   node agent/run_episode.mjs --seed "$seed" --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --goal nether \
