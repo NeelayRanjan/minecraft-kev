@@ -39,6 +39,9 @@ export const PRODUCERS = {
 export const DECLARED_FINDABLE = ['diamond_ore', 'lava', 'water', 'cave', 'village', 'iron_ore', 'coal_ore']
 export const FINDABLE_NOW = DECLARED_FINDABLE.filter(b => b !== 'village')   // village: no detector until roadmap item 5
 export const PLACES = ['base', 'surface', 'diamond_level']
+// go_to also accepts arg 'y:<int>' (an absolute height, -64..320: the world's build limits), for a leader that wants
+// a specific depth PLACES does not name. Pure parse; null when arg is not that form.
+export const goToY = arg => { const m = /^y:(-?\d+)$/.exec(arg ?? ''); return m ? Number(m[1]) : null }
 export const STRUCTURES = { portal_frame: { executor: true }, house: { executor: false } }
 const FIND_MATCH = {
   diamond_ore: isDiamond, iron_ore: isIron, coal_ore: isCoal, lava: isLava, water: isWater, cave: n => n === 'cave',
@@ -202,23 +205,44 @@ export const GOAL_KINDS = {
     stuckS: 480,
   },
   go_to: {
-    done: (obs, place) => place === 'base' ? nearBase(obs) : place === 'surface' ? !obs.underground : (obs.pos?.y ?? 0) <= DIAMOND_LEVEL_Y,
+    done: (obs, place) => {
+      const y = goToY(place)
+      if (y != null) return Math.abs((obs.pos?.y ?? 0) - y) <= 2
+      return place === 'base' ? nearBase(obs) : place === 'surface' ? !obs.underground : (obs.pos?.y ?? 0) <= DIAMOND_LEVEL_Y
+    },
     // The night refuges stay at dusk/night on the surface (options() withholds the surface work because one is offered)
     // and explore_toward(surface) stays under low air (it is the way out of the water): never only wait.
-    filter: (obs, place, opts) => keepOnly(opts, new Set(place === 'base' ? opts.map(o => o.id).filter(isMove)
-      : [...(place === 'surface' ? ['explore_toward(surface)'] : ['explore_toward(deep)', 'explore_toward(down)']),
-        ...(nightOnSurface(obs) ? NIGHT_REFUGES : []), ...((obs.oxygen ?? 20) <= LOW_AIR ? ['explore_toward(surface)'] : [])])),
+    filter: (obs, place, opts) => {
+      const y = goToY(place)
+      const above = y != null ? (obs.pos?.y ?? 0) > y : place !== 'surface'
+      return keepOnly(opts, new Set(place === 'base' ? opts.map(o => o.id).filter(isMove)
+        : [...(above ? ['explore_toward(deep)', 'explore_toward(down)'] : ['explore_toward(surface)']),
+          ...(nightOnSurface(obs) ? NIGHT_REFUGES : []), ...((obs.oxygen ?? 20) <= LOW_AIR ? ['explore_toward(surface)'] : [])]))
+    },
     step: (obs, place) => {
+      const y = goToY(place)
+      if (y != null) {
+        const cur = obs.pos?.y ?? 0
+        return Math.abs(cur - y) <= 2 ? { index: 2, of: 1, text: `at y ${y}` } : { index: 1, of: 1, text: `go to y ${y}, now at y ${Math.round(cur)}` }
+      }
       if (place === 'base') return baseStep(obs, 'go to base')
       if (place === 'surface') return obs.underground ? { index: 1, of: 1, text: 'go to the surface' } : { index: 2, of: 1, text: 'on the surface' }
       // every 16 m of descent from y 64 is a step: 1..8, 9 at diamond level
-      const y = obs.pos?.y ?? 0
-      if (y <= DIAMOND_LEVEL_Y) return { index: 9, of: 8, text: 'at diamond level' }
-      return { index: 1 + Math.max(0, Math.min(7, Math.floor((64 - y) / 16))), of: 8, text: `go down to diamond level (y -58), now at y ${Math.round(y)}` }
+      const cur = obs.pos?.y ?? 0
+      if (cur <= DIAMOND_LEVEL_Y) return { index: 9, of: 8, text: 'at diamond level' }
+      return { index: 1 + Math.max(0, Math.min(7, Math.floor((64 - cur) / 16))), of: 8, text: `go down to diamond level (y -58), now at y ${Math.round(cur)}` }
     },
-    teacher: (obs, place) => place === 'base' ? 'return_to_base' : place === 'surface' ? 'explore_toward(surface)'
-      : counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)',
-    describe: (obs, place) => place === 'diamond_level' ? 'go to diamond level' : place === 'base' ? 'go to base' : 'go to the surface',
+    teacher: (obs, place) => {
+      const y = goToY(place)
+      if (y != null) return (obs.pos?.y ?? 0) > y ? (counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)') : 'explore_toward(surface)'
+      return place === 'base' ? 'return_to_base' : place === 'surface' ? 'explore_toward(surface)'
+        : counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)'
+    },
+    describe: (obs, place) => {
+      const y = goToY(place)
+      if (y != null) return `go to y ${y}`
+      return place === 'diamond_level' ? 'go to diamond level' : place === 'base' ? 'go to base' : 'go to the surface'
+    },
     stuckS: 240,
   },
   survive_night: {
@@ -288,7 +312,12 @@ export function validateGoal({ kind, arg, count } = {}, obs = null) {
     case 'build':
       if (!STRUCTURES[arg]) return { ok: false, reason: `cannot build ${arg}` }
       return STRUCTURES[arg].executor ? { ok: true } : { ok: false, reason: 'no executor yet' }
-    case 'go_to': return PLACES.includes(arg) ? { ok: true } : { ok: false, reason: `cannot go to ${arg}` }
+    case 'go_to': {
+      if (PLACES.includes(arg)) return { ok: true }
+      const y = goToY(arg)
+      if (y != null) return y >= -64 && y <= 320 ? { ok: true } : { ok: false, reason: 'y must be between -64 and 320' }
+      return { ok: false, reason: `cannot go to ${arg}` }
+    }
     default: return { ok: true }   // survive_night, return_to_base: no argument
   }
 }

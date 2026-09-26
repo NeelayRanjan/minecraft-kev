@@ -298,3 +298,33 @@ test('go_to filters keep the night refuges on the surface at night and the surfa
   // the find(diamond_ore) teacher stays on explore_toward(deep) at diamond level (M-b)
   assert.equal(GOAL_KINDS.find.teacher(chain({ pos: deep }), 'diamond_ore'), 'explore_toward(deep)')
 })
+
+test('go_to(y:<n>): validateGoal parses -64..320; done, filter and teacher key off above/below', () => {
+  assert.deepEqual(validateGoal({ kind: 'go_to', arg: 'y:12' }), { ok: true })
+  assert.deepEqual(validateGoal({ kind: 'go_to', arg: 'y:-58' }), { ok: true })
+  assert.deepEqual(validateGoal({ kind: 'go_to', arg: 'y:320' }), { ok: true })
+  assert.deepEqual(validateGoal({ kind: 'go_to', arg: 'y:-64' }), { ok: true })
+  for (const bad of ['y:321', 'y:-65', 'y:', 'y:abc', 'y']) assert.equal(validateGoal({ kind: 'go_to', arg: bad }).ok, false, bad)
+
+  const K = GOAL_KINDS.go_to
+  assert.equal(K.done(chain({ pos: { x: 0, y: 12, z: 0 } }), 'y:12'), true)
+  assert.equal(K.done(chain({ pos: { x: 0, y: 14, z: 0 } }), 'y:12'), true, 'within 2')
+  assert.equal(K.done(chain({ pos: { x: 0, y: 20, z: 0 } }), 'y:12'), false)
+
+  const above = chain({ inventory: ironKit, armor: armorKit, pos: { x: 0, y: 20, z: 0 } })
+  const below = chain({ inventory: ironKit, armor: armorKit, pos: { x: 0, y: 0, z: 0 }, underground: true, skyLight: 0 })
+  const aboveIds = K.filter(above, 'y:12', options(above)).map(o => o.id)
+  const belowIds = K.filter(below, 'y:12', options(below)).map(o => o.id)
+  assert.ok(aboveIds.includes('explore_toward(deep)') || aboveIds.includes('explore_toward(down)'), aboveIds.join(' '))
+  assert.ok(!aboveIds.includes('explore_toward(surface)'), aboveIds.join(' '))
+  assert.ok(belowIds.includes('explore_toward(surface)'), belowIds.join(' '))
+  assert.ok(!belowIds.includes('explore_toward(deep)') && !belowIds.includes('explore_toward(down)'), belowIds.join(' '))
+
+  assert.equal(K.teacher(above, 'y:12'), 'explore_toward(deep)')
+  assert.equal(K.teacher(below, 'y:12'), 'explore_toward(surface)')
+  assert.equal(K.describe(above, 'y:12'), 'go to y 12')
+
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'go_to', arg: 'y:12', source: 'leader', t: 0 })
+  assert.equal(s.update(chain({ pos: { x: 0, y: 12, z: 0 } }), 5)[0].kind, 'goal_done')
+})

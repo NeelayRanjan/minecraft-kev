@@ -294,12 +294,24 @@ test('subgoals: death, interrupt and audience_request bypass the spacing (and th
   }
 })
 
-test('pickEvent: death > interrupt > audience_request > goal_failed > goal_done > subtask_failed > subtask_error > subtask_done', () => {
-  const order = ['death', 'interrupt', 'audience_request', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
+test('subgoals: idle_wait bypasses the spacing and the t 20 start, like death/interrupt/audience_request (kev picking wait 30 times under a pushed goal before the periodic call caught it)', () => {
+  const tr = new LeaderTrigger('subgoals')
+  assert.equal(tr.due({ t: 3, event: 'idle_wait' }), true)
+  assert.equal(tr.reason, 'idle_wait')
+  tr.asked(30)
+  assert.equal(tr.due({ t: 31, event: 'idle_wait' }), true)
+  assert.equal(tr.reason, 'idle_wait')
+  assert.equal(tr.due({ t: 31, event: 'idle_wait', inFlight: true }), false)
+})
+
+test('pickEvent: death > interrupt > audience_request > idle_wait > goal_failed > goal_done > subtask_failed > subtask_error > subtask_done', () => {
+  const order = ['death', 'interrupt', 'audience_request', 'idle_wait', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
   for (let k = 0; k < order.length; k++) assert.equal(pickEvent(order.slice(k).reverse()), order[k])
   // with a mode, events that mode ignores do not shadow ones it reacts to
   assert.equal(pickEvent(['goal_done', 'subtask_done'], 'events'), 'subtask_done')
   assert.equal(pickEvent(['goal_done', 'subtask_done'], 'subgoals'), 'goal_done')
+  assert.equal(pickEvent(['idle_wait', 'goal_done'], 'subgoals'), 'idle_wait')
+  assert.equal(pickEvent(['idle_wait'], 'events'), null, 'idle_wait only matters to subgoals')
   assert.equal(pickEvent(['goal_done'], 'events'), null)
 })
 

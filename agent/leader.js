@@ -15,11 +15,11 @@ const PERIOD = { periodic15: 15, periodic30_interrupts: 30, subgoals: 120 }
 const EVENT_TRIGGERS = {
   events: new Set(['subtask_done', 'subtask_failed', 'subtask_error', 'death']),
   periodic30_interrupts: new Set(['interrupt', 'death']),
-  subgoals: new Set(['goal_done', 'goal_failed', 'subtask_failed', 'interrupt', 'death', 'audience_request']),
+  subgoals: new Set(['goal_done', 'goal_failed', 'subtask_failed', 'interrupt', 'death', 'audience_request', 'idle_wait']),
 }
 // subgoals: at most one call per SPACING s, except for these events (which also skip the FIRST_AT wait)
 const SPACING = { subgoals: 20 }
-const BYPASS = { subgoals: new Set(['death', 'interrupt', 'audience_request']) }
+const BYPASS = { subgoals: new Set(['death', 'interrupt', 'audience_request', 'idle_wait']) }
 const FIRST_AT = 20   // periodic modes: let the bot start before the first call
 
 // When to ask. The runner calls due() once per tick with the most important event of that tick (pickEvent) and
@@ -49,7 +49,7 @@ export class LeaderTrigger {
 
 // The most important event of a tick. With a mode, events that mode ignores are skipped, so a goal_done does not
 // shadow a subtask_done in the events mode.
-const EVENT_RANK = ['death', 'interrupt', 'audience_request', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
+const EVENT_RANK = ['death', 'interrupt', 'audience_request', 'idle_wait', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
 export function pickEvent(events, mode = null) {
   const cares = mode ? EVENT_TRIGGERS[mode] : null
   for (const e of EVENT_RANK) if (events.includes(e) && (!cares || cares.has(e))) return e

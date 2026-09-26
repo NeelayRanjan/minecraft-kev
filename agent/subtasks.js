@@ -192,6 +192,10 @@ export function options(obs) {
   if (h && h.dist <= HOSTILE_RANGE) {
     add('fight', 'threat'); add('flee', 'threat')
     if (c.blocks >= 3 && h.dist <= 8 && !obs.inWater) add('pillar_up')
+  } else if (obs.attacker?.kind === 'player') {
+    // A player who hit the bot is never a hostile mob (obs.nearestHostile misses it entirely, live session lesson):
+    // the only response offered is flee, never fight (kev is not meant to attack another player back).
+    add('flee', 'threat')
   }
   // Gathering caps: more than the tech tree can use is never offered (a leader without arithmetic would hoard forever).
   const done = !!obs.inventory?.iron_pickaxe

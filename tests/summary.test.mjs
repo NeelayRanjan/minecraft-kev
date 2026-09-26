@@ -77,6 +77,64 @@ test('portalFrameNear: the full 10 obsidian give the anchor (lowest block of a s
   assert.ok(a && a.x === 10 && a.y === 31 && [5, 8].includes(a.z), JSON.stringify(a))
 })
 
+import mcDataFor from 'minecraft-data'
+import { Vec3 } from 'vec3'
+import { summarize } from '../agent/summary.js'
+
+// A minimal bot for summarize(): every method summarize() touches returns an empty/neutral default, so a test can
+// override just health and entities.
+function fakeBot({ health = 20, entities = {} } = {}) {
+  return {
+    version: '1.20.4', entity: { position: new Vec3(0, 64, 0), isInWater: false, onGround: true }, entities,
+    health, food: 20, oxygenLevel: 20, heldItem: null, thunderState: 0, isRaining: false,
+    time: { timeOfDay: 1000, day: 0 },
+    inventory: { items: () => [], slots: [] },
+    world: { getSkyLight: () => 15, getBlockLight: () => 0 },
+    blockAt: () => null, findBlock: () => null, findBlocks: () => [], canSeeBlock: () => false,
+  }
+}
+
+test('obs.attacker: a health drop with a player 2 m away is a player attacker for 30 s, then gone; obs.nearestHostile untouched', () => {
+  const mcData = mcDataFor('1.20.4')
+  const mem = new EpisodeMemory()
+  const player = { id: 9, type: 'player', username: 'Spacers_Choice', position: new Vec3(2, 64, 0), isValid: true }
+  const bot = fakeBot({ health: 20, entities: { 9: player } })
+  // first tick: establishes the health baseline, no drop yet
+  let obs = summarize(bot, mcData, mem, { t: 0, current: null, last: null, goal: 'iron_pickaxe' })
+  assert.equal(obs.attacker, null)
+  assert.equal(obs.nearestHostile, null)
+  // the player hits the bot
+  bot.health = 18
+  obs = summarize(bot, mcData, mem, { t: 5, current: null, last: null, goal: 'iron_pickaxe' })
+  assert.deepEqual(obs.attacker, { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 0 })
+  assert.equal(obs.nearestHostile, null, 'a player is never obs.nearestHostile')
+  // remembered (sinceS grows) while health stays flat
+  obs = summarize(bot, mcData, mem, { t: 20, current: null, last: null, goal: 'iron_pickaxe' })
+  assert.deepEqual(obs.attacker, { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 15 })
+  // gone after 30 s
+  obs = summarize(bot, mcData, mem, { t: 36, current: null, last: null, goal: 'iron_pickaxe' })
+  assert.equal(obs.attacker, null)
+})
+
+test('obs.attacker: only an entity within 4 m counts, and a hostile mob attacker classifies as hostile, not player', () => {
+  const mcData = mcDataFor('1.20.4')
+  const mem = new EpisodeMemory()
+  const far = { id: 1, type: 'player', username: 'Far_Away', position: new Vec3(10, 64, 0), isValid: true }
+  const bot = fakeBot({ health: 20, entities: { 1: far } })
+  summarize(bot, mcData, mem, { t: 0, current: null, last: null, goal: 'iron_pickaxe' })
+  bot.health = 15
+  let obs = summarize(bot, mcData, mem, { t: 1, current: null, last: null, goal: 'iron_pickaxe' })
+  assert.equal(obs.attacker, null, 'nothing within 4 m')
+
+  const zombie = { id: 2, type: 'hostile', name: 'zombie', position: new Vec3(1, 64, 0), isValid: true }
+  const mem2 = new EpisodeMemory()
+  const bot2 = fakeBot({ health: 20, entities: { 2: zombie } })
+  summarize(bot2, mcData, mem2, { t: 0, current: null, last: null, goal: 'iron_pickaxe' })
+  bot2.health = 15
+  obs = summarize(bot2, mcData, mem2, { t: 1, current: null, last: null, goal: 'iron_pickaxe' })
+  assert.equal(obs.attacker.kind, 'hostile')
+})
+
 test('memory remembers diamond, lava and water sightings', () => {
   const m = new EpisodeMemory()
   assert.deepEqual(m.seen, { diamond: null, lava: null, water: null })

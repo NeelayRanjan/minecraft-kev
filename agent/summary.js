@@ -25,8 +25,26 @@ export function classifyEntity(e, mcData) {
   const cat = mcData.entitiesByName[e.name]?.category
   return cat === 'Hostile mobs' ? 'hostile' : cat === 'Passive mobs' ? 'passive' : null
 }
+// obs.attacker (live-session lesson: a player who hit the bot was never a threat, since nearestHostile only ever
+// looks at hostile mobs). kind: 'player' when the entity is a player, 'hostile' when it classifies as a hostile
+// mob, else 'other' (a passive mob, or anything classifyEntity does not recognise, still standing within 4 m of a
+// health drop). Pure given the entity and mcData.
+export function attackerKind(e, mcData) {
+  if (e.type === 'player') return 'player'
+  return classifyEntity(e, mcData) === 'hostile' ? 'hostile' : 'other'
+}
+// The nearest entity (not the bot itself) within maxDist of `me`, else null. Pure given a bot.entities-shaped map.
+export function nearestEntity(entities, meEntity, me, maxDist) {
+  let best = null, bestD = maxDist
+  for (const e of Object.values(entities)) {
+    if (e === meEntity || !e.position) continue
+    const d = me.distanceTo(e.position)
+    if (d <= bestD) { best = e; bestD = d }
+  }
+  return best ? { e: best, dist: bestD } : null
+}
 export class EpisodeMemory {
-  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null }
+  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null; this.spawn = null; this.lastHealth = null; this.attacker = null }
   sawIron(pos, t, where = null) { this.ironSeen = { pos: { x: pos.x, y: pos.y, z: pos.z }, t, where } }
   saw(kind, pos, t) { this.seen[kind] = { pos: { x: pos.x, y: pos.y, z: pos.z }, t } }
   setBase(kind, pos) { this.base[kind] = pos ? { x: pos.x, y: pos.y, z: pos.z } : null }
@@ -89,6 +107,7 @@ const seenObs = (me, s, t) => (s ? { ...relTo(me, s.pos), agoS: t - s.t, pos: s.
 
 export function summarize(bot, mcData, mem, ctx) {
   const me = bot.entity.position
+  if (!mem.spawn) mem.spawn = { x: me.x, y: me.y, z: me.z }
   const goal = ctx.goal || 'iron_pickaxe'
   const blocks = []
   for (const [kind, matching, maxDistance] of KIND_SCAN(mcData)) {
@@ -112,6 +131,18 @@ export function summarize(bot, mcData, mem, ctx) {
     .map(e => ({ name: e.name || e.username || 'unknown', kind: classifyEntity(e, mcData), ...relTo(me, e.position), id: e.id, pos: { x: e.position.x, y: e.position.y, z: e.position.z } }))
     .filter(e => e.kind && e.dist <= 32).sort((a, b) => a.dist - b.dist).slice(0, 6)
   const hostiles = entities.filter(e => e.kind === 'hostile')
+  // obs.attacker (live session lesson: a player who hit the bot was never a threat): on a tick health drops with any
+  // entity within 4 m, remember it (kind, name, the distance at detection) for 30 s; obs.nearestHostile is unchanged
+  // and still only ever hostile mobs.
+  const health = bot.health ?? 20
+  if (mem.lastHealth != null && health < mem.lastHealth) {
+    const near = nearestEntity(bot.entities, bot.entity, me, 4)
+    if (near) mem.attacker = { kind: attackerKind(near.e, mcData), name: near.e.name || near.e.username || 'unknown', dist: near.dist, t: ctx.t }
+  }
+  mem.lastHealth = health
+  const attacker = mem.attacker && ctx.t - mem.attacker.t <= 30
+    ? { kind: mem.attacker.kind, name: mem.attacker.name, dist: Math.round(mem.attacker.dist), sinceS: Math.round(ctx.t - mem.attacker.t) } : null
+  if (!attacker) mem.attacker = null
   const inv = {}, toolWear = {}
   for (const it of bot.inventory.items()) {
     inv[it.name] = (inv[it.name] || 0) + it.count
@@ -136,10 +167,10 @@ export function summarize(bot, mcData, mem, ctx) {
     t: ctx.t, day: Number(bot.time.day), timeOfDay: bot.time.timeOfDay, phase, secondsToDusk, secondsToMorning, weather,
     biome: biomeName(bot, mcData, me.floored()), pos: { x: me.x, y: me.y, z: me.z }, standingOn: below?.name || 'air',
     skyLight, blockLight, underground: skyLight < 4, inWater: !!bot.entity.isInWater, oxygen: bot.oxygenLevel ?? 20,
-    health: bot.health ?? 20, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
+    health, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
     base, memory: { ironSeen, diamondSeen: seenObs(me, mem.seen.diamond, ctx.t), lavaSeen: seenObs(me, mem.seen.lava, ctx.t), waterSeen: seenObs(me, mem.seen.water, ctx.t),
       lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading, portal: portalBuild(bot, mem) },
-    blocks, entities, nearestHostile: hostiles[0] || null,
+    blocks, entities, nearestHostile: hostiles[0] || null, attacker,
     current: ctx.current || null, last: ctx.last || null, withhold: ctx.withhold || [], goal, armor, portalLit, portalFrame,
     done: goal === 'nether' ? stageOf({ inventory: inv, armor, portalLit }).done : !!inv.iron_pickaxe,
   }

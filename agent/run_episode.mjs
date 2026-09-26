@@ -123,6 +123,17 @@ if (video) { const { startRecorder } = await import('./recorder.js'); recorder =
 if (liveViewPort) {
   try {
     const { mineflayer: mineflayerViewer } = await import('prismarine-viewer')
+    // prismarine-viewer streams entity updates off bot.entitySpawn/entityMoved/entityGone to the browser, which
+    // renders them with its own updateEntity (the live session hit a TypeError there): there is no server-side
+    // Viewer to wrap the way the recorder wraps its updateEntity (agent/recorder.js), so the entity events
+    // themselves are guarded here instead -- one entity's bad data logs and is skipped rather than throwing out of
+    // bot.emit and ending the episode (uncaughtException -> shutdown).
+    const origEmit = bot.emit.bind(bot)
+    const GUARDED_ENTITY_EVENTS = new Set(['entitySpawn', 'entityMoved', 'entityGone'])
+    bot.emit = (event, ...args) => {
+      if (!GUARDED_ENTITY_EVENTS.has(event)) return origEmit(event, ...args)
+      try { return origEmit(event, ...args) } catch (e) { log(`live view: entity update failed (${e.message}), skipped`); return false }
+    }
     mineflayerViewer(bot, { port: Number(liveViewPort), firstPerson: true, viewDistance: 4 })
     log(`live view: http://127.0.0.1:${liveViewPort}`)
   } catch (e) { log(`live view failed to start: ${e.message}`) }
@@ -135,6 +146,7 @@ let dead = false, deaths = 0, prevHostileDist = null, subtaskStartHealth = null,
 let stageReached = 0   // chain mode: the highest stageOf(obs).index seen (a stage_done event on each increase)
 let lastResult = null, recent = []   // recent: the last REPEAT_WINDOW attempts {id, result}, oldest first (livelock breaker)
 let lastForecast = null, withhold = []   // supervisor: kev's latest p(step done in 60 s) {t, p}; the subtask it abandoned, withheld at the next decision
+let lastIdleWaitT = null   // last leaderNote('idle_wait'): kev picking wait under a pushed goal, at most once per 30 s
 // leader: events since the last tick (the trigger's input), the call in flight, an override waiting for the next
 // decision, the last 5 values of each forecast (the trend line) and kev's last pick with its top alternatives.
 let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}, kevPick = null, leaderCalls = 0
@@ -241,7 +253,7 @@ function tick() {
     ...(doneIds.length ? { goals_done: doneIds } : {}) })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead,
-    oxygen: obs.oxygen })
+    oxygen: obs.oxygen, attackerNew: obs.attacker != null && obs.attacker.sinceS === 0 })
   if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); leaderNote('interrupt'); motor.interrupt(why) }
   else if (motor.busy) {   // the supervisor replans on a forecast that has stayed low (a stale forecast counts as none)
     const p = lastForecast && t - lastForecast.t <= 3 ? lastForecast.p : null
@@ -304,6 +316,10 @@ async function decide(obs, t) {
     if (answers.next_subtask) answers.next_subtask.label = labels.next_subtask ?? null
     elog.decision({ t, state_text: text, decision, qs, labels, answers, chosen, source, latency_ms: latency, teacher_label: teacherLabel, why, planner_latency_ms: plannerLatency,
       leader: leaderUse ? { t_asked: leaderUse.t_asked, t_answered: leaderUse.t_answered, t_applied: +t.toFixed(1), action: leaderUse.id, why: leaderUse.why, thinking_chars: leaderUse.thinking_chars, latency_ms: leaderUse.latency_ms, stale: false } : null })
+    // kev picked wait while a leader-pushed goal sits on the stack: the leader learns of it (subgoals mode) instead
+    // of waiting for its own periodic call, but at most once per 30 s (r2 run 3: kev picked wait 30 times under a
+    // pushed goal before the leader's 120 s periodic call caught it).
+    if (decision && chosen === 'wait' && goalStack.depth() > 0 && (lastIdleWaitT == null || t - lastIdleWaitT >= 30)) { leaderNote('idle_wait'); lastIdleWaitT = t }
     if (decision && !motor.busy && !finished) startSubtask(chosen, source, obs)
   } finally { asking = false }
 }

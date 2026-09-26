@@ -58,6 +58,16 @@ test('threat options appear only with a hostile within 16 m; pillar_up needs blo
   assert.ok(!ids(baseObs()).includes('flee(threat)'))
 })
 
+test('a player attacker with no hostile mob near offers flee, never fight; a hostile still offers both', () => {
+  const o = ids(baseObs({ attacker: { kind: 'player', name: 'Spacers_Choice', dist: 2, sinceS: 3 } }))
+  assert.ok(o.includes('flee(threat)'))
+  assert.ok(!o.includes('fight(threat)'))
+  assert.ok(!o.includes('pillar_up'), 'pillar_up is only offered against a nearby hostile mob')
+  const both = ids(baseObs({ attacker: { kind: 'player', name: 'x', dist: 2, sinceS: 1 }, nearestHostile: { name: 'zombie', dist: 7, dir: 'west', dy: 0 } }))
+  assert.ok(both.includes('fight(threat)') && both.includes('flee(threat)'))
+  assert.ok(!ids(baseObs({ attacker: { kind: 'other', name: 'cow', dist: 2, sinceS: 1 } })).includes('flee(threat)'), 'a non-player, non-hostile attacker gets no threat options')
+})
+
 test('counts merges logs and planks of every wood', () => {
   const c = counts(baseObs({ inventory: { oak_log: 1, birch_log: 2, spruce_planks: 4, stick: 1 } }))
   assert.equal(c.logs, 3)

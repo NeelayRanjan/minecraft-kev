@@ -170,6 +170,15 @@ test('dropBelow / dropAhead: floor present, a hole, a deep drop, liquid under th
   assert.deepEqual(dropBelow(world2(new Map(col(5, 0, 20, ['air', 'air']))), ahead), { drop: 2, liquid: null })
 })
 
+import { fleeHeading } from '../agent/motor.js'
+test('fleeHeading: the cardinal heading pointing away from the hostile', () => {
+  assert.equal(fleeHeading({ x: 10, y: 64, z: 0 }, { x: 0, y: 64, z: 0 }), 'west', 'hostile to the east: flee west')
+  assert.equal(fleeHeading({ x: -10, y: 64, z: 0 }, { x: 0, y: 64, z: 0 }), 'east', 'hostile to the west: flee east')
+  assert.equal(fleeHeading({ x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: 0 }), 'north', 'hostile to the south: flee north')
+  assert.equal(fleeHeading({ x: 0, y: 64, z: -10 }, { x: 0, y: 64, z: 0 }), 'south', 'hostile to the north: flee south')
+  assert.equal(fleeHeading({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 0 }), 'east', 'coincident: a tie picks east/west')
+})
+
 test('isGravityBlock: sand, gravel, concrete powder', () => {
   for (const n of ['sand', 'red_sand', 'gravel', 'white_concrete_powder']) assert.equal(isGravityBlock({ name: n }), true, n)
   for (const n of ['stone', 'sandstone', 'dirt']) assert.equal(isGravityBlock({ name: n }), false, n)

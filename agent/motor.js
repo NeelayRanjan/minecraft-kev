@@ -16,6 +16,13 @@ const IRON_Y = 16
 const DIAMOND_Y = -58
 const ARMOR_SLOT = { iron_helmet: 'head', iron_chestplate: 'torso', iron_leggings: 'legs', iron_boots: 'feet' }
 const HEADINGS = { north: [0, -1], east: [1, 0], south: [0, 1], west: [-1, 0] }
+const HEADING_ORDER = ['north', 'east', 'south', 'west']
+// The cardinal heading pointing away from `hostilePos`, from `botPos` (whichever axis has the larger separation
+// decides north/south vs east/west). Pure; used by flee before it commits to a direction.
+export function fleeHeading(hostilePos, botPos) {
+  const dx = botPos.x - hostilePos.x, dz = botPos.z - hostilePos.z
+  return Math.abs(dx) >= Math.abs(dz) ? (dx >= 0 ? 'east' : 'west') : (dz >= 0 ? 'south' : 'north')
+}
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const ok = detail => ({ result: 'ok', detail })
 const fail = (result, detail) => ({ result, detail })
@@ -549,8 +556,7 @@ export class Motor {
 
   headingVec() { return HEADINGS[this.mem.heading] || HEADINGS.north }
   rotateHeading() {
-    const order = ['north', 'east', 'south', 'west']
-    this.mem.heading = order[(order.indexOf(this.mem.heading) + 1) % 4]
+    this.mem.heading = HEADING_ORDER[(HEADING_ORDER.indexOf(this.mem.heading) + 1) % 4]
   }
 
   // ---- executors -------------------------------------------------------------------------------------------------
@@ -774,6 +780,12 @@ export class Motor {
         return y > y0 + 0.5 ? ok(`climbed to y ${y.toFixed(0)}`) : fail('no_path', 'no way up here')
       }
       if (this.mem.lastPath && this.mem.lastPath !== 'ok') this.rotateHeading()
+      // The live session waded into the sea on this walk too: turn away from a wet goal first, like explore_toward(down).
+      const goalAt = ([hx, hz]) => new Vec3(Math.floor(me.x) + 24 * hx, Math.floor(me.y), Math.floor(me.z) + 24 * hz)
+      let wetTurns = 0
+      while (wetTurns < 4 && this.wetNear(goalAt(this.headingVec()))) { this.rotateHeading(); wetTurns++ }
+      if (wetTurns > 0) this.log(`surface: water ahead, ${wetTurns === 4 ? 'every heading wet' : `turned ${this.mem.heading}`}`)
+      if (wetTurns === 4) return fail('no_path', 'water ahead')
       const [sx, sz] = this.headingVec()
       try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 24 * sx, Math.floor(me.z) + 24 * sz)) } catch (e) { this.rotateHeading(); throw e }
       return ok('walked 24 m')
@@ -841,6 +853,18 @@ export class Motor {
       const h = this.nearestHostileEntity()
       const p = h ? h.position : obs?.nearestHostile?.pos
       if (!p) return fail('target_gone')
+      // r2_leader: fleeing waded straight into the sea when the direction away from the hostile happened to be
+      // wet (GoalInvert does not know about water). Try the heading pointing away from the hostile first, then
+      // rotate (like explore_toward's wet checks) until one is dry 8 m out; if every heading is wet, refuse to
+      // flee at all so the breaker withholds it and the other threat responses (fight, pillar_up) stay offered.
+      const me = this.bot.entity.position
+      let heading = fleeHeading(p, me)
+      const goalCell = hd => { const [hx, hz] = HEADINGS[hd]; return me.floored().offset(hx * 8, 0, hz * 8) }
+      let turns = 0
+      while (turns < 4 && this.wetNear(goalCell(heading))) { heading = HEADING_ORDER[(HEADING_ORDER.indexOf(heading) + 1) % 4]; turns++ }
+      if (turns > 0) this.log(`flee: water away from the hostile, ${turns === 4 ? 'every heading wet' : `turned to ${heading}`}`)
+      if (turns === 4) return fail('no_path', 'water all around')
+      this.mem.heading = heading
       await this.goto(new goals.GoalInvert(new goals.GoalNear(p.x, p.y, p.z, 20)))
       return ok('out of range')
     },
@@ -1110,13 +1134,26 @@ export class Motor {
     return cands.length ? b.blockAt(cands[0]) : null
   }
 
-  // Swim to the nearest shore within 12 m and stand on it (the pathfinder holds jump in water). 'dry' (not in water),
-  // 'left', 'no_shore' or 'stuck' (no path, or still in water). Used by wait, build_shelter and explore_toward.
-  async leaveWater(maxDistance = 12) {
+  // Swim to the nearest shore within maxDistance and stand on it (the pathfinder holds jump in water). 'dry' (not in
+  // water), 'left', 'no_shore' or 'stuck' (no path, or still in water). Used by wait, build_shelter and explore_toward.
+  // The live session found open water wider than the old 12 m search: with none in range, swim toward the
+  // remembered base (its crafting table) or, with no base yet, the spawn point, for up to 30 s, then look again
+  // (drifting toward land the bot has already seen beats floating in place, which is all the old 'no_shore' did).
+  async leaveWater(maxDistance = 48) {
     const b = this.bot
     if (!b.entity.isInWater) return 'dry'
-    const shore = this.shoreBlock(maxDistance)
-    if (!shore) { this.log('leave water: no shore within 12 m'); return 'no_shore' }
+    let shore = this.shoreBlock(maxDistance)
+    if (!shore) {
+      const t = this.mem.base?.table ?? this.mem.spawn
+      if (t) {
+        this.log(`leave water: no shore within ${maxDistance} m, swimming toward ${this.mem.base?.table ? 'the base' : 'spawn'} at ${t.x} ${t.y} ${t.z}`)
+        await this.swimToward(new Vec3(t.x, t.y, t.z))
+        this.check()
+        if (!b.entity.isInWater) return 'left'
+        shore = this.shoreBlock(maxDistance)
+      }
+      if (!shore) { this.log(`leave water: no shore within ${maxDistance} m`); return 'no_shore' }
+    }
     const p = shore.position
     this.log(`leave water: swimming to ${shore.name} at ${p}`)
     // The pathfinder never jumps out of water (no jump-up move from a liquid node), so a rim level with the water line
@@ -1142,17 +1179,56 @@ export class Motor {
     return !b.entity.isInWater
   }
 
+  // Swim toward `target` (any point, however far) holding forward and jump, for at most `ms`; used by leaveWater
+  // when no shore is within its search radius. Returns once out of the water and on the ground, else after ms.
+  async swimToward(target, ms = 30_000) {
+    const b = this.bot, t0 = Date.now()
+    try {
+      while (Date.now() - t0 < ms) {
+        this.check()
+        if (!b.entity.isInWater && b.entity.onGround) return true
+        const pos = b.entity.position
+        await b.look(Math.atan2(-(target.x - pos.x), -(target.z - pos.z)), 0, true)
+        b.setControlState('forward', true); b.setControlState('jump', true)
+        await sleep(100)
+      }
+    } finally { b.setControlState('forward', false); b.setControlState('jump', false) }
+    return !b.entity.isInWater
+  }
+
   // Place a filler block in the empty cell `cell` against its solid neighbour below or beside it; true when the cell is
   // solid afterwards. false without a filler or a neighbour to place against.
+  // climb_check with this method's logging turned on (Task 1) never exercised the failure path: in every terrain the
+  // check builds, `cell`'s own neighbours are found and placed against on the first try. The one reproduction that did
+  // fail (a cave chamber wide enough that no neighbour of `cell` is solid in any direction) is a real limit of a
+  // 1-block-radius search, not a placement rejection; two further repros with a solid neighbour 1 m from the bot both
+  // succeeded. Absent direct evidence of the "placeBlock against a neighbour the bot is in the way of" mechanism, this
+  // still applies the brief's fix defensively: back off one step before placing when the target is close enough for
+  // that to matter, but only onto ground already confirmed solid and clear, so it can never make things worse.
   async placeFloor(cell) {
     const b = this.bot
+    const feet = b.entity.position.floored()
+    const away = new Vec3(Math.sign(feet.x - cell.x) || 0, 0, Math.sign(feet.z - cell.z) || 0)
+    if (Math.abs(away.x) + Math.abs(away.z) > 0 && b.entity.position.distanceTo(cell.offset(0.5, 0, 0.5)) < 1.6) {
+      const behind = feet.offset(away.x, 0, away.z)
+      const solidBehind = b.blockAt(behind.offset(0, -1, 0))?.boundingBox === 'block'
+      const clearBehind = b.blockAt(behind)?.boundingBox !== 'block' && b.blockAt(behind.offset(0, 1, 0))?.boundingBox !== 'block'
+      if (solidBehind && clearBehind) {
+        this.log(`place floor at ${cell}: stepping back to ${behind} first`)
+        try { await b.lookAt(behind.offset(0.5, 1, 0.5), true); b.setControlState('forward', true); await b.waitForTicks(4) }
+        finally { b.setControlState('forward', false) }
+        await b.waitForTicks(2)
+      }
+    }
     for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]) {
       const filler = b.inventory.items().find(it => FILLERS.includes(it.name))
-      if (!filler) return false
+      if (!filler) { this.log(`place floor at ${cell}: no filler`); return false }
       const ref = b.blockAt(cell.offset(dx, dy, dz))
-      if (!ref || ref.boundingBox !== 'block') continue
-      try { await b.equip(filler, 'hand'); await b.placeBlock(ref, new Vec3(-dx, -dy, -dz)); await b.waitForTicks(2) } catch (e) { this.log(`place floor at ${cell}: ${e.message}`) }
+      if (!ref || ref.boundingBox !== 'block') { this.log(`place floor at ${cell}: no solid neighbour at ${dx},${dy},${dz} (${ref?.name ?? 'unloaded'})`); continue }
+      try { await b.equip(filler, 'hand'); await b.placeBlock(ref, new Vec3(-dx, -dy, -dz)); await b.waitForTicks(2) }
+      catch (e) { this.log(`place floor at ${cell}: placeBlock: ${e.message}`) }
       if (b.blockAt(cell)?.boundingBox === 'block') return true
+      this.log(`place floor at ${cell}: placed against ${dx},${dy},${dz} but the cell is still ${b.blockAt(cell)?.name ?? 'unloaded'}`)
     }
     return false
   }

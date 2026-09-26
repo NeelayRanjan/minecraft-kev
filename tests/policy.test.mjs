@@ -50,6 +50,15 @@ test('drowning: while air is 10/20 or less, every tick, for any subtask that is 
   assert.equal(interruptFor({ ...base, oxygen: 8, healthDrop: 5, current: cur('mine_stone') }), 'took_damage')
 })
 
+test('a new attacker (a player who just hit the bot) fires threat like a hostile crossing 16 m', () => {
+  const cur = name => ({ name })
+  const base = { hostileDist: null, prevHostileDist: null, healthDrop: 0, dead: false }
+  assert.equal(interruptFor({ ...base, current: cur('gather_wood'), attackerNew: true }), 'threat')
+  assert.equal(interruptFor({ ...base, current: cur('mine_stone'), attackerNew: false }), null)
+  for (const n of ['fight', 'flee', 'pillar_up']) assert.equal(interruptFor({ ...base, current: cur(n), attackerNew: true }), null, n)
+  assert.equal(interruptFor({ ...base, current: null, attackerNew: true }), null)
+})
+
 test('a threat crossing on the same tick as low air is not lost; drowning fires on the next tick', () => {
   const cur = { name: 'mine_stone', arg: null }
   assert.equal(interruptFor({ hostileDist: 10, prevHostileDist: 30, current: cur, healthDrop: 0, dead: false, oxygen: 8 }), 'threat')

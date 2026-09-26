@@ -147,6 +147,41 @@ check(!bot.entity.isInWater || pos().y >= Y - 1.8, `dry or afloat at the end (in
 check(await waitOxygen(10) === 20, `air 20/20 (${bot.oxygenLevel})`)
 check(damage === 0, `no damage from the beach (${damage})`)
 
+// (e) a 3-wide channel with the nearest shore ~24 m away: past the old 12 m search radius (leaveWater's default is
+// now 48 m, the live session found open water wider than that). Stone floor everywhere, a shallow channel south of
+// the bot, a sand shore at the far (north) end.
+await park()
+await cmd(`/fill ${X - 24} ${Y - 9} ${Z - 24} ${X + 24} ${Y - 1} ${Z + 24} stone`)
+await cmd(`/fill ${X - 24} ${Y} ${Z - 24} ${X + 24} ${Y + 6} ${Z + 24} air`)
+await cmd('/kill @e[type=item]')
+await cmd(`/fill ${X - 3} ${Y - 3} ${Z - 22} ${X + 3} ${Y - 1} ${Z + 5} water`)
+await cmd(`/fill ${X - 3} ${Y - 1} ${Z - 24} ${X + 3} ${Y - 1} ${Z - 23} sand`)
+await tp(X, Y - 3, Z)
+log(`(e) in a 3-wide channel, shore ~24 m north: in water ${bot.entity.isInWater}`)
+damage = 0
+const r5 = await step('wait')
+check(r5.result === 'ok', `wait is ok (${r5.detail ?? ''})`)
+check(!bot.entity.isInWater, `dry after leaving (in water ${bot.entity.isInWater}, y ${pos().y.toFixed(1)})`)
+check(damage === 0, `no damage crossing to the far shore (${damage})`)
+
+// (f) a hostile placed so the naive flee direction (straight away from it) is into water: the bot must turn to a dry
+// heading instead of failing 'no_path' (only one of the four headings is wet, so it must not report every-heading-wet
+// either). Peaceful despawns hostile mobs at once, so difficulty goes to easy just for this scenario.
+await arena()
+await cmd(`/fill ${X - 4} ${Y - 1} ${Z + 1} ${X + 4} ${Y - 1} ${Z + 9} water`)
+await tp(X, Y, Z)
+await cmd('/difficulty easy')
+await cmd(`/summon zombie ${X + 0.5} ${Y} ${Z - 10 + 0.5} {NoAI:1b,Silent:1b,PersistenceRequired:1b}`)
+await bot.waitForTicks(10)
+mem.heading = 'north'
+damage = 0
+const r6 = await step('flee(threat)')
+log(`(f) flee with water south of the naive direction: heading now ${mem.heading}`)
+check(r6.result !== 'no_path', `did not refuse (only one heading is wet): ${r6.result} ${r6.detail ?? ''}`)
+check(mem.heading === 'west', `turned away from the wet heading (south) instead of fleeing into it (heading ${mem.heading})`)
+check(damage === 0, `no damage fleeing (${damage})`)
+await cmd('/kill @e[type=zombie]'); await cmd('/difficulty peaceful')
+
 log(pass ? 'PASS' : 'FAIL')
 clearTimeout(deadline)
 bot.quit()
