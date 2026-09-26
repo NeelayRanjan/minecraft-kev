@@ -1,0 +1,349 @@
+// Typed goals and the goal stack (pure). The leader (an LLM, steered from chat) pushes typed goals from a declared
+// list onto a stack; kev keeps picking primitives from the option list under the top goal. Each kind declares a
+// completion predicate over obs, an option filter (only ever removes; never wait or the threat responses), a step
+// function for the forecast question and the timeline, where scriptable a teacher, a describe line and a stuck rule
+// (no step progress for stuckS seconds pops the goal with goal_failed).
+// The bottom of the stack is the default entry: `chain` (chain mode, agent/stages.js) or `iron_pickaxe`
+// (experiment 1, teacher.js's techStep). With only the default entry every output equals today's functions exactly.
+import { stageOf, chainStep, describeChain, INGOTS, DIAMONDS, STICKS } from './stages.js'
+import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
+import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
+  isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
+
+// Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
+// args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
+const toolRecipe = (primary, table) => Object.fromEntries(Object.keys(table).map(item =>
+  [item, { [primary]: table[item], ...(STICKS[item] ? { sticks: STICKS[item] } : {}) }]))
+export const RECIPES = {
+  planks: { log: 1 },
+  sticks: { planks: 2 },
+  crafting_table: { planks: 4 },
+  wooden_pickaxe: { planks: 3, sticks: 2 },
+  stone_pickaxe: { cobblestone: 3, sticks: 2 },
+  furnace: { cobblestone: 8 },
+  iron_pickaxe: { iron_ingot: 3, sticks: 2 },
+  ...toolRecipe('iron_ingot', { iron_sword: INGOTS.iron_sword, iron_axe: INGOTS.iron_axe, iron_helmet: INGOTS.iron_helmet,
+    iron_chestplate: INGOTS.iron_chestplate, iron_leggings: INGOTS.iron_leggings, iron_boots: INGOTS.iron_boots, bucket: INGOTS.bucket }),
+  flint_and_steel: { iron_ingot: INGOTS.flint_and_steel, flint: 1 },
+  ...toolRecipe('diamond', DIAMONDS),
+}
+const YIELD = { planks: 4, sticks: 4 }
+
+// gather(item, count): the items a gather goal may name and the option that produces each (logs by species).
+export const WOODS = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry']
+export const PRODUCERS = {
+  log: 'gather_wood', ...Object.fromEntries(WOODS.map(w => [`${w}_log`, 'gather_wood'])),
+  planks: 'craft(planks)', stick: 'craft(sticks)', cobblestone: 'mine_stone', coal: 'mine_coal', raw_iron: 'mine_iron',
+  iron_ingot: 'smelt(iron_ingot)', diamond: 'mine_diamond', flint: 'mine_gravel', obsidian: 'mine_obsidian',
+}
+export const DECLARED_FINDABLE = ['diamond_ore', 'lava', 'water', 'cave', 'village', 'iron_ore', 'coal_ore']
+export const FINDABLE_NOW = DECLARED_FINDABLE.filter(b => b !== 'village')   // village: no detector until roadmap item 5
+export const PLACES = ['base', 'surface', 'diamond_level']
+export const STRUCTURES = { portal_frame: { executor: true }, house: { executor: false } }
+const FIND_MATCH = {
+  diamond_ore: isDiamond, iron_ore: isIron, coal_ore: isCoal, lava: isLava, water: isWater, cave: n => n === 'cave',
+  village: n => n === 'bell' || n === 'hay_block',
+}
+export const FIND_RANGE = 16
+export const NEAR_BASE = 6
+export const DIAMOND_LEVEL_Y = -50
+
+const humanize = s => s.replace(/_/g, ' ')
+const THREAT = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
+const ALWAYS = new Set([...THREAT, 'eat', 'build_shelter', 'wait'])
+const isMove = id => id.startsWith('explore_toward(') || id === 'return_to_base'
+const keepOnly = (options, keep) => options.filter(o => keep.has(o.id) || ALWAYS.has(o.id))
+
+// How much of an item the bot has, in the option layer's arithmetic (logs and planks of any species, deepslate
+// cobble counts as cobblestone, worn armor counts, a water bucket is a bucket).
+export function have(obs, item) {
+  const c = counts(obs), inv = obs.inventory || {}
+  if (item === 'log' || item.endsWith('_log')) return c.logs
+  if (item === 'planks' || item.endsWith('_planks')) return c.planks
+  if (item === 'sticks' || item === 'stick') return c.sticks
+  if (item === 'cobblestone') return c.cobble
+  if (item === 'coal') return c.coal
+  if (item === 'bucket') return (inv.bucket || 0) + (inv.water_bucket || 0)
+  return (inv[item] || 0) + (obs.armor?.[item] || 0)
+}
+const seen = (obs, pred, d) => (obs.blocks || []).some(b => pred(b.name) && b.dist <= d)
+const tableHandy = (obs, c) => tableNear(obs) || c.table >= 1
+
+// The option ids that make `n` more of `item` than held (recursively through the ingredient tables, the tools a mine
+// needs, the crafting table, the furnace and fuel). Adds into `out`; `depth` bounds the recursion.
+function wanted(obs, item, n, out, depth = 0) {
+  if (depth > 8 || n <= 0) return out
+  const c = counts(obs)
+  const recipe = RECIPES[item]
+  if (recipe) {
+    out.add(optionId('craft', item))
+    const crafts = Math.ceil(n / (YIELD[item] || 1))
+    for (const [ing, q] of Object.entries(recipe)) wanted(obs, ing, q * crafts - have(obs, ing), out, depth + 1)
+    if (TABLE_ITEMS.has(item) && !tableHandy(obs, c)) wanted(obs, 'crafting_table', 1, out, depth + 1)
+    return out
+  }
+  switch (item) {
+    case 'log': out.add('gather_wood'); break
+    case 'cobblestone': out.add('mine_stone'); if (!c.hasPickaxe) wanted(obs, 'wooden_pickaxe', 1, out, depth + 1); break
+    case 'coal': out.add('mine_coal'); break
+    case 'raw_iron': out.add('mine_iron'); if (!c.hasStonePickaxe) wanted(obs, 'stone_pickaxe', 1, out, depth + 1); break
+    case 'iron_ingot':
+      out.add('smelt(iron_ingot)'); out.add('mine_coal')
+      wanted(obs, 'raw_iron', n - c.rawIron, out, depth + 1)
+      if (!furnaceNear(obs) && c.furnace === 0) wanted(obs, 'furnace', 1, out, depth + 1)
+      if (!hasFuel(c)) wanted(obs, 'planks', 2, out, depth + 1)
+      break
+    case 'diamond': out.add('mine_diamond'); if (!c.hasIronPickaxe) wanted(obs, 'iron_pickaxe', 1, out, depth + 1); break
+    case 'flint': out.add('mine_gravel'); break
+    case 'obsidian': out.add('mine_obsidian'); out.add('cast_obsidian'); out.add('fill_bucket(water)'); break
+    default: if (item.endsWith('_log')) out.add('gather_wood'); else if (item === 'stick') wanted(obs, 'sticks', n, out, depth)
+  }
+  return out
+}
+
+// A scripted route to one more `item` (the chain teacher's craftNext/getIron shape, generalised over the tables).
+function acquire(obs, item, depth = 0) {
+  if (depth > 8) return null
+  const c = counts(obs)
+  const dig = () => c.hasPickaxe && obs.pos.y > 14 ? 'explore_toward(down)' : 'explore_toward(surface)'
+  const recipe = RECIPES[item]
+  if (recipe) {
+    for (const [ing, q] of Object.entries(recipe)) if (have(obs, ing) < q) return acquire(obs, ing, depth + 1)
+    if (TABLE_ITEMS.has(item) && !tableHandy(obs, c)) {
+      if (obs.base?.crafting_table && c.planks < 4) return 'return_to_base'
+      return acquire(obs, 'crafting_table', depth + 1)
+    }
+    return optionId('craft', item)
+  }
+  if (item === 'log' || item.endsWith('_log')) return seen(obs, isLog, 48) ? 'gather_wood' : 'explore_toward(surface)'
+  if (item === 'stick') return acquire(obs, 'sticks', depth + 1)
+  switch (item) {
+    case 'cobblestone': return !c.hasPickaxe ? acquire(obs, 'wooden_pickaxe', depth + 1) : seen(obs, isStone, 16) ? 'mine_stone' : dig()
+    case 'coal': return seen(obs, isCoal, 32) ? 'mine_coal' : dig()
+    case 'raw_iron':
+      if (!c.hasStonePickaxe) return acquire(obs, 'stone_pickaxe', depth + 1)
+      return seen(obs, isIron, 32) || obs.memory?.ironSeen ? 'mine_iron' : dig()
+    case 'iron_ingot': {
+      if (c.rawIron === 0) return acquire(obs, 'raw_iron', depth + 1)
+      if (!furnaceNear(obs) && c.furnace === 0) return acquire(obs, 'furnace', depth + 1)
+      if (!hasFuel(c)) return seen(obs, isCoal, 32) ? 'mine_coal' : acquire(obs, 'planks', depth + 1)
+      return 'smelt(iron_ingot)'
+    }
+    case 'diamond':
+      if (!c.hasIronPickaxe) return acquire(obs, 'iron_pickaxe', depth + 1)
+      return seen(obs, isDiamond, 32) || obs.memory?.diamondSeen ? 'mine_diamond' : 'explore_toward(deep)'
+    case 'flint': return seen(obs, isGravel, 16) ? 'mine_gravel' : 'explore_toward(surface)'
+    case 'obsidian':
+      if (c.hasDiamondPickaxe && seen(obs, isObsidian, 16)) return 'mine_obsidian'
+      if (c.waterBucket && (seen(obs, isLava, 24) || obs.memory?.lavaSeen)) return 'cast_obsidian'
+      if (c.bucket && (seen(obs, isWater, 24) || obs.memory?.waterSeen)) return 'fill_bucket(water)'
+      return 'explore_toward(deep)'
+    default: return null
+  }
+}
+
+const tableDist = obs => obs.base?.crafting_table?.dist ?? null
+const nearBase = obs => { const d = tableDist(obs); return d != null && d <= NEAR_BASE }
+function baseStep(obs, label) {
+  const d = tableDist(obs)
+  const local = d == null ? 1 : d > 64 ? 1 : d > 32 ? 2 : d > 16 ? 3 : d > NEAR_BASE ? 4 : 5
+  return { index: local, of: 4, text: d == null ? `${label} (no base known)` : `${label} (${Math.round(d)} m away)` }
+}
+const DAY = new Set(['morning', 'midday', 'afternoon'])
+
+// Each kind: done(obs, arg, count), filter(obs, arg, options, count), step(obs, arg, count) -> {index, of, text} with
+// index of+1 meaning done, teacher(obs, arg, count) -> id|null (optional), describe(obs, arg, count) -> text, stuckS
+// (seconds, or a function of (arg, count)). The two defaults are never pushed.
+export const GOAL_KINDS = {
+  chain: {
+    done: obs => stageOf(obs).done, filter: (obs, arg, opts) => opts, step: obs => chainStep(obs),
+    teacher: obs => teacherSubtask(obs), describe: obs => describeChain(obs), stuckS: Infinity,
+  },
+  iron_pickaxe: {
+    done: obs => !!obs.inventory?.iron_pickaxe, filter: (obs, arg, opts) => opts, step: obs => techStep(obs),
+    teacher: obs => teacherSubtask(obs), describe: () => null, stuckS: Infinity,   // serialize.js keeps its experiment-1 line
+  },
+  craft_item: {
+    done: (obs, item) => have(obs, item) >= 1,
+    filter: (obs, item, opts) => keepOnly(opts, new Set([...wanted(obs, item, 1, new Set()), ...opts.map(o => o.id).filter(isMove)])),
+    // 1..4 by the share of the direct ingredients held, 5 once craftable (6 = done)
+    step: (obs, item) => {
+      if (have(obs, item) >= 1) return { index: 6, of: 5, text: `${humanize(item)} crafted` }
+      const recipe = Object.entries(RECIPES[item] || {})
+      const total = recipe.reduce((n, [, q]) => n + q, 0)
+      const held = recipe.reduce((n, [ing, q]) => n + Math.min(q, have(obs, ing)), 0)
+      if (held >= total) return { index: 5, of: 5, text: `craft ${humanize(item)}` }
+      const short = recipe.filter(([ing, q]) => have(obs, ing) < q).map(([ing, q]) => `${q} ${humanize(ing)} (have ${have(obs, ing)})`)
+      return { index: 1 + Math.min(3, Math.floor(4 * held / Math.max(1, total))), of: 5, text: `get the ingredients for ${humanize(item)}: ${short.join(', ')}` }
+    },
+    teacher: (obs, item) => acquire(obs, item),
+    describe: (obs, item) => `craft ${humanize(item)}`,
+    stuckS: 300,
+  },
+  gather: {
+    done: (obs, item, count) => have(obs, item) >= count,
+    filter: (obs, item, opts, count) => keepOnly(opts, new Set([PRODUCERS[item], ...wanted(obs, item, count - have(obs, item), new Set()),
+      ...opts.map(o => o.id).filter(isMove)])),
+    // fifths of the count held: 1..5 (6 = done)
+    step: (obs, item, count) => ({ index: 1 + Math.floor(5 * Math.min(have(obs, item), count) / count), of: 5,
+      text: `gather ${count} ${humanize(item)} (have ${have(obs, item)})` }),
+    teacher: (obs, item) => acquire(obs, item),
+    describe: (obs, item, count) => `gather ${count} ${humanize(item)} (have ${have(obs, item)})`,
+    stuckS: (item, count) => Math.max(300, Math.min(600, 20 * count)),
+  },
+  find: {
+    done: (obs, block) => seen(obs, FIND_MATCH[block] || (n => n === block), FIND_RANGE),
+    filter: (obs, block, opts) => keepOnly(opts, new Set(['mine_stone', ...opts.map(o => o.id).filter(isMove)])),
+    step: (obs, block) => GOAL_KINDS.find.done(obs, block) ? { index: 2, of: 1, text: `${humanize(block)} found` } : { index: 1, of: 1, text: `find ${humanize(block)}` },
+    teacher: (obs, block) => block === 'diamond_ore' ? (obs.pos.y > DIAMOND_LEVEL_Y ? 'explore_toward(deep)' : 'explore_toward(surface)')
+      : block === 'iron_ore' || block === 'coal_ore' || block === 'lava' ? 'explore_toward(down)' : 'explore_toward(surface)',
+    describe: (obs, block) => `find ${humanize(block)}`,
+    stuckS: 480,
+  },
+  go_to: {
+    done: (obs, place) => place === 'base' ? nearBase(obs) : place === 'surface' ? !obs.underground : (obs.pos?.y ?? 0) <= DIAMOND_LEVEL_Y,
+    filter: (obs, place, opts) => keepOnly(opts, new Set(place === 'base' ? opts.map(o => o.id).filter(isMove)
+      : place === 'surface' ? ['explore_toward(surface)'] : ['explore_toward(deep)', 'explore_toward(down)'])),
+    step: (obs, place) => {
+      if (place === 'base') return baseStep(obs, 'go to base')
+      if (place === 'surface') return obs.underground ? { index: 1, of: 1, text: 'go to the surface' } : { index: 2, of: 1, text: 'on the surface' }
+      // every 16 m of descent from y 64 is a step: 1..8, 9 at diamond level
+      const y = obs.pos?.y ?? 0
+      if (y <= DIAMOND_LEVEL_Y) return { index: 9, of: 8, text: 'at diamond level' }
+      return { index: 1 + Math.max(0, Math.min(7, Math.floor((64 - y) / 16))), of: 8, text: `go down to diamond level (y -58), now at y ${Math.round(y)}` }
+    },
+    teacher: (obs, place) => place === 'base' ? 'return_to_base' : place === 'surface' ? 'explore_toward(surface)'
+      : counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)',
+    describe: (obs, place) => place === 'diamond_level' ? 'go to diamond level' : place === 'base' ? 'go to base' : 'go to the surface',
+    stuckS: 240,
+  },
+  survive_night: {
+    done: obs => DAY.has(obs.phase),
+    filter: (obs, arg, opts) => opts,   // the night protocol already shapes the list
+    step: obs => DAY.has(obs.phase) ? { index: 2, of: 1, text: 'morning' } : { index: 1, of: 1, text: 'wait out the night' },
+    teacher: obs => teacherSubtask(obs),
+    describe: () => 'survive the night',
+    stuckS: Infinity,
+  },
+  return_to_base: {
+    done: obs => nearBase(obs),
+    filter: (obs, arg, opts) => opts,
+    step: obs => baseStep(obs, 'return to base'),
+    teacher: () => 'return_to_base',
+    describe: () => 'return to base',
+    stuckS: 180,
+  },
+  build: {
+    done: (obs, s) => s === 'portal_frame' && !!obs.portalFrame,
+    filter: (obs, s, opts) => keepOnly(opts, new Set(['build_portal', 'light_portal', 'mine_obsidian', 'cast_obsidian', 'fill_bucket(water)',
+      'mine_gravel', ...opts.filter(o => o.name === 'craft').map(o => o.id), ...opts.map(o => o.id).filter(isMove)])),
+    // obsidian held plus placed, 1..11 (12 = frame complete)
+    step: obs => {
+      if (obs.portalFrame) return { index: 12, of: 11, text: 'portal frame built' }
+      const n = Math.min(10, (obs.inventory?.obsidian || 0) + (obs.memory?.portal?.placed || 0))
+      return { index: 1 + n, of: 11, text: `build a nether portal frame (${n} of 10 obsidian)` }
+    },
+    teacher: obs => teacherSubtask(obs),   // the chain teacher's stage 4; outside it the pick is usually filtered out (null)
+    describe: () => 'build a nether portal frame',
+    stuckS: 600,
+  },
+}
+const stuckOf = (k, g) => typeof GOAL_KINDS[k].stuckS === 'function' ? GOAL_KINDS[k].stuckS(g.arg, g.count) : GOAL_KINDS[k].stuckS
+const DEFAULTS = new Set(['chain', 'iron_pickaxe'])
+
+export function validateGoal({ kind, arg, count } = {}) {
+  if (!GOAL_KINDS[kind]) return { ok: false, reason: `unknown goal kind ${kind}` }
+  if (DEFAULTS.has(kind)) return { ok: false, reason: `${kind} is the default goal and cannot be pushed` }
+  switch (kind) {
+    case 'craft_item': return RECIPES[arg] ? { ok: true } : { ok: false, reason: `cannot craft ${arg}` }
+    case 'gather':
+      if (!PRODUCERS[arg]) return { ok: false, reason: `cannot gather ${arg}` }
+      if (!Number.isInteger(count) || count < 1 || count > 64) return { ok: false, reason: 'count must be an integer from 1 to 64' }
+      return { ok: true }
+    case 'find':
+      if (FINDABLE_NOW.includes(arg)) return { ok: true }
+      return { ok: false, reason: DECLARED_FINDABLE.includes(arg) ? 'no detector yet' : `cannot find ${arg}` }
+    case 'build':
+      if (!STRUCTURES[arg]) return { ok: false, reason: `cannot build ${arg}` }
+      return STRUCTURES[arg].executor ? { ok: true } : { ok: false, reason: 'no executor yet' }
+    case 'go_to': return PLACES.includes(arg) ? { ok: true } : { ok: false, reason: `cannot go to ${arg}` }
+    default: return { ok: true }   // survive_night, return_to_base: no argument
+  }
+}
+
+const sourceText = src => !src ? 'Goal' : src === 'leader' ? 'Goal from the leader'
+  : src.startsWith('audience:') ? `Goal from the audience (${src.slice('audience:'.length)})` : `Goal (${src})`
+const pub = g => ({ kind: g.kind, arg: g.arg ?? null, count: g.count ?? null, source: g.source, id: g.id })
+
+// The stack: entries [default, ...pushed], top last. update() pops finished (goal_done) and stuck (goal_failed) goals.
+export class GoalStack {
+  constructor({ goal = 'iron_pickaxe' } = {}) {
+    const kind = goal === 'nether' ? 'chain' : 'iron_pickaxe'
+    this.stack = [{ kind, arg: null, count: null, source: kind, id: 0, t: 0, best: null, progressT: null }]
+    this.nextId = 1
+  }
+  top() { return this.stack[this.stack.length - 1] }
+  depth() { return this.stack.length - 1 }
+  push({ kind, arg = null, count = null, source = 'leader', t = null }) {
+    const v = validateGoal({ kind, arg, count })
+    if (!v.ok) throw new Error(`invalid goal ${kind}(${arg ?? ''}): ${v.reason}`)
+    const g = { kind, arg, count, source, id: this.nextId++, t, best: null, progressT: t }
+    this.stack.push(g)
+    return g
+  }
+  pop(reason = null) {
+    if (this.stack.length <= 1) return null
+    const g = this.stack.pop()
+    g.popReason = reason
+    this.top().progressT = null   // the goal underneath restarts its stuck clock at the next update
+    this.top().best = null
+    return g
+  }
+  update(obs, t) {
+    const events = []
+    while (this.stack.length > 1) {
+      const g = this.top(), K = GOAL_KINDS[g.kind]
+      if (K.done(obs, g.arg, g.count)) { this.pop('done'); events.push({ kind: 'goal_done', goal: pub(g), t }); continue }
+      const s = K.step(obs, g.arg, g.count).index
+      if (g.best == null || s > g.best || g.progressT == null) {
+        if (g.best == null || s > g.best) g.best = s
+        g.progressT = t
+      }
+      if (t - g.progressT >= stuckOf(g.kind, g)) { this.pop('stuck'); events.push({ kind: 'goal_failed', goal: pub(g), t, reason: 'stuck' }); continue }
+      break
+    }
+    return events
+  }
+  step(obs) {
+    const g = this.top()
+    const s = GOAL_KINDS[g.kind].step(obs, g.arg, g.count)
+    return { ...s, index: 100 * this.depth() + s.index, goal_id: g.id }
+  }
+  describe(obs) {
+    const base = GOAL_KINDS[this.stack[0].kind].describe(obs)
+    if (this.stack.length === 1) return base
+    const parts = this.stack.slice(1).reverse().map(g => `${sourceText(g.source)}: ${GOAL_KINDS[g.kind].describe(obs, g.arg, g.count)}.`)
+    if (base) parts.push(base)
+    return parts.join(' Then: ')
+  }
+  filter(obs, opts) {
+    const g = this.top()
+    return GOAL_KINDS[g.kind].filter(obs, g.arg, opts, g.count)
+  }
+  // The default entry's teacher as is (teacherSubtask validates against options itself). A pushed goal: threats, food
+  // and the night protocol first, then the kind's teacher; null when the pick is not in the filtered list.
+  teacher(obs) {
+    const g = this.top(), K = GOAL_KINDS[g.kind]
+    if (this.stack.length === 1) return K.teacher(obs, g.arg, g.count)
+    if (!K.teacher) return null
+    const offered = new Set(this.filter(obs, options(obs)).map(o => o.id))
+    const th = teacherThreat(obs)
+    const threat = th === 'fight' ? 'fight(threat)' : th === 'flee' ? 'flee(threat)' : th === 'pillar_up' ? 'pillar_up' : null
+    if (threat && offered.has(threat)) return threat
+    if (obs.food < 8 && offered.has('eat')) return 'eat'
+    if ((nightOnSurface(obs) || shelterSoon(obs)) && offered.has('build_shelter')) return 'build_shelter'
+    if (nightOnSurface(obs)) { const r = ['explore_toward(down)', 'return_to_base'].find(id => offered.has(id)); if (r) return r }
+    const id = K.teacher(obs, g.arg, g.count)
+    return id && offered.has(id) ? id : null
+  }
+}
