@@ -2,7 +2,7 @@
 // uses one-hot teacher answers), logs every distribution, and writes the trajectory + kev records.
 //
 //   node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher|kev [--kev-url http://127.0.0.1:8009]
-//        [--goal iron_pickaxe|nether] [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--no-server] [--difficulty normal] [--quiet]
+//        [--goal iron_pickaxe|nether] [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--live-view 3007] [--no-server] [--difficulty normal] [--quiet]
 //        [--leader off|periodic15|events|periodic30_interrupts|subgoals --leader-think --leader-model m --leader-url u --leader-num-predict n]   (chain mode, needs --kev-url)
 //
 // Writes out/<name>.json (meta / frames / decisions / events / timeline), out/<name>.jsonl (kev records with _meta),
@@ -38,6 +38,7 @@ const flag = k => argv.includes(`--${k}`)
 const seed = opt('seed', '1'), port = Number(opt('port', 25580)), policy = opt('policy', 'teacher'), kevUrl = opt('kev-url', null)
 const epsAction = Number(opt('eps-action', 0)), minutes = Number(opt('minutes', 20)), successMin = Number(opt('success-minutes', 15))
 const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Number(opt('fps', 5)), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
+const liveViewPort = opt('live-view', null)   // optional, off by default: a browser view at http://127.0.0.1:<port> (prismarine-viewer's web viewer, not the recorder)
 const goal = opt('goal', 'iron_pickaxe')
 if (!['iron_pickaxe', 'nether'].includes(goal)) { console.error(`unknown goal ${goal}`); process.exit(2) }
 // The goal stack (agent/goals.js): the default entry is the chain (nether) or experiment 1's iron pickaxe; with nothing
@@ -82,6 +83,7 @@ const shutdown = async (why, code) => {
   try { clearInterval(loop) } catch {}
   if (!wrote) { try { elog?.finish({ end_reason: `crash: ${why}`.slice(0, 120), ended_t: now?.() ?? null, ...(() => { try { return stageMeta() } catch { return {} } })() }); fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(elog.toJSON())); wrote = true } catch {} }
   try { if (recorder) await recorder.stop() } catch {}
+  try { bot.viewer?.close?.() } catch {}
   try { bot.quit() } catch {}
   if (server) await server.stop()
   process.exit(code)
@@ -111,6 +113,15 @@ const elog = new EpisodeLog({ seed, policy, goal, eps_action: epsAction, minutes
   leader: leaderTrigger ? { mode: leaderMode, think: leaderThink, model: leaderModel, url: leaderUrl, num_predict: leaderNumPredict ? Number(leaderNumPredict) : null } : null })
 let recorder = null
 if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
+// The live view (--live-view <port>): prismarine-viewer's browser web viewer, separate from the recorder above (which
+// renders headlessly to a file). A failure to start it (e.g. the port is taken) must not end the episode.
+if (liveViewPort) {
+  try {
+    const { mineflayer: mineflayerViewer } = await import('prismarine-viewer')
+    mineflayerViewer(bot, { port: Number(liveViewPort), firstPerson: true, viewDistance: 4 })
+    log(`live view: http://127.0.0.1:${liveViewPort}`)
+  } catch (e) { log(`live view failed to start: ${e.message}`) }
+}
 
 // ---- state ------------------------------------------------------------------------------------------------------
 const t0 = Date.now()

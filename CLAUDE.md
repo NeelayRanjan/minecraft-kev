@@ -154,6 +154,7 @@ node agent/run_episode.mjs --seed 3000 --port 25580 --policy teacher --goal neth
 node agent/run_episode.mjs --seed 3000 --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --goal nether --leader events [--leader-think --leader-num-predict 3000] \
      --leader-model qwen38-27b-iq3xxs --leader-url http://100.109.91.95:11434 --minutes 60 --out l3000 --video   # kev drives, the 27B leader overrides (typed) or continues
 LEADER_MODEL=<ollama model> scripts/leader_runs.sh 3000 60     # the six configurations in order -> reports/leader/<run>.md ; node scripts/leader_report.mjs <run>
+scripts/leader_live.sh 3000 120                  # foreground: kev + the subgoals leader, --live-view 3007, video on; join 127.0.0.1:25580 (offline, any name), press T to type a request, watch at http://127.0.0.1:3007
 node agent/gen_data.mjs --seeds 40 --seed0 0 --procs 5 --minutes 22 --eps-action 0.1 --thin 8 --out data/x.jsonl --prefix x [--video --video-seeds 3]
 node agent/rebuild_data.mjs --prefix x --seed0 0 --seeds 40 --thin 8 [--drop survive_until_morning] --out data/x.jsonl   # relabel from out/x_s*.json
 python3 scripts/base_rates.py data/x.jsonl       # every noul should sit between 20% and 80% true; rare labels teach nothing
