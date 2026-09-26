@@ -9,7 +9,7 @@ const goalT = {}
 const goalOf = file => {
   if (!(file in goalT)) {
     const j = JSON.parse(fs.readFileSync(path.join('out', file), 'utf8'))
-    goalT[file] = j.events.find(e => e.kind === 'goal_done')?.t ?? Infinity
+    goalT[file] = j.events.find(e => e.kind === 'goal_done' && !e.goal)?.t ?? Infinity
   }
   return goalT[file]
 }

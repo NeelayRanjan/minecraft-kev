@@ -235,8 +235,56 @@ const SHOWN_EVENTS = new Set(['subtask_done', 'subtask_error', 'interrupt', 'dea
   'leader_override', 'leader_continue', 'leader_stale', 'leader_invalid', 'leader_dropped', 'leader_blocked', 'kev_error',
   'goal_failed', 'goal_pushed', 'goal_popped', 'leader_cannot'])
 
-// Chat text for the prompt: no special-token markers, one line, capped.
-export const sanitizeChat = (s, max = 200) => String(s ?? '').replace(/<\||\|>/g, '').replace(/[\r\n]+/g, ' ').slice(0, max)
+// Chat text for the prompt and for the bot's own chat lines: no special-token markers, one line (newlines become a
+// space), no formatting codes (a section sign and the code after it) and no other control characters (below 0x20,
+// 0x7f): the server disconnects a client that sends them, which would end the episode. Capped.
+export const sanitizeChat = (s, max = 200) => String(s ?? '').replace(/<\||\|>/g, '').replace(/[\r\n]+/g, ' ')
+  .replace(/\u00a7.?/gs, '').replace(/[\x00-\x1f\x7f]/g, '').slice(0, max)
+
+// A player's chat line from mineflayer's 'message' event (jsonMsg: a prismarine-chat ChatMessage, or its JSON), or
+// null. Only position 'chat' (signed player chat; system messages arrive as 'system'/'game_info') whose chat type is
+// the plain player one: translate 'chat.type.text' with [sender, text]. Console `say` (chat.type.announcement), emotes
+// and anything else are not requests. Without a translate key (a server that preformats chat) the vanilla
+// "<name> text" line is accepted. The bot's own lines and lines without a sender give null.
+const plain = x => x == null ? '' : typeof x === 'string' ? x : typeof x.toString === 'function' && x.toString !== Object.prototype.toString ? x.toString()
+  : [x.text ?? '', ...(x.extra || []).map(plain)].join('')
+export function parseChatMessage(jsonMsg, position, botName) {
+  if (position !== 'chat' || !jsonMsg) return null
+  let name = null, text = null
+  if (jsonMsg.translate != null) {
+    if (jsonMsg.translate !== 'chat.type.text' || !Array.isArray(jsonMsg.with) || jsonMsg.with.length < 2) return null
+    name = plain(jsonMsg.with[0]).trim(); text = plain(jsonMsg.with[1])
+  } else {
+    const m = /^<(\w{1,16})> (.*)$/s.exec(plain(jsonMsg))
+    if (!m) return null
+    name = m[1]; text = m[2]
+  }
+  text = String(text ?? '').trim()
+  if (!name || !/^\w{1,16}$/.test(name) || name === botName || !text) return null
+  return { name, text }
+}
+
+// Chat requests and who has answered them. A request is answered only by a goal-level answer (push_goal, pop_goal,
+// cannot; the runner passes an invalid push it replied to as cannot). Any other outcome of a call that showed it
+// (continue, override, blocked, stale, invalid, error) leaves it waiting; after maxShown such calls it is settled as
+// 'not_now' and returned so the runner can reply "Not now". Ids are 1, 2, ... in arrival order.
+export const REQUEST_ANSWERS = new Set(['push_goal', 'pop_goal', 'cannot'])
+export class RequestBook {
+  constructor({ maxShown = 2 } = {}) { this.maxShown = maxShown; this.all = []; this.nextId = 1 }
+  add({ t, name, text }) { const r = { id: this.nextId++, t, name, text, shown: 0, answered: null }; this.all.push(r); return r }
+  pending() { return this.all.filter(r => !r.answered) }
+  unshown() { return this.all.filter(r => !r.answered && r.shown === 0) }
+  // a leader call was made with these requests in its prompt
+  shown(ids) { for (const r of this.all) if (ids.includes(r.id) && !r.answered) r.shown++ }
+  // that call's outcome: answers them (goal kinds) or, after maxShown calls without an answer, settles them as not_now
+  settle(ids, kind, t = null) {
+    const mine = this.all.filter(r => ids.includes(r.id) && !r.answered)
+    if (REQUEST_ANSWERS.has(kind)) { for (const r of mine) r.answered = { t, kind }; return [] }
+    const notNow = mine.filter(r => r.shown >= this.maxShown)
+    for (const r of notNow) r.answered = { t, kind: 'not_now', after: kind }
+    return notNow
+  }
+}
 
 // The GOAL STACK section's input from a GoalStack: its describe text and the pushed goals, top first, with progress.
 export function goalStackView(stack, obs) {

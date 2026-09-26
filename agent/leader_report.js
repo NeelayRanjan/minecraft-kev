@@ -133,11 +133,17 @@ export function goalsSummary(events, calls, endedT = null) {
     return { id: e.goal.id, goal: goalText(e.goal), source: e.goal.source ?? null, t: e.t, outcome, endT: end ? end.t : null,
       durationS: isNum(endT) && isNum(e.t) ? endT - e.t : null, why: e.why ?? null }
   })
+  // Newer logs say which call settled a request (settled: answered, or not_now after two calls without an answer);
+  // older ones only which calls were shown it (the first is taken).
+  const hasSettled = calls.some(l => Array.isArray(l.settled))
   const requests = events.filter(e => e.kind === 'audience_request').map(e => {
-    const call = calls.find(l => (l.requests || []).some(r => r.t === e.t && r.name === e.name))
+    const same = r => r.t === e.t && r.name === e.name
+    const call = hasSettled ? calls.find(l => (l.settled || []).some(same)) : calls.find(l => (l.requests || []).some(same))
+    const as = hasSettled && call ? call.settled.find(same).as : call?.kind
     const pushedBy = call?.goal_id != null ? pushed.find(p => p.id === call.goal_id) : null
-    return { t: e.t, name: e.name ?? null, text: e.text ?? '', answeredT: call ? call.t_answered ?? null : null, kind: call ? call.kind : null,
-      answer: !call ? null : pushedBy ? `push_goal ${pushedBy.goal}` : call.kind === 'cannot' || call.kind === 'pop_goal' ? `${call.kind}: ${String(call.why || '').slice(0, 120)}` : call.kind }
+    const answer = !call ? null : as === 'not_now' ? `not now (after ${call.kind})` : pushedBy ? `push_goal ${pushedBy.goal}`
+      : as === 'cannot' || as === 'pop_goal' ? `${call.kind}: ${String(call.reason || call.why || '').slice(0, 120)}` : call.kind
+    return { t: e.t, name: e.name ?? null, text: e.text ?? '', answeredT: call ? call.t_answered ?? null : null, kind: call ? as : null, answer }
   })
   return { pushed, requests }
 }

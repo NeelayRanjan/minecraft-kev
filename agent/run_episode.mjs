@@ -26,7 +26,7 @@ import { EpisodeLog, oneHot, fromKev } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
-import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat } from './leader.js'
+import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack } from './goals.js'
 import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
@@ -136,9 +136,10 @@ let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}
 let lastObs = null   // the latest tick's obs: the leader's threat guard re-checks it when an answer arrives
 const threatNearIn = o => !!(o?.nearestHostile && o.nearestHostile.dist <= 16)
 const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
-// Chat: requests from players (never from the bot itself) for the leader's prompt, oldest first; `asked` once a call
-// has shown it, `answered` when that call's answer arrives. Chat text reaches only the leader's prompt and the log.
-const leaderRequests = []
+// Chat: requests from players (never the bot itself, never system lines) for the leader's prompt (agent/leader.js
+// RequestBook: answered only by a goal-level answer, else "not now" after two calls). Chat text reaches only the
+// leader's prompt and the log.
+const requestBook = new RequestBook()
 const goalLog = []   // pushed goals: {id, kind, arg, count, source, t, why, end_t, outcome}
 const say = msg => { try { bot.chat(sanitizeChat(msg, 240)) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
 const goalPhrase = g => {
@@ -158,14 +159,14 @@ const whyTail = (why, sep = ': ') => { const w = sanitizeChat(why, 80).trim(); r
 // The offered list everywhere (kev's question, the teacher, the leader, the LLM policy): options under the top goal.
 const offeredFor = o => goalStack.filter(o, optionsFor(o))
 const goalStepOf = o => { const s = goalStack.step(o), d = goalStack.depth(); return { ...s, local: s.index - 100 * d, pushed: d > 0 } }
-bot.on('chat', (username, message) => {
-  if (finished || !username || username === bot.username) return
-  const text = String(message ?? '').trim().slice(0, 200)
-  if (!text) return
-  const t = +now().toFixed(1)
-  leaderRequests.push({ t, name: username, text, asked: false, answered: null })
-  elog.event({ t, kind: 'audience_request', name: username, text })
-  log(`chat <${username}> ${text}`)
+bot.on('message', (jsonMsg, position) => {
+  if (finished) return
+  const c = parseChatMessage(jsonMsg, position, bot.username)
+  if (!c) return
+  const t = +now().toFixed(1), text = c.text.slice(0, 200)
+  requestBook.add({ t, name: c.name, text })
+  elog.event({ t, kind: 'audience_request', name: c.name, text })
+  log(`chat <${c.name}> ${text}`)
   if (goalsOn) leaderNote('audience_request')
 })
 bot.on('death', () => {
@@ -306,7 +307,7 @@ function forecastsOf(answers) {
 // idle, the one kev starts next (bound in startSubtask).
 function leaderTick(obs, t) {
   // A request not yet shown to the leader (it arrived while a call was in flight) keeps the trigger armed.
-  if (goalsOn && leaderRequests.some(r => !r.asked)) leaderEvents.push('audience_request')
+  if (goalsOn && requestBook.unshown().length) leaderEvents.push('audience_request')
   const event = pickEvent(leaderEvents, goalsOn ? leaderMode : null); leaderEvents = []   // the other modes pick as before
   if (!leaderTrigger.due({ t, event, inFlight: !!leaderAsk })) return
   leaderTrigger.asked(t)
@@ -315,7 +316,7 @@ function leaderTick(obs, t) {
   try {
     const opts = offeredFor(obs)
     const currentId = motor.current?.id ?? null
-    const requests = goalsOn ? leaderRequests.filter(r => !r.answered) : []
+    const requests = goalsOn ? requestBook.pending() : []
     snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts, threatNear: threatNearIn(obs), requests }
     leaderAsk = snap
     first = leaderCalls++ === 0
@@ -328,7 +329,7 @@ function leaderTick(obs, t) {
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
       ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
     }
-    for (const r of requests) r.asked = true
+    requestBook.shown(requests.map(r => r.id))
   } catch (e) {
     leaderAsk = null
     elog.event({ t, kind: 'leader_error', error: String(e?.message || e).slice(0, 200) }); log(`leader: snapshot failed: ${e?.message || e}`)
@@ -348,22 +349,25 @@ function leaderAnswered(snap, a, err) {
   // Guards: a hostile near when asked or now (either blocks leaving a threat response); the live subtask-result window.
   const threatNear = snap.threatNear || threatNearIn(lastObs)
   let res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: snap.currentId, offered: snap.offered, threatNear, recentResults: recent, goalsEnabled: goalsOn })
-  // Goal answers act on the stack here; the requests the call was shown are answered by whatever came back.
-  const reqs = err ? [] : snap.requests || []
-  for (const r of reqs) r.answered = { t: +t.toFixed(1), kind: res.kind }
+  // Goal answers act on the stack here. The requests the call was shown are answered only by a goal-level answer.
+  const reqs = snap.requests || []
   let pushed = null
   if (res.kind === 'push_goal') {
     const src = reqs.length ? `audience:${reqs[0].name}` : 'leader'
     try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1) }) }
     catch (e) { res = { kind: 'invalid', id: 'push_goal', reason: String(e?.message || e).slice(0, 160) } }
   } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
-  for (const r of reqs) r.answered.kind = res.kind
+  // an invalid push is replied to below ("Can't do that yet"), so it answers the requests like cannot
+  const settleAs = res.kind === 'invalid' && res.id === 'push_goal' && reqs.length ? 'cannot' : res.kind
+  const waiting = reqs.filter(r => !r.answered)
+  const notNow = requestBook.settle(reqs.map(r => r.id), settleAs, +t.toFixed(1))
+  const settled = waiting.filter(r => r.answered).map(r => ({ t: r.t, name: r.name, as: r.answered.kind }))
   elog.leader.push({ t_asked: snap.t, t_answered: +t.toFixed(1), trigger: snap.event, current_id: snap.currentId, current_id_at_answer: currentId,
     action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, reason: res.reason ?? null, threat_near: threatNear, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
     latency_ms: a?.latency_ms ?? null, tokens: a?.tokens ?? null, prompt_tokens: a?.prompt_tokens ?? null, tps: a?.tps != null ? +a.tps.toFixed(1) : null,
     prompt_chars: a?.prompt_chars ?? null, prompt_hash: a?.prompt_hash ?? null, offered: snap.offered.map(o => o.id), think: leaderThink,
     error: err ? String(err.message || err).slice(0, 200) : null,
-    ...(goalsOn ? { goal: a?.goal ?? null, goal_id: pushed?.id ?? null, requests: (snap.requests || []).map(r => ({ t: r.t, name: r.name })) } : {}) })
+    ...(goalsOn ? { goal: a?.goal ?? null, goal_id: pushed?.id ?? null, requests: reqs.map(r => ({ t: r.t, name: r.name })), settled } : {}) })
   if (res.kind === 'override') {
     elog.event({ t, kind: 'leader_override', from: currentId, to: res.id, why: a.why })
     pendingLeader = { id: res.id, why: a.why, t_asked: snap.t, t_answered: +t.toFixed(1), latency_ms: a.latency_ms, thinking_chars: a.thinking?.length ?? 0 }
@@ -386,6 +390,11 @@ function leaderAnswered(snap, a, err) {
     elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
     // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
     if (res.kind === 'invalid' && res.id === 'push_goal' && reqs.length) say(`Can't do that yet${whyTail(res.reason) || '.'}`)
+  }
+  if (notNow.length) {   // shown to two calls that did not answer them: tell the players the bot is busy
+    let busy = 'the current goal'
+    try { if (lastObs) busy = goalStack.step(lastObs).text || busy } catch {}
+    for (const r of notNow) { elog.event({ t, kind: 'request_not_now', name: r.name, request_t: r.t, after: settleAs }); say(`Not now, ${r.name}: busy with ${busy}`) }
   }
   log(`leader (${snap.event}, ${a?.latency_ms ?? '-'} ms): ${res.kind}${res.id ? ` -> ${res.id}` : ''}${res.reason ? ` [${res.reason}]` : ''}${a?.why ? ` (${a.why})` : ''}${err ? ` error: ${err.message}` : ''}`)
 }
@@ -413,7 +422,7 @@ function stageMeta() {
 function goalsMeta() {
   const n = o => goalLog.filter(g => (g.outcome || '').startsWith(o)).length
   return { pushed: goalLog.length, done: n('done'), failed: n('failed'), popped: n('popped'), open: goalLog.filter(g => !g.outcome).length,
-    goals: goalLog, requests: leaderRequests.map(r => ({ t: r.t, name: r.name, text: r.text, answered: r.answered })) }
+    goals: goalLog, requests: requestBook.all.map(r => ({ t: r.t, name: r.name, text: r.text, shown: r.shown, answered: r.answered })) }
 }
 
 async function finish(reason) {
@@ -425,7 +434,7 @@ async function finish(reason) {
   elog.timeline = injectDeaths(elog.timeline, elog.events)   // the sampler rarely catches the few ticks between death and respawn
   elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, ...stageMeta(), video_frames: recorder ? recorder.frames() : null,
     video_dupes: recorder ? recorder.stats().dupes : null,
-    ...(goalsOn || goalLog.length || leaderRequests.length ? { goals: goalsMeta() } : {}) })
+    ...(goalsOn || goalLog.length || requestBook.all.length ? { goals: goalsMeta() } : {}) })
   const json = elog.toJSON(), recs = elog.toRecords()
   fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(json)); wrote = true
   fs.writeFileSync(path.join('out', `${name}.jsonl`), recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : ''))

@@ -424,3 +424,61 @@ test('LEADER_SYSTEM_GOALS: the goal rules and vocabularies on top of the leader 
   assert.match(s, /prefer goals/i)
   assert.match(s, /"continue" \| "push_goal" \| "pop_goal" \| "cannot"/)
 })
+
+// ---- chat bookkeeping (Task 3 fix round 1) -------------------------------------------------------------------------
+import { RequestBook, parseChatMessage, sanitizeChat as sanitize2 } from '../agent/leader.js'
+import { buildPlannerMessages } from '../agent/planner.js'
+import chatLoader from 'prismarine-chat'
+const ChatMessage = chatLoader('1.20.4')
+
+test('RequestBook: answered only by push_goal / pop_goal / cannot; "not now" after two calls that did not answer', () => {
+  const b = new RequestBook()
+  const a = b.add({ t: 10, name: 'alice', text: 'gather 8 cobblestone' })
+  assert.deepEqual(b.unshown().map(r => r.id), [a.id])
+  b.shown([a.id]); assert.deepEqual(b.unshown(), [])
+  assert.deepEqual(b.settle([a.id], 'continue', 12), [])           // first call ignored it: still waiting
+  assert.deepEqual(b.pending().map(r => r.id), [a.id])
+  const c = b.add({ t: 13, name: 'bob', text: 'find diamonds' })
+  b.shown([a.id, c.id])
+  const nn = b.settle([a.id, c.id], 'error', 20)                   // an error counts as a call that saw them
+  assert.deepEqual(nn.map(r => r.name), ['alice'])                  // alice: two calls without an answer
+  assert.deepEqual(a.answered, { t: 20, kind: 'not_now', after: 'error' })
+  assert.equal(c.answered, null)
+  b.shown([c.id])
+  assert.deepEqual(b.settle([c.id], 'push_goal', 25), [])
+  assert.deepEqual(c.answered, { t: 25, kind: 'push_goal' })
+  assert.deepEqual(b.pending(), [])
+  for (const k of ['override', 'blocked', 'stale', 'invalid']) {   // none of these answers a request
+    const r = b.add({ t: 30, name: 'eve', text: 'x' }); b.shown([r.id]); assert.deepEqual(b.settle([r.id], k), []); assert.equal(r.answered, null)
+    b.shown([r.id]); assert.equal(b.settle([r.id], k)[0], r)
+  }
+  const d = b.add({ t: 40, name: 'dan', text: 'y' }); b.shown([d.id]); b.settle([d.id], 'cannot', 41)
+  assert.equal(d.answered.kind, 'cannot')
+})
+
+test('parseChatMessage: player chat -> {name, text}; console say, system lines and the bot itself -> null', () => {
+  const player = new ChatMessage({ translate: 'chat.type.text', with: [{ text: 'alice' }, { text: 'gather 8 cobblestone' }] })
+  assert.deepEqual(parseChatMessage(player, 'chat', 'kev_80'), { name: 'alice', text: 'gather 8 cobblestone' })
+  const say = new ChatMessage({ translate: 'chat.type.announcement', with: [{ text: 'Server' }, { text: 'hello' }] })
+  assert.equal(parseChatMessage(say, 'chat', 'kev_80'), null)
+  assert.equal(parseChatMessage(new ChatMessage({ text: '[Server] hello' }), 'system', 'kev_80'), null)
+  assert.equal(parseChatMessage(player, 'system', 'kev_80'), null)
+  const own = new ChatMessage({ translate: 'chat.type.text', with: [{ text: 'kev_80' }, { text: 'On it: gather 8 cobblestone.' }] })
+  assert.equal(parseChatMessage(own, 'chat', 'kev_80'), null)
+  assert.deepEqual(parseChatMessage(new ChatMessage({ text: '<bob> hi there' }), 'chat', 'kev_80'), { name: 'bob', text: 'hi there' })   // preformatted
+  assert.equal(parseChatMessage(new ChatMessage({ text: '[Server] hi' }), 'chat', 'kev_80'), null)
+  assert.equal(parseChatMessage(new ChatMessage({ translate: 'chat.type.text', with: [{ text: 'alice' }, { text: '  ' }] }), 'chat', 'kev_80'), null)
+})
+
+test('sanitizeChat strips formatting codes and control characters (the server kicks a client that sends them)', () => {
+  assert.equal(sanitize2('§cred\tx'), 'redx')
+  assert.equal(sanitize2('a\x00b\x7fc\x1bd'), 'abcd')
+  assert.equal(sanitize2('line one\nline two'), 'line one line two')
+})
+
+test('the llm policy history reads GOAL REACHED only for the episode goal, not a goal-stack goal_done', () => {
+  const user = buildPlannerMessages({ stateText: 's', options: [{ id: 'wait', desc: 'wait' }],
+    history: [{ t: 5, kind: 'goal_done', goal: { id: 1, kind: 'gather' } }, { t: 9, kind: 'goal_done', item: 'iron_pickaxe' }] })[1].content
+  assert.equal((user.match(/GOAL REACHED/g) || []).length, 1)
+  assert.match(user, /t=9s GOAL REACHED/)
+})

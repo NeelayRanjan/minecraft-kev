@@ -29,7 +29,8 @@ export const answerSchema = options => ({
 })
 
 export function buildPlannerMessages({ stateText, options, history = [], forecasts = {} }) {
-  const hist = history.slice(-12).map(e => {
+  // a goal-stack goal_done (it carries e.goal) is not the episode goal; only the chain's / the pickaxe's reads GOAL REACHED
+  const hist = history.filter(e => !(e.kind === 'goal_done' && e.goal)).slice(-12).map(e => {
     if (e.kind === 'subtask_done') return `t=${Math.round(e.t)}s ${e.id} -> ${e.result}${e.repeats > 1 ? ` (${e.repeats} times in a row)` : ''}`
     if (e.kind === 'interrupt') return `t=${Math.round(e.t)}s interrupted: ${e.reason}`
     if (e.kind === 'death') return `t=${Math.round(e.t)}s DIED`

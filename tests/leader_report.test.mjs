@@ -231,3 +231,15 @@ test('goals: a run of another mode with no goal activity renders no Goals sectio
   const md = renderReport(s, 'x')
   assert.ok(!md.includes('## Goals') && !md.includes('push_goal'))
 })
+
+test('goals: with settled records a request is credited to the call that settled it (not an earlier error call)', () => {
+  const j = goalsLog()
+  j.events = [{ t: 30, kind: 'audience_request', name: 'alice', text: 'gather 8 cobblestone' }, { t: 50, kind: 'audience_request', name: 'bob', text: 'dance' }]
+  j.leader = [
+    { t_asked: 30, t_answered: 31, kind: 'error', requests: [{ t: 30, name: 'alice' }], settled: [] },
+    { t_asked: 51, t_answered: 53, kind: 'continue', requests: [{ t: 30, name: 'alice' }, { t: 50, name: 'bob' }], settled: [{ t: 30, name: 'alice', as: 'not_now' }] },
+    { t_asked: 70, t_answered: 72, kind: 'cannot', why: 'no dancing', requests: [{ t: 50, name: 'bob' }], settled: [{ t: 50, name: 'bob', as: 'cannot' }] },
+  ]
+  const s = summarizeLeaderLog(j)
+  assert.deepEqual(s.goals.requests.map(r => [r.name, r.answeredT, r.answer]), [['alice', 53, 'not now (after continue)'], ['bob', 72, 'cannot: no dancing']])
+})
