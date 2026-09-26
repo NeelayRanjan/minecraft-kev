@@ -52,6 +52,41 @@ function leaderAgreement(decisions) {
   return { rows, n: rows.length, matches, rate: rows.length ? matches / rows.length : null }
 }
 
+// The t of the first timeline sample where the game day advances past the day at t=0, or where timeOfDay wraps
+// from >= 12000 (past noon) down below 12000 (a new day's morning) between consecutive samples. null if neither
+// is ever observed (a censored/short episode that never reaches morning).
+function firstMorningT(timeline) {
+  if (!timeline || !timeline.length) return null
+  const day0 = timeline[0].day
+  let prevTod = timeline[0].timeOfDay
+  for (const s of timeline) {
+    if (isNum(s.day) && isNum(day0) && s.day > day0) return s.t
+    if (isNum(prevTod) && isNum(s.timeOfDay) && prevTod >= 12000 && s.timeOfDay < 12000) return s.t
+    prevTod = s.timeOfDay
+  }
+  return null
+}
+
+// Milestone 2 ("iron pickaxe and survive the first night"): the iron-pickaxe step (techStep index 8; chainStep's
+// stage-0 numbering reuses the same 1..8 scale) reached, a first morning observed, and no death before it.
+export function milestone2(json) {
+  const timeline = json.timeline || []
+  const events = json.events || []
+  const pickaxeSample = timeline.find(s => isNum(s.step) && s.step >= 8)
+  const pickaxe_t = pickaxeSample ? pickaxeSample.t : null
+  const first_morning_t = firstMorningT(timeline)
+  const cutoff = first_morning_t != null ? first_morning_t : Infinity
+  const deaths_before_morning = events.filter(e => e.kind === 'death' && isNum(e.t) && e.t < cutoff).length
+  const passed = pickaxe_t != null && deaths_before_morning === 0 && first_morning_t != null
+  return { pickaxe_t, deaths_before_morning, first_morning_t, passed }
+}
+
+export function milestone2Line(json) {
+  const m = milestone2(json)
+  const fmt = t => (isNum(t) ? `${t.toFixed(0)}s` : '-')
+  return `milestone 2: ${m.passed ? 'yes' : 'no'} (iron pickaxe at ${fmt(m.pickaxe_t)}, deaths before first morning ${m.deaths_before_morning})`
+}
+
 // For every leader call whose kind was "continue", what kev did at the next decision point after it answered.
 function continueThenKev(calls, decisions) {
   const byTime = [...decisions].filter(d => d.decision).sort((a, b) => a.t - b.t)
@@ -127,7 +162,7 @@ export function summarizeLeaderLog(json) {
     .slice(0, 10)
     .map(l => ({ t: l.t_asked, text: String(l.thinking).slice(0, 1500) }))
 
-  return { header, stats, overrides, overrideOkCount, agreement, continueThen, continueThenCounts, rows, thinkingAppendix }
+  return { header, stats, overrides, overrideOkCount, agreement, continueThen, continueThenCounts, rows, thinkingAppendix, milestone2: milestone2(json) }
 }
 
 // ---- rendering -------------------------------------------------------------------------------------------------
@@ -136,17 +171,21 @@ const fmt1 = x => (isNum(x) ? x.toFixed(1) : '-')
 const fmtSecs = x => (isNum(x) ? `${x.toFixed(1)}s` : '-')
 const esc = s => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
 
+function formatStageTimes(stageTimes) {
+  return Object.keys(stageTimes || {}).length
+    ? Object.entries(stageTimes).sort((a, b) => Number(a[0]) - Number(b[0])).map(([k, v]) => `stage ${k} @ ${fmtSecs(v)}`).join(', ')
+    : 'none reached'
+}
+
 export function renderHeaderTable(summary, name) {
   const h = summary.header
-  const stageTimesStr = Object.keys(h.stageTimes).length
-    ? Object.entries(h.stageTimes).sort((a, b) => Number(a[0]) - Number(b[0])).map(([k, v]) => `stage ${k} @ ${fmtSecs(v)}`).join(', ')
-    : 'none reached'
+  const stageTimesStr = formatStageTimes(h.stageTimes)
   const lines = [
     `# Leader run: ${name}`,
     '',
     '| field | value |',
     '|---|---|',
-    `| leader mode | ${h.mode ?? '-'} |`,
+    `| leader mode | ${h.mode ?? 'off'} |`,
     `| thinking | ${h.think ? 'on' : 'off'} |`,
     `| model | ${h.model ?? '-'} |`,
     `| minutes | ${h.minutes ?? '-'} |`,
@@ -176,6 +215,32 @@ export function renderStatsSection(summary) {
     '',
   ]
   return lines.join('\n')
+}
+
+function renderMilestone2Section(m) {
+  const fmtT = t => (isNum(t) ? `${t.toFixed(1)}s` : '-')
+  const lines = [
+    '## Milestone 2',
+    '',
+    '(iron pickaxe and survive the first night)',
+    '',
+    '| field | value |',
+    '|---|---|',
+    `| iron pickaxe at | ${fmtT(m.pickaxe_t)} |`,
+    `| first morning at | ${fmtT(m.first_morning_t)} |`,
+    `| deaths before first morning | ${m.deaths_before_morning} |`,
+    `| passed | ${m.passed ? 'yes' : 'no'} |`,
+    '',
+  ]
+  return lines.join('\n')
+}
+
+// One line for a run script's comparison block: name, stage reached (of 5) with per-stage times, deaths, and the
+// milestone-2 verdict. Takes the raw episode-log JSON (not a summary) so a caller can produce it from a bare
+// out/<name>.json without going through summarizeLeaderLog itself.
+export function renderComparisonLine(json, name) {
+  const h = summarizeLeaderLog(json).header
+  return `${name}: stage ${h.stageReached ?? '?'}/5 (${formatStageTimes(h.stageTimes)}), deaths ${h.deaths ?? 0}, ${milestone2Line(json)}`
 }
 
 function renderOverridesSection(summary) {
@@ -232,6 +297,7 @@ export function renderReport(summary, name) {
   return [
     renderHeaderTable(summary, name),
     renderStatsSection(summary),
+    renderMilestone2Section(summary.milestone2),
     renderOverridesSection(summary),
     renderAgreementSection(summary),
     renderDecisionLog(summary),

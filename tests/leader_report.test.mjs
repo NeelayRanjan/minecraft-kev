@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { summarizeLeaderLog, renderReport } from '../agent/leader_report.js'
+import { summarizeLeaderLog, renderReport, milestone2, milestone2Line, renderComparisonLine, renderHeaderTable } from '../agent/leader_report.js'
 
 // A tiny synthetic chain-mode log: 3 leader calls (1 override whose replacement ends ok, 1 continue, 1 stale),
 // one stage_done, and enough decisions to check agreement and the continue -> kev's-next-pick tracking.
@@ -119,7 +119,67 @@ test('renderReport: produces a non-empty markdown string covering the required s
   const s = summarizeLeaderLog(json)
   const md = renderReport(s, 'synthetic_run')
   assert.equal(typeof md, 'string')
-  for (const needle of ['synthetic_run', 'events', 'override', 'continue', 'stale', 'Decision log', 'thinking']) {
+  for (const needle of ['synthetic_run', 'events', 'override', 'continue', 'stale', 'Decision log', 'thinking', 'Milestone 2']) {
     assert.ok(md.toLowerCase().includes(needle.toLowerCase()), `report should mention "${needle}"`)
   }
+})
+
+// ---- milestone 2 (iron pickaxe + survive the first night) ------------------------------------------------------
+
+// A synthetic timeline sampled every 100s to t=1500: `step` reaches 8 (the iron-pickaxe step) at pickaxeStep8T,
+// `day` advances past day 0 at morningAtT (the "first morning" signal), and `death` events fall at deathTimes.
+function milestone2Log({ pickaxeStep8T = 200, morningAtT = 1200, deathTimes = [], meta = {} } = {}) {
+  const timeline = []
+  for (let t = 0; t <= 1500; t += 100) {
+    timeline.push({ t, step: t >= pickaxeStep8T ? 8 : 5, rawIron: 0, ingots: 0, health: 20, dead: false, timeOfDay: t % 24000, day: t >= morningAtT ? 1 : 0 })
+  }
+  const events = deathTimes.map(t => ({ t, kind: 'death', pos: { x: 0, y: 0, z: 0 } }))
+  return { meta: { minutes: 25, ...meta }, events, decisions: [], leader: [], timeline }
+}
+
+test('milestone2: passes when the pickaxe step is reached, morning is found, and no death precedes it', () => {
+  const m = milestone2(milestone2Log({ deathTimes: [1300] }))
+  assert.equal(m.pickaxe_t, 200)
+  assert.equal(m.first_morning_t, 1200)
+  assert.equal(m.deaths_before_morning, 0)
+  assert.equal(m.passed, true)
+})
+
+test('milestone2: fails on a death before the first morning', () => {
+  const m = milestone2(milestone2Log({ deathTimes: [900] }))
+  assert.equal(m.deaths_before_morning, 1)
+  assert.equal(m.passed, false)
+})
+
+test('milestone2: fails when no morning is ever observed, even with the pickaxe and no deaths', () => {
+  const json = milestone2Log({ morningAtT: 100000 })
+  const m = milestone2(json)
+  assert.equal(m.pickaxe_t, 200)
+  assert.equal(m.first_morning_t, null)
+  assert.equal(m.passed, false)
+})
+
+test('milestone2Line: renders the yes/no summary with pickaxe time and death count', () => {
+  const line = milestone2Line(milestone2Log({ deathTimes: [1300] }))
+  assert.equal(line, 'milestone 2: yes (iron pickaxe at 200s, deaths before first morning 0)')
+})
+
+test('summarizeLeaderLog: exposes milestone2 on the summary', () => {
+  const s = summarizeLeaderLog(milestone2Log({ deathTimes: [900] }))
+  assert.equal(s.milestone2.passed, false)
+  assert.equal(s.milestone2.deaths_before_morning, 1)
+})
+
+test('renderComparisonLine: the one-line comparison-block format', () => {
+  const json = milestone2Log({ deathTimes: [1300], meta: { stage_reached: 1, stage_times: { 1: 200 }, deaths: 1 } })
+  const line = renderComparisonLine(json, 'r2_kev_s3000')
+  assert.equal(line, 'r2_kev_s3000: stage 1/5 (stage 1 @ 200.0s), deaths 1, milestone 2: yes (iron pickaxe at 200s, deaths before first morning 0)')
+})
+
+test('renderHeaderTable: a log with no leader shows "leader mode | off"', () => {
+  const json = milestone2Log()
+  const s = summarizeLeaderLog(json)
+  assert.equal(s.header.mode, null)
+  const table = renderHeaderTable(s, 'r2_kev_s3000')
+  assert.match(table, /\| leader mode \| off \|/)
 })
