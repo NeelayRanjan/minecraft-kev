@@ -79,7 +79,23 @@ export function recentFailure(id, recentResults) {
 export const GOAL_ACTIONS = ['push_goal', 'pop_goal', 'cannot']
 const goalText = ({ kind, arg, count } = {}) => `${kind}${arg != null || count != null ? `(${[arg, count].filter(x => x != null).join(', ')})` : ''}`
 
-export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [], goalsEnabled = false }) {
+// The snapshot of a leader call: which subtask the answer will be judged against. A call fired by an interrupt, or while
+// the motor is ending an interrupted run (Motor.run keeps current for ~150 ms), or while it runs wait (3 s, shorter
+// than the leader's median latency) is judged like an idle ask: against the subtask kev starts next (bindNext, bound in
+// the runner's startSubtask, which never binds to wait). Otherwise against the running subtask.
+export const TRANSPARENT = new Set(['wait'])
+export function snapshotFor({ event = null, currentId = null, busy = false, interrupted = false } = {}) {
+  if (!busy || interrupted || event === 'interrupt' || currentId == null || TRANSPARENT.has(currentId)) return { currentId: null, bindNext: true }
+  return { currentId, bindNext: false }
+}
+// The askedCurrentId applyAnswer compares with at answer time: a snapshot still unbound (kev has only been idle or
+// waiting since) accepts an idle or waiting motor as the situation it was asked about.
+export function askedIdFor(snap, currentId) {
+  if (snap?.bindNext && (currentId == null || TRANSPARENT.has(currentId))) return currentId ?? null
+  return snap?.currentId ?? null
+}
+
+export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [], goalsEnabled = false, obs = null }) {
   const action = answer?.action ?? null
   if (!action) return { kind: 'invalid', id: null }
   if (goalsEnabled && GOAL_ACTIONS.includes(action)) {
@@ -88,9 +104,9 @@ export function applyAnswer({ answer, currentId, askedCurrentId, offered, threat
     const raw = answer.goal
     if (!raw || typeof raw !== 'object') return { kind: 'invalid', id: action, reason: 'push_goal without a goal' }
     const goal = { kind: raw.kind ?? null, arg: raw.arg == null || raw.arg === '' ? null : raw.arg, count: raw.count ?? null }
-    const v = validateGoal(goal)
+    const v = validateGoal(goal, obs)
     if (!v.ok) return { kind: 'invalid', id: action, reason: `${goalText(goal)}: ${v.reason}` }
-    return { kind: 'push_goal', id: null, goal, why }
+    return { kind: 'push_goal', id: null, goal: v.goal ?? goal, why, ...(v.note ? { note: v.note } : {}) }
   }
   if ((currentId ?? null) !== (askedCurrentId ?? null)) return { kind: 'stale', id: null }
   if (action === 'continue' || action === currentId) return { kind: 'continue', id: null }
@@ -274,8 +290,8 @@ export class RequestBook {
   add({ t, name, text }) { const r = { id: this.nextId++, t, name, text, shown: 0, answered: null }; this.all.push(r); return r }
   pending() { return this.all.filter(r => !r.answered) }
   unshown() { return this.all.filter(r => !r.answered && r.shown === 0) }
-  // a leader call was made with these requests in its prompt
-  shown(ids) { for (const r of this.all) if (ids.includes(r.id) && !r.answered) r.shown++ }
+  // a leader call was made with these requests in its prompt: only the first MAX_REQUESTS are rendered, so only those count
+  shown(ids) { const put = ids.slice(0, MAX_REQUESTS); for (const r of this.all) if (put.includes(r.id) && !r.answered) r.shown++; return put }
   // that call's outcome: answers them (goal kinds) or, after maxShown calls without an answer, settles them as not_now
   settle(ids, kind, t = null) {
     const mine = this.all.filter(r => ids.includes(r.id) && !r.answered)
@@ -284,6 +300,34 @@ export class RequestBook {
     for (const r of notNow) r.answered = { t, kind: 'not_now', after: kind }
     return notNow
   }
+}
+
+// The bot's chat lines, paced (pure; the runner drains it on a timer and sends). A non-op that sends ~11 lines in a
+// burst is kicked for spam, which ends the episode: at most one line every intervalS, a line identical to one queued or
+// sent within dupS is dropped, a kind with a gap (not_now: one per 10 s) is dropped inside it, and the queue is bounded.
+export class ChatQueue {
+  constructor({ intervalS = 1.5, dupS = 10, kindGapS = { not_now: 10 }, max = 10 } = {}) {
+    this.intervalS = intervalS; this.dupS = dupS; this.kindGapS = kindGapS; this.max = max
+    this.q = []; this.lastSent = -Infinity; this.seen = new Map(); this.kindT = new Map(); this.dropped = 0
+  }
+  enqueue(text, t, kind = null) {
+    const prev = this.seen.get(text)
+    const gap = kind ? this.kindGapS[kind] : null
+    if ((prev != null && t - prev < this.dupS) || (gap != null && this.kindT.has(kind) && t - this.kindT.get(kind) < gap) || this.q.length >= this.max) {
+      this.dropped++; return false
+    }
+    this.seen.set(text, t)
+    if (gap != null) this.kindT.set(kind, t)
+    this.q.push(text)
+    return true
+  }
+  // the line to send now, or null
+  drain(t) {
+    if (!this.q.length || t - this.lastSent < this.intervalS) return null
+    this.lastSent = t
+    return this.q.shift()
+  }
+  get size() { return this.q.length }
 }
 
 // The GOAL STACK section's input from a GoalStack: its describe text and the pushed goals, top first, with progress.
@@ -303,7 +347,7 @@ function renderGoalStack(view) {
   return out
 }
 
-const MAX_REQUESTS = 5
+export const MAX_REQUESTS = 5
 function renderRequests(requests = []) {
   if (!requests.length) return ['(none)']
   const out = requests.slice(0, MAX_REQUESTS).map(r => `${T(r.t)} ${sanitizeChat(r.name, 40)}: ${sanitizeChat(r.text)}`)

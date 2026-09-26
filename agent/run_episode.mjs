@@ -26,9 +26,10 @@ import { EpisodeLog, oneHot, fromKev } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
-import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook } from './leader.js'
+import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
+  snapshotFor, askedIdFor, TRANSPARENT } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
-import { GoalStack } from './goals.js'
+import { GoalStack, nightBlocksGoal } from './goals.js'
 import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
 
 // ---- args ------------------------------------------------------------------------------------------------------
@@ -81,6 +82,7 @@ const shutdown = async (why, code) => {
   finished = true
   log(`shutdown: ${why}`)
   try { clearInterval(loop) } catch {}
+  try { clearInterval(chatTimer) } catch {}
   if (!wrote) { try { elog?.finish({ end_reason: `crash: ${why}`.slice(0, 120), ended_t: now?.() ?? null, ...(() => { try { return stageMeta() } catch { return {} } })() }); fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(elog.toJSON())); wrote = true } catch {} }
   try { if (recorder) await recorder.stop() } catch {}
   try { bot.viewer?.close?.() } catch {}
@@ -103,6 +105,8 @@ const me = bot.username
 // Server commands go to the console when we own the server (works for any bot name); chat needs the bot to be an op.
 const command = c => { if (server) server.proc.stdin.write(c + '\n'); else bot.chat('/' + c) }
 for (const c of ['time set 0', `difficulty ${difficulty}`, 'gamerule doDaylightCycle true', 'gamerule keepInventory false', 'gamerule doImmediateRespawn true', 'weather clear']) command(c)
+// Ops are exempt from the chat spam kick (a burst of replies would otherwise end the episode); the console accepts it.
+command(`op ${me}`)
 await bot.waitForTicks(20)
 const mcData = mcDataFor(bot.version)
 const mem = new EpisodeMemory()
@@ -111,6 +115,7 @@ const elog = new EpisodeLog({ seed, policy, goal, eps_action: epsAction, minutes
   difficulty, horizons: HORIZONS, questions: questionMeta(), started: new Date().toISOString(), video: video ? { file: `${name}.mp4`, fps } : null,
   supervisor: supMode === 'off' ? null : { mode: supMode, threshold: supThreshold, hold_s: supHold, cooldown_s: supervisor.cooldownS, pool: supPoolFile, pool_n: supervisor.pool?.length ?? null },
   leader: leaderTrigger ? { mode: leaderMode, think: leaderThink, model: leaderModel, url: leaderUrl, num_predict: leaderNumPredict ? Number(leaderNumPredict) : null } : null })
+elog.event({ t: 0, kind: 'op_granted', name: me, via: server ? 'console' : 'chat' })
 let recorder = null
 if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
 // The live view (--live-view <port>): prismarine-viewer's browser web viewer, separate from the recorder above (which
@@ -141,7 +146,15 @@ const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
 // leader's prompt and the log.
 const requestBook = new RequestBook()
 const goalLog = []   // pushed goals: {id, kind, arg, count, source, t, why, end_t, outcome}
-const say = msg => { try { bot.chat(sanitizeChat(msg, 240)) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
+// The bot's chat lines go through a paced queue (agent/leader.js ChatQueue): one line per 1.5 s, duplicates within 10 s
+// and more than one "not now" per 10 s dropped.
+const chatQueue = new ChatQueue()
+const say = (msg, kind = null) => chatQueue.enqueue(sanitizeChat(msg, 240), now(), kind)
+const chatTimer = setInterval(() => {
+  if (finished) return
+  const line = chatQueue.drain(now())
+  if (line) { try { bot.chat(line) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
+}, 250)
 const goalPhrase = g => {
   const h = x => String(x ?? '').replace(/_/g, ' ')
   switch (g.kind) {
@@ -181,7 +194,8 @@ function startSubtask(id, source, obs) {
   subtaskStartHealth = bot.health
   withhold = []; supervisor.onSubtaskStart(now())
   elog.event({ t: now(), kind: 'subtask_start', id, source })
-  if (leaderAsk && leaderAsk.bindNext) { leaderAsk.currentId = id; leaderAsk.bindNext = false }   // asked while idle: the leader judges this pick
+  // asked while idle (or at an interrupt, or during wait): the leader judges this pick; wait is transparent (shorter than the call)
+  if (leaderAsk && leaderAsk.bindNext && !TRANSPARENT.has(id)) { leaderAsk.currentId = id; leaderAsk.bindNext = false }
   motor.run(id, obs).then(r => {
     // A subtask the leader interrupted says nothing about whether it works: it stays out of the livelock breaker's
     // window and its repeat count (repeats 0), else three leader interrupts would withhold it from kev and the leader.
@@ -316,21 +330,23 @@ function leaderTick(obs, t) {
   let snap, ctx, first
   try {
     const opts = offeredFor(obs)
-    const currentId = motor.current?.id ?? null
+    // An interrupt call, an ending run or a wait binds to kev's next pick (I1: 58 of 76 interrupt calls in r3 were stale).
+    const { currentId, bindNext } = snapshotFor({ event: leaderTrigger.reason, currentId: motor.current?.id ?? null, busy: motor.busy, interrupted: motor.busy && !!motor.interrupted })
     const requests = goalsOn ? requestBook.pending() : []
-    snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts, threatNear: threatNearIn(obs), requests }
+    const shownReqs = requests.slice(0, MAX_REQUESTS)   // what the prompt renders; the rest wait unshown
+    snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext, offered: opts, threatNear: threatNearIn(obs), requests: shownReqs }
     leaderAsk = snap
     first = leaderCalls++ === 0
     const forecasts = Object.fromEntries(Object.entries(forecastHist).map(([q, h]) => [q, h[h.length - 1]]))
     ctx = {
       stateText: serialize(obs), chainText: describeChain(obs), need: needs(obs), options: opts,
-      current: motor.current ? { id: currentId, elapsedS: motor.elapsedS(), progress: motor.progress(), lastResult } : { id: null, lastResult },
+      current: currentId ? { id: currentId, elapsedS: motor.elapsedS(), progress: motor.progress(), lastResult } : { id: null, lastResult },
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
       ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
     }
-    requestBook.shown(requests.map(r => r.id))
+    requestBook.shown(shownReqs.map(r => r.id))
   } catch (e) {
     leaderAsk = null
     elog.event({ t, kind: 'leader_error', error: String(e?.message || e).slice(0, 200) }); log(`leader: snapshot failed: ${e?.message || e}`)
@@ -349,13 +365,16 @@ function leaderAnswered(snap, a, err) {
   const currentId = motor.current?.id ?? null
   // Guards: a hostile near when asked or now (either blocks leaving a threat response); the live subtask-result window.
   const threatNear = snap.threatNear || threatNearIn(lastObs)
-  let res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: snap.currentId, offered: snap.offered, threatNear, recentResults: recent, goalsEnabled: goalsOn })
+  let res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: askedIdFor(snap, currentId), offered: snap.offered, threatNear, recentResults: recent,
+    goalsEnabled: goalsOn, obs: lastObs })
+  // The night rule: gather, find and go_to(surface) at dusk/night on the surface wait for the morning (answered as cannot).
+  if (res.kind === 'push_goal' && nightBlocksGoal(res.goal, lastObs)) res = { kind: 'cannot', id: null, why: `${goalPhrase(res.goal)} has to wait until morning`, night: true, goal: res.goal }
   // Goal answers act on the stack here. The requests the call was shown are answered only by a goal-level answer.
   const reqs = snap.requests || []
   let pushed = null
   if (res.kind === 'push_goal') {
     const src = reqs.length ? `audience:${reqs[0].name}` : 'leader'
-    try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1) }) }
+    try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1), obs: lastObs }) }
     catch (e) { res = { kind: 'invalid', id: 'push_goal', reason: String(e?.message || e).slice(0, 160) } }
   } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
   // an invalid push is replied to below ("Can't do that yet"), so it answers the requests like cannot
@@ -377,7 +396,7 @@ function leaderAnswered(snap, a, err) {
     const g = { id: pushed.id, kind: pushed.kind, arg: pushed.arg, count: pushed.count, source: pushed.source }
     elog.event({ t, kind: 'goal_pushed', goal: g, why: a.why ?? null })
     goalLog.push({ ...g, t: +t.toFixed(1), why: a.why ?? null, end_t: null, outcome: null })
-    say(`On it: ${goalPhrase(g)}${whyTail(a.why) || '.'}`)
+    say(`On it: ${goalPhrase(g)}${res.note ? ` (${sanitizeChat(res.note, 60)})` : ''}${whyTail(a.why) || '.'}`)
   } else if (res.kind === 'pop_goal') {
     const g = goalStack.top(), popped = { id: g.id, kind: g.kind, arg: g.arg, count: g.count, source: g.source }
     goalStack.pop('leader')
@@ -385,8 +404,8 @@ function leaderAnswered(snap, a, err) {
     closeGoal(popped.id, t, 'popped')
     say(`Dropping that${whyTail(a.why) || '.'}`)
   } else if (res.kind === 'cannot') {
-    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why: a.why ?? null })
-    say(`Can't do that yet${whyTail(a.why) || '.'}`)
+    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why: res.night ? res.why : a.why ?? null, ...(res.night ? { reason: 'night', goal: res.goal } : {}) })
+    say(res.night ? `Not until morning: ${goalPhrase(res.goal)} would mean working on the surface at night.` : `Can't do that yet${whyTail(a.why) || '.'}`)
   } else {
     elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
     // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
@@ -395,7 +414,9 @@ function leaderAnswered(snap, a, err) {
   if (notNow.length) {   // shown to two calls that did not answer them: tell the players the bot is busy
     let busy = 'the current goal'
     try { if (lastObs) busy = goalStack.step(lastObs).text || busy } catch {}
-    for (const r of notNow) { elog.event({ t, kind: 'request_not_now', name: r.name, request_t: r.t, after: settleAs }); say(`Not now, ${r.name}: busy with ${busy}`) }
+    for (const r of notNow) elog.event({ t, kind: 'request_not_now', name: r.name, request_t: r.t, after: settleAs })
+    const names = [...new Set(notNow.map(r => r.name))].join(', ')
+    say(`Not now, ${names}: busy with ${busy}`, 'not_now')   // one line for all of them, at most one per 10 s
   }
   log(`leader (${snap.event}, ${a?.latency_ms ?? '-'} ms): ${res.kind}${res.id ? ` -> ${res.id}` : ''}${res.reason ? ` [${res.reason}]` : ''}${a?.why ? ` (${a.why})` : ''}${err ? ` error: ${err.message}` : ''}`)
 }

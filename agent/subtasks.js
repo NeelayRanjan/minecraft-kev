@@ -227,7 +227,8 @@ export function options(obs) {
   if (c.blocks >= 1 && canDigIn && (isNight(obs) || shelterSoon(obs))) add('build_shelter')
   if (chainMode) addChain(obs, out, c)
   add('wait')
-  // Low on air (both modes; oxygen defaults to 20): only the ways out of the water, the threat responses and eat.
+  // Low on air (both modes; oxygen defaults to 20): only the ways out of the water (wait swims to shore,
+  // explore_toward(surface)) and the threat responses; not eat (eating while drowning would be interrupted at once).
   if ((obs.oxygen ?? 20) <= LOW_AIR) for (let i = out.length - 1; i >= 0; i--) if (!LOW_AIR_OPTIONS.has(out[i].name) && out[i].id !== 'explore_toward(surface)') out.splice(i, 1)
   const stuck = stuckOn(obs)
   for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)   // a subtask the supervisor just abandoned (agent/supervisor.js)

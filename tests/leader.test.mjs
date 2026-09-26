@@ -482,3 +482,59 @@ test('the llm policy history reads GOAL REACHED only for the episode goal, not a
   assert.equal((user.match(/GOAL REACHED/g) || []).length, 1)
   assert.match(user, /t=9s GOAL REACHED/)
 })
+
+// ---- final review fixes: snapshots bind interrupt and wait asks to the next pick (I1); chat pacing (I3) -------------
+import { snapshotFor, askedIdFor, ChatQueue, MAX_REQUESTS } from '../agent/leader.js'
+
+test('snapshotFor: interrupt calls, ending runs and wait bind to the next decision; a running subtask is judged as is', () => {
+  assert.deepEqual(snapshotFor({ event: 'interrupt', currentId: 'mine_iron', busy: true }), { currentId: null, bindNext: true })
+  assert.deepEqual(snapshotFor({ event: 'periodic', currentId: 'mine_iron', busy: true, interrupted: true }), { currentId: null, bindNext: true })
+  assert.deepEqual(snapshotFor({ event: 'periodic', currentId: 'wait', busy: true }), { currentId: null, bindNext: true })
+  assert.deepEqual(snapshotFor({ event: 'subtask_failed', currentId: null, busy: false }), { currentId: null, bindNext: true })
+  assert.deepEqual(snapshotFor({ event: 'periodic', currentId: 'mine_iron', busy: true }), { currentId: 'mine_iron', bindNext: false })
+})
+
+test('an answer 3 s after an interrupt applies to the next decision (r3: 58 of 76 interrupt calls were stale)', () => {
+  const opts = [{ id: 'flee(threat)' }, { id: 'mine_iron' }, { id: 'return_to_base' }, { id: 'wait' }]
+  // asked at the interrupt of mine_iron; kev then started return_to_base (startSubtask binds it)
+  const snap = { ...snapshotFor({ event: 'interrupt', currentId: 'mine_iron', busy: true }) }
+  snap.currentId = 'return_to_base'; snap.bindNext = false
+  assert.equal(applyAnswer({ answer: { action: 'mine_iron' }, currentId: 'return_to_base', askedCurrentId: askedIdFor(snap, 'return_to_base'), offered: opts }).kind, 'override')
+  // the old snapshot (currentId = the torn-down subtask) was stale by construction
+  assert.equal(applyAnswer({ answer: { action: 'mine_iron' }, currentId: 'return_to_base', askedCurrentId: 'mine_iron', offered: opts }).kind, 'stale')
+  // still unbound (kev idled or ran wait since): the answer applies to the next pick
+  const idle = snapshotFor({ event: 'interrupt', currentId: 'mine_iron', busy: true })
+  for (const cur of [null, 'wait'])
+    assert.equal(applyAnswer({ answer: { action: 'return_to_base' }, currentId: cur, askedCurrentId: askedIdFor(idle, cur), offered: opts }).kind, 'override', String(cur))
+  assert.equal(askedIdFor({ currentId: 'mine_iron', bindNext: false }, 'wait'), 'mine_iron', 'a bound snapshot keeps its subtask')
+})
+
+test('RequestBook.shown marks only the requests the prompt renders (cap MAX_REQUESTS)', () => {
+  const b = new RequestBook()
+  const rs = Array.from({ length: 8 }, (_, i) => b.add({ t: i, name: `p${i}`, text: 'x' }))
+  assert.equal(MAX_REQUESTS, 5)
+  assert.deepEqual(b.shown(rs.map(r => r.id)), rs.slice(0, 5).map(r => r.id))
+  b.shown(rs.map(r => r.id))
+  assert.deepEqual(rs.map(r => r.shown), [2, 2, 2, 2, 2, 0, 0, 0])
+  assert.deepEqual(b.settle(rs.map(r => r.id), 'continue', 9).map(r => r.name), ['p0', 'p1', 'p2', 'p3', 'p4'])
+  assert.deepEqual(b.unshown().map(r => r.name), ['p5', 'p6', 'p7'])
+})
+
+test('ChatQueue: one line per 1.5 s, duplicates within 10 s dropped, one not_now per 10 s, bounded', () => {
+  const q = new ChatQueue()
+  assert.equal(q.enqueue('a', 0), true); assert.equal(q.enqueue('b', 0), true); assert.equal(q.enqueue('c', 0.1), true)
+  assert.equal(q.enqueue('a', 5), false, 'duplicate within 10 s')
+  assert.equal(q.drain(0), 'a'); assert.equal(q.drain(1), null); assert.equal(q.drain(1.5), 'b'); assert.equal(q.drain(2.9), null); assert.equal(q.drain(3), 'c')
+  assert.equal(q.drain(10), null, 'empty')
+  assert.equal(q.enqueue('a', 10.5), true, 'after 10 s the same line is allowed again')
+  assert.equal(q.enqueue('Not now, x: busy', 11, 'not_now'), true)
+  assert.equal(q.enqueue('Not now, y: busy', 15, 'not_now'), false, 'a second not_now within 10 s')
+  assert.equal(q.enqueue('Not now, y: busy', 21, 'not_now'), true)
+  // a burst of 20 distinct lines: at most 10 kept, and draining at 4 Hz for 10 s sends at most 7 (one per 1.5 s)
+  const b = new ChatQueue()
+  for (let i = 0; i < 20; i++) b.enqueue(`line ${i}`, 0)
+  assert.equal(b.size, 10)
+  let sent = 0
+  for (let t = 0; t < 10; t += 0.25) if (b.drain(t)) sent++
+  assert.equal(sent, 7)
+})

@@ -225,3 +225,76 @@ test('survive_night pushed by day is done at once; by night it waits for morning
   assert.equal(s.update(chain({ phase: 'night' }), 5000).length, 0)   // no stuck rule
   assert.equal(s.update(chain({ phase: 'morning' }), 5001)[0].kind, 'goal_done')
 })
+
+// ---- final review fixes: clamps, stage gates, the night rule (I2) and the go_to filters (M-c) -----------------------
+import { nightBlocksGoal, nightPaused, GATHER_CAPS } from '../agent/goals.js'
+
+test('validateGoal clamps gather counts to the option layer caps and says so', () => {
+  assert.deepEqual(GATHER_CAPS, { log: 12, cobblestone: 32, obsidian: 10 })
+  for (const [arg, n, cap] of [['log', 20, 12], ['birch_log', 64, 12], ['cobblestone', 40, 32], ['obsidian', 14, 10]]) {
+    const v = validateGoal({ kind: 'gather', arg, count: n })
+    assert.equal(v.ok, true)
+    assert.deepEqual(v.goal, { kind: 'gather', arg, count: cap })
+    assert.match(v.note, new RegExp(`capped at ${cap}`))
+  }
+  assert.deepEqual(validateGoal({ kind: 'gather', arg: 'log', count: 12 }), { ok: true })   // at the cap: unchanged
+  assert.deepEqual(validateGoal({ kind: 'gather', arg: 'coal', count: 64 }), { ok: true })  // no cap
+  const s = new GoalStack({ goal: 'nether' })
+  assert.equal(s.push({ kind: 'gather', arg: 'cobblestone', count: 64, source: 'leader', t: 0 }).count, 32)
+})
+
+test('validateGoal stage gates (with obs): flint at stage 4 only, diamonds from stage 3 (after the iron pickaxe)', () => {
+  const st0 = chain({}), st1 = chain({ inventory: { iron_pickaxe: 1 } })
+  const st3 = chain({ inventory: ironKit, armor: armorKit })
+  const st4 = chain({ inventory: allTools, armor: armorKit })
+  for (const goal of [{ kind: 'gather', arg: 'diamond', count: 3 }, { kind: 'go_to', arg: 'diamond_level' }, { kind: 'find', arg: 'diamond_ore' }]) {
+    const r0 = validateGoal(goal, st0)
+    assert.equal(r0.ok, false, JSON.stringify(goal)); assert.equal(r0.reason, 'needs an iron pickaxe first')
+    assert.equal(validateGoal(goal, st1).ok, false); assert.match(validateGoal(goal, st1).reason, /armor first/)
+    assert.equal(validateGoal(goal, st3).ok, true)
+    assert.equal(validateGoal(goal).ok, true, 'without obs the gates are not checked')
+  }
+  assert.equal(validateGoal({ kind: 'gather', arg: 'flint', count: 1 }, st3).ok, false)
+  assert.equal(typeof validateGoal({ kind: 'gather', arg: 'flint', count: 1 }, st3).reason, 'string')
+  assert.equal(validateGoal({ kind: 'gather', arg: 'flint', count: 1 }, st4).ok, true)
+  assert.throws(() => new GoalStack({ goal: 'nether' }).push({ kind: 'go_to', arg: 'diamond_level', t: 0, obs: st0 }))
+})
+
+test('night rule for pushes: gather, find and go_to(surface) at dusk/night on the surface wait for morning', () => {
+  const night = chain({ phase: 'night' }), dusk = chain({ phase: 'dusk' }), below = chain({ phase: 'night', underground: true }), day = chain({})
+  for (const g of [{ kind: 'gather', arg: 'log', count: 1 }, { kind: 'find', arg: 'water' }, { kind: 'go_to', arg: 'surface' }]) {
+    assert.equal(nightBlocksGoal(g, night), true); assert.equal(nightBlocksGoal(g, dusk), true)
+    assert.equal(nightBlocksGoal(g, below), false); assert.equal(nightBlocksGoal(g, day), false)
+  }
+  for (const g of [{ kind: 'go_to', arg: 'base' }, { kind: 'survive_night' }, { kind: 'craft_item', arg: 'planks' }]) assert.equal(nightBlocksGoal(g, night), false)
+})
+
+test('night rule for the stuck clock: paused while the night protocol withholds every producer (r3 gather(log, 1))', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'gather', arg: 'log', count: 1, source: 'audience:bob', t: 0 })
+  // r3: night on the surface, a table 31 m away, a tree in sight: gather_wood withheld, [return_to_base, wait] offered
+  const night = chain({ phase: 'night', blocks: logs, base: { crafting_table: { dist: 31 }, furnace: null } })
+  assert.deepEqual(s.filter(night, options(night)).map(o => o.id).sort(), ['return_to_base', 'wait'])
+  assert.equal(nightPaused(night, s.filter(night, options(night))), true)
+  assert.deepEqual(s.update(night, 0), [])
+  assert.deepEqual(s.update(night, 1000), [])   // the whole night: no stuck pop
+  const morning = chain({ phase: 'morning', base: { crafting_table: { dist: 31 }, furnace: null } })   // no tree in sight
+  assert.deepEqual(s.update(morning, 1010), [])
+  assert.deepEqual(s.update(morning, 1290), [])
+  assert.equal(s.update(morning, 1300)[0]?.reason, 'stuck', 'the clock runs again by day: 300 s after the last night tick')
+  // by day a producer is offered: never paused
+  const day = chain({ blocks: logs })
+  assert.equal(nightPaused(day, s.filter(day, options(day))), false)
+})
+
+test('go_to filters keep the night refuges on the surface at night and the surface climb under low air (M-c)', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'go_to', arg: 'diamond_level', t: 0 })
+  const night = chain({ inventory: { ...ironKit, cobblestone: 5 }, armor: armorKit, phase: 'night', base: { crafting_table: { dist: 40 }, furnace: null } })
+  const ids = s.filter(night, options(night)).map(o => o.id)
+  assert.ok(ids.includes('explore_toward(down)') && ids.includes('return_to_base') && ids.includes('build_shelter'), ids.join(' '))
+  const wet = chain({ inventory: ironKit, armor: armorKit, inWater: true, oxygen: 6 })
+  assert.deepEqual(s.filter(wet, options(wet)).map(o => o.id).sort(), ['explore_toward(surface)', 'wait'])
+  // the find(diamond_ore) teacher stays on explore_toward(deep) at diamond level (M-b)
+  assert.equal(GOAL_KINDS.find.teacher(chain({ pos: deep }), 'diamond_ore'), 'explore_toward(deep)')
+})

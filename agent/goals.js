@@ -8,7 +8,7 @@
 import { stageOf, chainStep, describeChain, INGOTS, DIAMONDS, STICKS } from './stages.js'
 import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
-  isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
+  NIGHT_REFUGES, LOW_AIR, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 
 // Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
 // args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
@@ -195,15 +195,19 @@ export const GOAL_KINDS = {
     done: (obs, block) => seen(obs, FIND_MATCH[block] || (n => n === block), FIND_RANGE),
     filter: (obs, block, opts) => keepOnly(opts, new Set(['mine_stone', ...opts.map(o => o.id).filter(isMove)])),
     step: (obs, block) => GOAL_KINDS.find.done(obs, block) ? { index: 2, of: 1, text: `${humanize(block)} found` } : { index: 1, of: 1, text: `find ${humanize(block)}` },
-    teacher: (obs, block) => block === 'diamond_ore' ? (obs.pos.y > DIAMOND_LEVEL_Y ? 'explore_toward(deep)' : 'explore_toward(surface)')
+    // diamond ore: explore_toward(deep) digs down and, at diamond level, tunnels along it (never back to the surface)
+    teacher: (obs, block) => block === 'diamond_ore' ? 'explore_toward(deep)'
       : block === 'iron_ore' || block === 'coal_ore' || block === 'lava' ? 'explore_toward(down)' : 'explore_toward(surface)',
     describe: (obs, block) => `find ${humanize(block)}`,
     stuckS: 480,
   },
   go_to: {
     done: (obs, place) => place === 'base' ? nearBase(obs) : place === 'surface' ? !obs.underground : (obs.pos?.y ?? 0) <= DIAMOND_LEVEL_Y,
+    // The night refuges stay at dusk/night on the surface (options() withholds the surface work because one is offered)
+    // and explore_toward(surface) stays under low air (it is the way out of the water): never only wait.
     filter: (obs, place, opts) => keepOnly(opts, new Set(place === 'base' ? opts.map(o => o.id).filter(isMove)
-      : place === 'surface' ? ['explore_toward(surface)'] : ['explore_toward(deep)', 'explore_toward(down)'])),
+      : [...(place === 'surface' ? ['explore_toward(surface)'] : ['explore_toward(deep)', 'explore_toward(down)']),
+        ...(nightOnSurface(obs) ? NIGHT_REFUGES : []), ...((obs.oxygen ?? 20) <= LOW_AIR ? ['explore_toward(surface)'] : [])])),
     step: (obs, place) => {
       if (place === 'base') return baseStep(obs, 'go to base')
       if (place === 'surface') return obs.underground ? { index: 1, of: 1, text: 'go to the surface' } : { index: 2, of: 1, text: 'on the surface' }
@@ -251,15 +255,33 @@ export const GOAL_KINDS = {
 const stuckOf = (k, g) => typeof GOAL_KINDS[k].stuckS === 'function' ? GOAL_KINDS[k].stuckS(g.arg, g.count) : GOAL_KINDS[k].stuckS
 const DEFAULTS = new Set(['chain', 'iron_pickaxe'])
 
-export function validateGoal({ kind, arg, count } = {}) {
+// The option layer's gathering caps (agent/subtasks.js options()): a gather goal above them could never finish, so
+// its count is clamped. Logs count as log-equivalents there (woodEq < 12).
+export const GATHER_CAPS = { log: 12, cobblestone: 32, obsidian: 10 }
+const capOf = item => item === 'log' || item.endsWith('_log') ? GATHER_CAPS.log : GATHER_CAPS[item] ?? null
+// Stage gates (chain stage index, agent/stages.js): mine_gravel is offered only at stage 4 and explore_toward(deep) /
+// mine_diamond only from stage 3, so goals that need them are refused earlier (with obs; without obs, not checked).
+const DIAMOND_GOAL = (kind, arg) => (kind === 'gather' && arg === 'diamond') || (kind === 'go_to' && arg === 'diamond_level')
+  || (kind === 'find' && arg === 'diamond_ore')
+
+// {ok: true} | {ok: true, goal, note} (the goal clamped; note says why, for the chat reply) | {ok: false, reason}
+// (reason phrased for the audience). obs (optional) enables the stage gates.
+export function validateGoal({ kind, arg, count } = {}, obs = null) {
   if (!GOAL_KINDS[kind]) return { ok: false, reason: `unknown goal kind ${kind}` }
   if (DEFAULTS.has(kind)) return { ok: false, reason: `${kind} is the default goal and cannot be pushed` }
+  const stage = obs ? stageOf(obs).index : null
+  if (stage != null && DIAMOND_GOAL(kind, arg) && stage < 3)
+    return { ok: false, reason: obs.inventory?.iron_pickaxe ? 'needs iron tools and full iron armor first' : 'needs an iron pickaxe first' }
   switch (kind) {
     case 'craft_item': return RECIPES[arg] ? { ok: true } : { ok: false, reason: `cannot craft ${arg}` }
-    case 'gather':
+    case 'gather': {
       if (!PRODUCERS[arg]) return { ok: false, reason: `cannot gather ${arg}` }
       if (!Number.isInteger(count) || count < 1 || count > 64) return { ok: false, reason: 'count must be an integer from 1 to 64' }
+      if (arg === 'flint' && stage != null && stage < 4) return { ok: false, reason: 'flint comes later, when the bot builds the portal' }
+      const cap = capOf(arg)
+      if (cap != null && count > cap) return { ok: true, goal: { kind, arg, count: cap }, note: `capped at ${cap} ${humanize(arg)}` }
       return { ok: true }
+    }
     case 'find':
       if (FINDABLE_NOW.includes(arg)) return { ok: true }
       return { ok: false, reason: DECLARED_FINDABLE.includes(arg) ? 'no detector yet' : `cannot find ${arg}` }
@@ -269,6 +291,22 @@ export function validateGoal({ kind, arg, count } = {}) {
     case 'go_to': return PLACES.includes(arg) ? { ok: true } : { ok: false, reason: `cannot go to ${arg}` }
     default: return { ok: true }   // survive_night, return_to_base: no argument
   }
+}
+
+// The night rule for pushes: gather, find and go_to(surface) at dusk or night on the surface would send the bot into
+// the night protocol's withheld work; the runner answers them as cannot ("until morning") instead of pushing.
+export const isDuskOrNight = obs => obs?.phase === 'dusk' || obs?.phase === 'night'
+export function nightBlocksGoal({ kind, arg } = {}, obs) {
+  if (!obs || !isDuskOrNight(obs) || obs.underground) return false
+  return kind === 'gather' || kind === 'find' || (kind === 'go_to' && arg === 'surface')
+}
+
+// The stuck clock pauses at dusk/night on the surface while the filtered list offers no producer of the top goal:
+// nothing but the always-kept options and the night refuges (the night protocol withheld the work).
+export function nightPaused(obs, filtered) {
+  if (!isDuskOrNight(obs) || obs.underground) return false
+  const refuge = new Set(NIGHT_REFUGES)
+  return !filtered.some(o => !ALWAYS.has(o.id) && !refuge.has(o.id))
 }
 
 const sourceText = src => !src ? 'Goal' : src === 'leader' ? 'Goal from the leader'
@@ -284,10 +322,11 @@ export class GoalStack {
   }
   top() { return this.stack[this.stack.length - 1] }
   depth() { return this.stack.length - 1 }
-  push({ kind, arg = null, count = null, source = 'leader', t = null }) {
-    const v = validateGoal({ kind, arg, count })
+  push({ kind, arg = null, count = null, source = 'leader', t = null, obs = null }) {
+    const v = validateGoal({ kind, arg, count }, obs)
     if (!v.ok) throw new Error(`invalid goal ${kind}(${arg ?? ''}): ${v.reason}`)
-    const g = { kind, arg, count, source, id: this.nextId++, t, best: null, progressT: t }
+    if (v.goal) count = v.goal.count   // clamped
+    const g = { kind, arg, count, source, id: this.nextId++, t, best: null, progressT: t, lastT: t }
     this.stack.push(g)
     return g
   }
@@ -308,7 +347,8 @@ export class GoalStack {
       if (g.best == null || s > g.best || g.progressT == null) {
         if (g.best == null || s > g.best) g.best = s
         g.progressT = t
-      }
+      } else if (g.lastT != null && nightPaused(obs, K.filter(obs, g.arg, options(obs), g.count))) g.progressT += t - g.lastT   // the night rule: the clock stands still
+      g.lastT = t
       if (t - g.progressT >= stuckOf(g.kind, g)) { this.pop('stuck'); events.push({ kind: 'goal_failed', goal: pub(g), t, reason: 'stuck' }); continue }
       break
     }
