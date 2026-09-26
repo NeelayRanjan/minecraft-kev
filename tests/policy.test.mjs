@@ -36,3 +36,17 @@ test('interrupts: a new hostile within 16 m, unless already fighting or fleeing;
   assert.equal(interruptFor({ hostileDist: null, prevHostileDist: null, current: cur('gather_wood'), healthDrop: 0, dead: true }), 'died')
   assert.equal(interruptFor({ hostileDist: 10, prevHostileDist: 30, current: null, healthDrop: 0, dead: false }), null)
 })
+
+test('drowning: air at 10/20 or less interrupts once, never a threat response', () => {
+  const cur = name => ({ name })
+  const base = { hostileDist: null, prevHostileDist: null, healthDrop: 0, dead: false }
+  assert.equal(interruptFor({ ...base, oxygen: 8, current: cur('wait') }), 'drowning')
+  assert.equal(interruptFor({ ...base, oxygen: 10, prevOxygen: 11, current: cur('explore_toward') }), 'drowning')
+  assert.equal(interruptFor({ ...base, oxygen: 8, current: cur('flee') }), null)
+  assert.equal(interruptFor({ ...base, oxygen: 8, current: cur('fight') }), null)
+  assert.equal(interruptFor({ ...base, oxygen: 8, current: cur('pillar_up') }), null)
+  assert.equal(interruptFor({ ...base, oxygen: 7, prevOxygen: 8, current: cur('wait') }), null)   // already low: no repeat
+  assert.equal(interruptFor({ ...base, oxygen: 11, current: cur('wait') }), null)
+  assert.equal(interruptFor({ ...base, current: cur('wait') }), null)   // no oxygen reading: full air
+  assert.equal(interruptFor({ ...base, oxygen: 8, healthDrop: 5, current: cur('wait') }), 'took_damage')
+})

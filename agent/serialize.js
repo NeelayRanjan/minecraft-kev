@@ -110,7 +110,9 @@ export function serialize(obs) {
     const goal = step.index === 8 ? 'iron pickaxe done; survive until morning' : `get an iron pickaxe (step ${step.index} of 7: ${step.text})`
     first = `Minecraft survival, day ${(obs.day ?? 0) + 1}. Goal: ${goal}.`
   }
-  const where = obs.underground ? 'underground' : obs.inWater ? 'in water' : 'in the open'
+  // Underground used to hide "in water": the bot drowned in flooded tunnels with the text saying only "underground".
+  let where = obs.underground ? (obs.inWater ? 'underground, in water' : 'underground') : obs.inWater ? 'in water' : 'in the open'
+  if (obs.inWater && (obs.oxygen ?? 20) <= 10) where += ', running out of air'
   const lines = [
     first,
     describeTime(obs),

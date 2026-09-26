@@ -135,7 +135,7 @@ export function summarize(bot, mcData, mem, ctx) {
   return {
     t: ctx.t, day: Number(bot.time.day), timeOfDay: bot.time.timeOfDay, phase, secondsToDusk, secondsToMorning, weather,
     biome: biomeName(bot, mcData, me.floored()), pos: { x: me.x, y: me.y, z: me.z }, standingOn: below?.name || 'air',
-    skyLight, blockLight, underground: skyLight < 4, inWater: !!bot.entity.isInWater,
+    skyLight, blockLight, underground: skyLight < 4, inWater: !!bot.entity.isInWater, oxygen: bot.oxygenLevel ?? 20,
     health: bot.health ?? 20, food: bot.food ?? 20, inventory: inv, holding: bot.heldItem?.name || null, toolWear,
     base, memory: { ironSeen, diamondSeen: seenObs(me, mem.seen.diamond, ctx.t), lavaSeen: seenObs(me, mem.seen.lava, ctx.t), waterSeen: seenObs(me, mem.seen.water, ctx.t),
       lastPath: mem.lastPath, deaths: mem.deaths, heading: mem.heading, portal: portalBuild(bot, mem) },

@@ -57,6 +57,8 @@ function pick(obs) {
   const dig = () => c.hasPickaxe && obs.pos.y > 14 ? 'explore_toward(down)' : 'explore_toward(surface)'
   const stone = () => has(obs, isStone, 16) ? 'mine_stone' : dig()
   const ironSeen = has(obs, isIron, 32) || !!obs.memory?.ironSeen
+  // Drowning (any stage, before threats): climb/swim out; teacherSubtask falls back to wait, which floats and swims to shore.
+  if (obs.inWater && (obs.oxygen ?? 20) <= 10) return 'explore_toward(surface)'
   const th = teacherThreat(obs)
   if (th === 'fight') return 'fight(threat)'
   if (th === 'flee') return 'flee(threat)'

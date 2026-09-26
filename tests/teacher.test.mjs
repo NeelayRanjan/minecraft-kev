@@ -198,3 +198,13 @@ test('chain teacher, night on the surface with no refuge: keeps gathering instea
   assert.ok(!options(armed).some(x => x.id === 'gather_wood'))
   assert.ok(options(armed).some(x => x.id === 'build_shelter'))
 })
+
+test('drowning: in water with air at 10/20 or less, surface if offered, else wait', () => {
+  assert.equal(teacherSubtask(baseObs({ inWater: true, oxygen: 8, inventory: { oak_log: 1 } })), 'explore_toward(surface)')
+  // at night on the surface explore_toward(surface) is withheld (chain mode): wait, which floats and swims to shore
+  const night = baseObs({ goal: 'nether', phase: 'night', timeOfDay: 18000, inWater: true, oxygen: 6, inventory: { stone_pickaxe: 1 } })
+  assert.ok(!options(night).some(o => o.id === 'explore_toward(surface)'))
+  assert.equal(teacherSubtask(night), 'wait')
+  // enough air: the usual choice
+  assert.notEqual(teacherSubtask(baseObs({ inWater: true, oxygen: 18, blocks: [log] })), 'explore_toward(surface)')
+})

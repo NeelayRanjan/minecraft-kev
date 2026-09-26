@@ -138,3 +138,40 @@ test('fuelPlan: fuel for every raw iron, counting what already sits in the slot'
   // no fuel at all
   assert.equal(fuelPlan(3, inv({ stick: 4 }), null).smelt, 0)
 })
+
+import { isShore, dropBelow, dropAhead, isGravityBlock, SHORE_BLOCKS } from '../agent/motor.js'
+// blockAt with bounding boxes: anything unset is stone; air, water and lava are empty.
+const EMPTY = new Set(['air', 'cave_air', 'water', 'lava', 'seagrass', 'short_grass'])
+const world2 = cells => p => { const name = cells.get(`${p.x},${p.y},${p.z}`) || 'stone'; return { name, position: p, boundingBox: EMPTY.has(name) ? 'empty' : 'block' } }
+const col = (x, z, from, names) => names.map((n, i) => [`${x},${from - i},${z}`, n])
+
+test('isShore: a shore block with two passable cells above, not under water', () => {
+  const at = world2(new Map([...col(0, 0, 62, ['air', 'air', 'sand']), ...col(1, 0, 62, ['water', 'water', 'sand']), ...col(2, 0, 62, ['air', 'short_grass', 'grass_block']),
+    ...col(3, 0, 62, ['air', 'seagrass', 'sand']), ...col(4, 0, 62, ['air', 'air', 'glass'])]))
+  assert.equal(isShore(at, new Vec3(0, 60, 0)), true)
+  assert.equal(isShore(at, new Vec3(1, 60, 0)), false, 'sand under water')
+  assert.equal(isShore(at, new Vec3(2, 60, 0)), true, 'grass with a plant above is standable')
+  assert.equal(isShore(at, new Vec3(3, 60, 0)), false, 'seagrass above: under water')
+  assert.equal(isShore(at, new Vec3(4, 60, 0)), false, 'not a shore block')
+  assert.equal(isShore(() => null, new Vec3(0, 60, 0)), false)
+  assert.ok(SHORE_BLOCKS.includes('sand') && SHORE_BLOCKS.includes('stone'))
+})
+
+test('dropBelow / dropAhead: floor present, a hole, a deep drop, liquid under the step', () => {
+  const ahead = new Vec3(5, 20, 0)   // the down staircase stands on ahead-2 = (5, 18, 0)
+  assert.deepEqual(dropAhead(world2(new Map()), ahead), { drop: 0, liquid: null })
+  assert.deepEqual(dropAhead(world2(new Map([['5,18,0', 'air']])), ahead), { drop: 1, liquid: null })
+  assert.deepEqual(dropAhead(world2(new Map(col(5, 0, 18, ['air', 'cave_air', 'air']))), ahead), { drop: 3, liquid: null })
+  assert.deepEqual(dropAhead(world2(new Map(col(5, 0, 18, ['air', 'air', 'air', 'air', 'air']))), ahead), { drop: 4, liquid: null })
+  assert.deepEqual(dropAhead(world2(new Map(col(5, 0, 18, ['air', 'water']))), ahead), { drop: 1, liquid: 'water' })
+  assert.deepEqual(dropAhead(world2(new Map([['5,17,0', 'lava']])), ahead), { drop: 0, liquid: 'lava' }, 'solid floor over lava')
+  assert.deepEqual(dropAhead(() => null, ahead), { drop: 4, liquid: null }, 'unloaded: treated as a drop')
+  // the climb's step is the cell itself
+  assert.deepEqual(dropBelow(world2(new Map(col(5, 0, 20, ['air', 'air']))), ahead), { drop: 2, liquid: null })
+})
+
+test('isGravityBlock: sand, gravel, concrete powder', () => {
+  for (const n of ['sand', 'red_sand', 'gravel', 'white_concrete_powder']) assert.equal(isGravityBlock({ name: n }), true, n)
+  for (const n of ['stone', 'sandstone', 'dirt']) assert.equal(isGravityBlock({ name: n }), false, n)
+  assert.equal(isGravityBlock(null), false)
+})

@@ -10,7 +10,8 @@ export const TIMEOUTS = { gather_wood: 60, mine_stone: 45, mine_coal: 60, mine_i
   return_to_base: 60, eat: 10, build_shelter: 20, fight: 25, flee: 20, pillar_up: 10, wait: 3,
   mine_diamond: 120, mine_gravel: 60, mine_obsidian: 150, fill_bucket: 40, cast_obsidian: 60, build_portal: 90, light_portal: 20 }
 export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'failed', 'died']
-const INTERRUPT_RESULT = { threat: 'interrupted', took_damage: 'took_damage', died: 'died' }
+const INTERRUPT_RESULT = { threat: 'interrupted', took_damage: 'took_damage', died: 'died', drowning: 'interrupted' }
+const WAIT_IN_WATER_S = 12   // a wait that starts in water swims to shore (or floats) for this long instead of 3 s
 const IRON_Y = 16
 const DIAMOND_Y = -58
 const ARMOR_SLOT = { iron_helmet: 'head', iron_chestplate: 'torso', iron_leggings: 'legs', iron_boots: 'feet' }
@@ -30,6 +31,39 @@ export function liquidAround(blockAt, ahead) {
   }
   return null
 }
+
+// Standing blocks a bot in water swims to (motor.leaveWater). A shore cell is one of them with two passable cells above
+// (no water, lava or water plants): its top is above the water line.
+export const SHORE_BLOCKS = ['grass_block', 'sand', 'dirt', 'stone', 'gravel', 'coarse_dirt', 'podzol', 'red_sand', 'sandstone',
+  'granite', 'diorite', 'andesite', 'deepslate', 'cobblestone', 'clay', 'tuff']
+const WET = new Set(['water', 'lava', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column'])
+const passable = b => !!b && b.boundingBox === 'empty' && !WET.has(b.name)
+export function isShore(blockAt, pos, names = SHORE_BLOCKS) {
+  const b = blockAt(pos)
+  return !!b && names.includes(b.name) && passable(blockAt(pos.offset(0, 1, 0))) && passable(blockAt(pos.offset(0, 2, 0)))
+}
+
+// How far the bot would drop through `floor` (the cell it is about to stand on): drop 0 when floor is solid, else the
+// number of non-solid cells from floor down to the first solid one (max `max`; an unloaded cell counts as a drop).
+// liquid: the first water/lava met on the way (or, for a solid floor, water/lava right under it). Pure.
+export function dropBelow(blockAt, floor, max = 4) {
+  for (let drop = 0; drop < max; drop++) {
+    const b = blockAt(floor.offset(0, -drop, 0))
+    if (!b) return { drop: max, liquid: null }
+    if (b.name === 'water' || b.name === 'lava') return { drop, liquid: b.name }
+    if (b.boundingBox === 'block') {
+      if (drop > 0) return { drop, liquid: null }
+      const u = blockAt(floor.offset(0, -1, 0))
+      return { drop: 0, liquid: u && (u.name === 'water' || u.name === 'lava') ? u.name : null }
+    }
+  }
+  return { drop: max, liquid: null }
+}
+// The down staircase steps onto ahead-1, standing on ahead-2: its floor must be there (r2 runs: a staircase from a
+// beach opened into water and undercut ground).
+export const dropAhead = (blockAt, ahead) => dropBelow(blockAt, ahead.offset(0, -2, 0))
+const GRAVITY = new Set(['sand', 'red_sand', 'gravel', 'suspicious_sand', 'suspicious_gravel'])
+export const isGravityBlock = b => !!b && (GRAVITY.has(b.name) || b.name.endsWith('_concrete_powder'))
 
 // A fluid block of the given name that is a source (level 0), not a flowing one. Pure.
 export function isFluidSource(block, fluid) {
@@ -111,6 +145,10 @@ export class Motor {
     this.movements.maxDropDown = 3
     for (const n of ['crafting_table', 'furnace']) this.movements.blocksCantBreak.add(mcData.blocksByName[n].id)
     bot.pathfinder.setMovements(this.movements)
+    // explore_toward(down)'s walk: the same, but swimming costs 25 per cell so the path stays out of lakes (r2_kev t=642).
+    this.dryMovements = new Movements(bot, mcData)
+    Object.assign(this.dryMovements, { canDig: true, allow1by1towers: true, maxDropDown: 3, liquidCost: 25 })
+    for (const n of ['crafting_table', 'furnace']) this.dryMovements.blocksCantBreak.add(mcData.blocksByName[n].id)
     // Short approaches next to a frame or a pool: no digging, no scaffolding (the pathfinder would tower with the
     // corner cobblestone, inside the frame), no parkour.
     this.walkMovements = new Movements(bot, mcData)
@@ -174,7 +212,7 @@ export class Motor {
     if (!exec) return fail('failed', `unknown subtask ${name}`)
     this.busy = true; this.interrupted = null
     const gen = ++this.gen
-    const timeoutS = this.timeouts[name] ?? 30
+    const timeoutS = name === 'wait' && this.bot.entity.isInWater ? Math.max(this.timeouts.wait, WAIT_IN_WATER_S) : (this.timeouts[name] ?? 30)
     this.current = { id, name, arg, t0: Date.now(), y0: this.bot.entity.position.y, progress: null, gen }
     this.deadline = Date.now() + timeoutS * 1000
     const ctx = Object.create(this)   // executors run with this = ctx so check() can compare their run generation
@@ -238,7 +276,7 @@ export class Motor {
   }
 
   mapError(e) {
-    if (e instanceof Abort) return e.message.startsWith('liquid') ? fail('failed', e.message) : fail(e.message === 'timeout' ? 'timeout' : 'interrupted', e.message)
+    if (e instanceof Abort) return /^(liquid|drop ahead)/.test(e.message) ? fail('failed', e.message) : fail(e.message === 'timeout' ? 'timeout' : 'interrupted', e.message)
     const n = e?.name || ''
     if (n === 'NoPath') return fail('no_path')
     if (n === 'NoHarvestTool' || n === 'NoItem') return fail('no_materials', e.message)
@@ -682,11 +720,26 @@ export class Motor {
         await this.goto(new goals.GoalNear(p.x, p.y, p.z, 2))
         return ok('at the cave')
       }
+      if (['down', 'deep', 'surface'].includes(target) && this.bot.entity.isInWater) {
+        // r2 runs: the bot drowned at the bottom of a lake while the pathfinder dug down (5x slower under water, and
+        // again off the ground) or walked along the bottom. Get out first; the driver repeats the subtask from dry land.
+        const r = await this.leaveWater()
+        if (r === 'left') return ok('left water')
+        if (target !== 'surface') return fail('failed', r === 'no_shore' ? 'in water, no shore' : 'in water, could not reach the shore')
+      }
       if (target === 'down') {
         await this.equipBestPickaxe()
         if (me.y > IRON_Y) {
-          const g = new goals.GoalNear(Math.floor(me.x) + 6 * fx, Math.floor(me.y) - 4, Math.floor(me.z) + 6 * fz, 1)
-          try { await this.goto(g) } catch (e) { if (e?.name === 'NoPath') { this.rotateHeading(); await this.digStaircase(4) } else throw e }
+          // r2_kev t=642: the goal 6 m ahead and 4 m down lay in a lake; the bot sank to the bottom and drowned while
+          // the pathfinder dug under water. Turn away from a wet goal (up to four headings); all wet: the staircase,
+          // which stops at liquid itself.
+          const goalAt = ([hx, hz]) => new Vec3(Math.floor(me.x) + 6 * hx, Math.floor(me.y) - 4, Math.floor(me.z) + 6 * hz)
+          let turns = 0
+          while (turns < 4 && this.wetNear(goalAt(this.headingVec()))) { this.rotateHeading(); turns++ }
+          if (turns > 0) this.log(`down: water at the goal, ${turns === 4 ? 'every heading wet' : `turned ${this.mem.heading}`}`)
+          if (turns === 4) { await this.digStaircase(4); return ok(`y ${this.bot.entity.position.y.toFixed(0)}`) }
+          const c = goalAt(this.headingVec())
+          try { await this.goto(new goals.GoalNear(c.x, c.y, c.z, 1), this.dryMovements) } catch (e) { if (e?.name === 'NoPath') { this.rotateHeading(); await this.digStaircase(4) } else throw e }
           return ok(`y ${this.bot.entity.position.y.toFixed(0)}`)
         }
         try { await this.goto(new goals.GoalXZ(Math.floor(me.x) + 12 * fx, Math.floor(me.z) + 12 * fz)) } catch (e) { if (e?.name === 'NoPath') { this.rotateHeading(); throw e } throw e }
@@ -745,6 +798,12 @@ export class Motor {
       const b = this.bot
       const blockItem = () => b.inventory.items().find(i => i.name === 'cobblestone' || i.name === 'dirt' || i.name === 'cobbled_deepslate')
       if (!blockItem()) return fail('no_materials', 'no blocks to seal with')
+      if (b.entity.isInWater) {   // digging in and sealing the top under water is a grave: swim to shore first
+        const r = await this.leaveWater()
+        if (r === 'no_shore') return fail('failed', 'in water, no shore')
+        if (r !== 'left') return fail('failed', 'in water, could not reach the shore')
+        this.check()
+      }
       await this.equipBestPickaxe()
       for (let i = 0; i < 2; i++) {
         this.check()
@@ -813,7 +872,23 @@ export class Motor {
       return placed > 0 ? ok(`+${placed} blocks`) : fail('failed', 'placed nothing')
     },
 
-    async wait() { await sleep(Math.max(10, this.timeouts.wait * 1000 - 200)); return ok() },
+    // A bot with no control held sinks: five r2 deaths were waits at the bottom of a lake (drowned in ~20 s). In water,
+    // swim to the nearest shore within 12 m, else hold jump (float) for the rest of the wait (run() gives it 12 s).
+    async wait() {
+      const b = this.bot
+      if (!b.entity.isInWater) { await sleep(Math.max(10, this.timeouts.wait * 1000 - 200)); return ok() }
+      const end = this.deadline - 1500
+      let r = 'no_shore'
+      try {
+        r = await Promise.race([this.leaveWater(), sleep(Math.max(0, end - Date.now())).then(() => 'slow')])
+      } catch (e) { if (!(e instanceof Abort) || e.message !== 'timeout') throw e; r = 'slow' }
+      if (r === 'left') return ok('left water')
+      try { b.pathfinder.setGoal(null) } catch {}
+      b.setControlState('jump', true)
+      while (Date.now() < end) { this.check(); await sleep(100) }
+      b.setControlState('jump', false)
+      return ok('floated')
+    },
 
     // Walk to the nearest source of `fluid` ('water' | 'lava') and fill the empty bucket from it.
     async fill_bucket(fluid = 'water') {
@@ -1016,6 +1091,118 @@ export class Motor {
   }
 
   unsafeToStep(ahead) { return liquidAround(p => this.bot.blockAt(p), ahead) }
+
+  // Water in the 3 x 4 x 3 cells around `c` (dy -1..2).
+  wetNear(c) {
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 2; dy++) {
+      if (this.bot.blockAt(c.offset(dx, dy, dz))?.name === 'water') return true
+    }
+    return false
+  }
+
+  // The nearest shore block (isShore) within maxDistance of the bot, or null.
+  shoreBlock(maxDistance = 12) {
+    const b = this.bot, at = p => b.blockAt(p)
+    const me = b.entity.position
+    // The shore test runs inside the search: a count cap over all stone/dirt would fill up with buried blocks first.
+    const cands = b.findBlocks({ matching: this.ids(SHORE_BLOCKS), maxDistance, count: 64, useExtraInfo: blk => isShore(at, blk.position) })
+    cands.sort((p, q) => me.distanceTo(p.offset(0.5, 1, 0.5)) - me.distanceTo(q.offset(0.5, 1, 0.5)))
+    return cands.length ? b.blockAt(cands[0]) : null
+  }
+
+  // Swim to the nearest shore within 12 m and stand on it (the pathfinder holds jump in water). 'dry' (not in water),
+  // 'left', 'no_shore' or 'stuck' (no path, or still in water). Used by wait, build_shelter and explore_toward.
+  async leaveWater(maxDistance = 12) {
+    const b = this.bot
+    if (!b.entity.isInWater) return 'dry'
+    const shore = this.shoreBlock(maxDistance)
+    if (!shore) { this.log('leave water: no shore within 12 m'); return 'no_shore' }
+    const p = shore.position
+    this.log(`leave water: swimming to ${shore.name} at ${p}`)
+    // The pathfinder never jumps out of water (no jump-up move from a liquid node), so a rim level with the water line
+    // is NoPath: it swims the long way when there is one, and the last stretch is swum by hand.
+    try { await this.goto(new goals.GoalBlock(p.x, p.y + 1, p.z)) } catch (e) { if (e instanceof Abort) throw e; this.log(`leave water: pathfinder ${e?.name}, swimming straight`) }
+    if (b.entity.isInWater) await this.swimTo(p)
+    return b.entity.isInWater ? 'stuck' : 'left'
+  }
+
+  // Swim straight at the top of block `p` holding forward and jump (in water, jump rises and a horizontal collision
+  // lifts the bot out onto a rim at the water line) until out of the water and on the ground, for at most `ms`.
+  async swimTo(p, ms = 8000) {
+    const b = this.bot, target = p.offset(0.5, 1.5, 0.5), t0 = Date.now()
+    try {
+      while (Date.now() - t0 < ms) {
+        this.check()
+        if (!b.entity.isInWater && b.entity.onGround) return true
+        await b.look(Math.atan2(-(target.x - b.entity.position.x), -(target.z - b.entity.position.z)), 0, true)
+        b.setControlState('forward', true); b.setControlState('jump', true)
+        await sleep(100)
+      }
+    } finally { b.setControlState('forward', false); b.setControlState('jump', false) }
+    return !b.entity.isInWater
+  }
+
+  // Place a filler block in the empty cell `cell` against its solid neighbour below or beside it; true when the cell is
+  // solid afterwards. false without a filler or a neighbour to place against.
+  async placeFloor(cell) {
+    const b = this.bot
+    for (const [dx, dy, dz] of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]) {
+      const filler = b.inventory.items().find(it => FILLERS.includes(it.name))
+      if (!filler) return false
+      const ref = b.blockAt(cell.offset(dx, dy, dz))
+      if (!ref || ref.boundingBox !== 'block') continue
+      try { await b.equip(filler, 'hand'); await b.placeBlock(ref, new Vec3(-dx, -dy, -dz)); await b.waitForTicks(2) } catch (e) { this.log(`place floor at ${cell}: ${e.message}`) }
+      if (b.blockAt(cell)?.boundingBox === 'block') return true
+    }
+    return false
+  }
+
+  // Dig `p` until it stays open: sand and gravel above it fall in (as an entity for ~10 ticks, so a cell that reads
+  // as air right after the dig is refilled a moment later). Throws Abort when the block cannot be dug.
+  async openCell(p) {
+    const b = this.bot
+    for (let k = 0; k < 8; k++) {
+      const blk = b.blockAt(p)
+      if (!blk || blk.boundingBox !== 'block') {
+        if (k === 0 || !isGravityBlock(b.blockAt(p.offset(0, 1, 0))) && !this.fallingNear(p)) return
+        await b.waitForTicks(12); continue   // something may still be falling into it
+      }
+      if (!b.canDigBlock(blk) || blk.name === 'bedrock') { this.rotateHeading(); throw new Abort(`cannot dig ${blk.name}`) }
+      const gravityAbove = isGravityBlock(b.blockAt(p.offset(0, 1, 0)))
+      await this.digSafe(blk); this.check(); await b.waitForTicks(gravityAbove ? 12 : 2)
+    }
+  }
+  // Open the cell over the head. Sand or gravel above it falls into the bot's own cells (r2_leader t=323 suffocated
+  // under a sand layer): dig them out as soon as it lands, until nothing more falls.
+  async openOverhead(feet) {
+    const b = this.bot, p = feet.offset(0, 2, 0)
+    for (let k = 0; k < 12; k++) {
+      await this.digOut(feet)
+      const blk = b.blockAt(p)
+      if (blk && blk.boundingBox === 'block') {
+        if (!b.canDigBlock(blk) || blk.name === 'bedrock') { this.rotateHeading(); throw new Abort(`cannot dig ${blk.name}`) }
+        await this.digSafe(blk); this.check(); await b.waitForTicks(3); continue
+      }
+      if (!isGravityBlock(b.blockAt(p.offset(0, 1, 0))) && !this.fallingNear(feet)) return
+      await b.waitForTicks(3)
+    }
+  }
+  // Dig out the bot's own cells (head first) when a falling block landed in them.
+  async digOut(feet) {
+    const b = this.bot
+    for (let k = 0; k < 6; k++) {
+      const cell = [feet.offset(0, 1, 0), feet].find(p => b.blockAt(p)?.boundingBox === 'block')
+      if (!cell) return
+      const blk = b.blockAt(cell)
+      if (!b.canDigBlock(blk)) return
+      this.log(`climb: ${blk.name} fell in at ${cell}, digging out`)
+      await this.digSafe(blk); await b.waitForTicks(isGravityBlock(b.blockAt(cell.offset(0, 1, 0))) ? 10 : 2)
+    }
+  }
+  fallingNear(p) {
+    const c = p.offset(0.5, 0, 0.5)
+    return Object.values(this.bot.entities).some(e => e.name === 'falling_block' && Math.abs(e.position.x - c.x) < 1 && Math.abs(e.position.z - c.z) < 1 && e.position.y >= p.y - 0.5)
+  }
   underground() { try { return (this.bot.world.getSkyLight(this.bot.entity.position.floored().offset(0, 1, 0)) ?? 15) < 4 } catch { return false } }
 
   // Manual staircase up: open the block above the head and the two cells ahead one level up, make sure there is a
@@ -1023,30 +1210,38 @@ export class Motor {
   // with or under a liquid, or one that cannot be dug.
   async digStaircaseUp(steps) {
     const b = this.bot
-    const [fx, fz] = this.headingVec()
+    let turns = 0
     for (let i = 0; i < steps && this.underground(); i++) {
       this.check()
+      const [fx, fz] = this.headingVec()
       const feet = b.entity.position.floored()
       const ahead = feet.offset(fx, 0, fz)
-      const open = [feet.offset(0, 2, 0), ahead.offset(0, 1, 0), ahead.offset(0, 2, 0)]
+      // Sand or gravel that fell onto the head suffocates the bot (r2_leader t=323: 2 hp/s at y 57 under a sand
+      // layer, the climb repeating from the same cell): open the head cell first.
+      await this.digOut(feet)
+      const open = [ahead.offset(0, 2, 0), ahead.offset(0, 1, 0), feet.offset(0, 2, 0)]
       for (const p of [...open, feet.offset(0, 3, 0), ahead.offset(0, 3, 0)]) {
         const n = b.blockAt(p)?.name
         if (n === 'lava' || n === 'water') { this.rotateHeading(); throw new Abort(`liquid above (${n})`) }
       }
-      for (const p of open) {
-        for (let k = 0; k < 4; k++) {   // gravel and sand fall into the opened cell: dig again
-          const blk = b.blockAt(p)
-          if (!blk || blk.boundingBox !== 'block') break
-          if (!b.canDigBlock(blk) || blk.name === 'bedrock') { this.rotateHeading(); throw new Abort(`cannot dig ${blk.name}`) }
-          await this.digSafe(blk); this.check(); await b.waitForTicks(2)
-        }
-      }
+      // The ahead column first (sand above it falls onto the step and is dug again), the cell over the head last: sand
+      // above that one falls onto the bot, which then digs itself out at once.
+      for (const p of open.slice(0, 2)) await this.openCell(p)
+      await this.openOverhead(feet)
+      for (const p of open.slice(0, 2)) await this.openCell(p)
+      // Never step onto nothing: the step `ahead` must be solid (a filler placed against its floor or a side), else
+      // turn and try the next heading (four turns without a step end the climb).
       const step = b.blockAt(ahead)
       if (!step || step.boundingBox !== 'block') {
-        const under = b.blockAt(ahead.offset(0, -1, 0)), filler = b.inventory.items().find(it => FILLERS.includes(it.name))
-        if (!filler || !under || under.boundingBox !== 'block') { this.rotateHeading(); throw new Abort('nothing to step on') }
-        await b.equip(filler, 'hand'); await b.placeBlock(under, new Vec3(0, 1, 0)); this.check()
+        if (!(await this.placeFloor(ahead))) {
+          this.rotateHeading()
+          if (++turns >= 4) throw new Abort('nothing to step on')
+          this.log(`climb: nothing to step on, turning ${this.mem.heading}`)
+          i--; continue
+        }
+        this.check()
       }
+      turns = 0
       await this.goto(new goals.GoalBlock(ahead.x, ahead.y + 1, ahead.z), this.walkMovements)
     }
   }
@@ -1066,6 +1261,13 @@ export class Motor {
         const blk = b.blockAt(p)
         if (blk && blk.boundingBox === 'block' && b.canDigBlock(blk)) await this.digSafe(blk)
       }
+      // The step's floor (ahead-2) must be there and dry underneath. A one-block hole is a harmless extra step down
+      // (left alone, as before); a drop of two or more (a cave, an undercut beach) gets a filler block as the floor,
+      // and without one it stops the staircase and turns it, like a liquid.
+      const fall = dropAhead(p => b.blockAt(p), ahead)
+      if (fall.liquid) { this.rotateHeading(); throw new Abort(`liquid under the step (${fall.liquid})`) }
+      if (fall.drop >= 2 && !(await this.placeFloor(ahead.offset(0, -2, 0)))) { this.rotateHeading(); throw new Abort('drop ahead') }
+      this.check()
       await this.goto(new goals.GoalBlock(ahead.x, ahead.y - 1, ahead.z))
     }
   }

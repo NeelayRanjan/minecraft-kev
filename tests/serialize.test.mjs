@@ -99,3 +99,11 @@ test('experiment-1 mode never prints armor or the extra memory', () => {
   assert.ok(!text.includes('diamond'))
   assert.equal(text.split('\n').length, 10)
 })
+
+test('in water reads even underground, and low air is said in words', () => {
+  const you = o => serialize(baseObs(o)).split('\n').find(l => l.startsWith('you:'))
+  assert.match(you({ underground: true, inWater: true, skyLight: 0 }), /, underground, in water, light/)
+  assert.match(you({ inWater: true, oxygen: 20 }), /, in water, light/)
+  assert.match(you({ inWater: true, oxygen: 6 }), /, in water, running out of air, light/)
+  assert.match(you({ underground: true, skyLight: 0 }), /, underground, light/)
+})
