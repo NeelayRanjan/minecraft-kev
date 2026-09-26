@@ -3,7 +3,7 @@
 //
 //   node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher|kev [--kev-url http://127.0.0.1:8009]
 //        [--goal iron_pickaxe|nether] [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--no-server] [--difficulty normal] [--quiet]
-//        [--leader off|periodic15|events|periodic30_interrupts --leader-think --leader-model m --leader-url u --leader-num-predict n]   (chain mode, needs --kev-url)
+//        [--leader off|periodic15|events|periodic30_interrupts|subgoals --leader-think --leader-model m --leader-url u --leader-num-predict n]   (chain mode, needs --kev-url)
 //
 // Writes out/<name>.json (meta / frames / decisions / events / timeline), out/<name>.jsonl (kev records with _meta),
 // and out/<name>.mp4 with --video (first-person at --fps, default 5; frame k <-> t = k/fps s).
@@ -19,16 +19,16 @@ import { Motor } from './motor.js'
 import { EpisodeMemory, summarize } from './summary.js'
 import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
-import { techStep } from './teacher.js'
-import { chainStep, stageOf, describeChain, needs } from './stages.js'
+import { stageOf, describeChain, needs } from './stages.js'
 import { counts, REPEAT_WINDOW } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
-import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats } from './leader.js'
+import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
+import { GoalStack } from './goals.js'
 import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
 
 // ---- args ------------------------------------------------------------------------------------------------------
@@ -40,7 +40,10 @@ const epsAction = Number(opt('eps-action', 0)), minutes = Number(opt('minutes', 
 const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Number(opt('fps', 5)), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
 const goal = opt('goal', 'iron_pickaxe')
 if (!['iron_pickaxe', 'nether'].includes(goal)) { console.error(`unknown goal ${goal}`); process.exit(2) }
-const stepFn = goal === 'nether' ? chainStep : techStep
+// The goal stack (agent/goals.js): the default entry is the chain (nether) or experiment 1's iron pickaxe; with nothing
+// pushed its step, describe, filter and teacher equal chainStep/techStep, describeChain, options and teacherSubtask.
+// Only the subgoals leader pushes goals (from its own judgement or an audience request typed in the game chat).
+const goalStack = new GoalStack({ goal })
 const llmUrl = opt('llm-url', 'http://127.0.0.1:11434'), llmModel = opt('llm-model', 'qwen3:4b')
 if (policy === 'kev' && !kevUrl) { console.error('--policy kev needs --kev-url'); process.exit(2) }
 if (!['teacher', 'kev', 'llm'].includes(policy)) { console.error(`unknown policy ${policy}`); process.exit(2) }
@@ -58,6 +61,7 @@ const leaderNumPredict = opt('leader-num-predict', null)   // default: askLeader
 const leaderModel = opt('leader-model', 'qwen38-27b-iq3xxs'), leaderUrl = opt('leader-url', 'http://100.109.91.95:11434')
 if (leaderMode !== 'off' && !TRIGGERS.includes(leaderMode)) { console.error(`unknown --leader ${leaderMode}`); process.exit(2) }
 if (leaderMode !== 'off' && (!kevUrl || goal !== 'nether')) { console.error('--leader needs --kev-url and --goal nether'); process.exit(2) }
+const goalsOn = leaderMode === 'subgoals'   // the leader answers at goal level (push_goal / pop_goal / cannot) and reads chat
 const leaderTrigger = leaderMode === 'off' ? null : new LeaderTrigger(leaderMode)
 fs.mkdirSync('out', { recursive: true })
 const T0 = Date.now()
@@ -121,6 +125,38 @@ let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}
 let lastObs = null   // the latest tick's obs: the leader's threat guard re-checks it when an answer arrives
 const threatNearIn = o => !!(o?.nearestHostile && o.nearestHostile.dist <= 16)
 const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
+// Chat: requests from players (never from the bot itself) for the leader's prompt, oldest first; `asked` once a call
+// has shown it, `answered` when that call's answer arrives. Chat text reaches only the leader's prompt and the log.
+const leaderRequests = []
+const goalLog = []   // pushed goals: {id, kind, arg, count, source, t, why, end_t, outcome}
+const say = msg => { try { bot.chat(sanitizeChat(msg, 240)) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
+const goalPhrase = g => {
+  const h = x => String(x ?? '').replace(/_/g, ' ')
+  switch (g.kind) {
+    case 'gather': return `gather ${g.count ?? ''} ${h(g.arg)}`.replace(/\s+/g, ' ')
+    case 'craft_item': return `craft ${h(g.arg)}`
+    case 'find': return `find ${h(g.arg)}`
+    case 'go_to': return `go to ${h(g.arg)}`
+    case 'build': return `build ${h(g.arg)}`
+    case 'survive_night': return 'survive the night'
+    case 'return_to_base': return 'return to base'
+    default: return `${h(g.kind)}${g.arg ? ` ${h(g.arg)}` : ''}`
+  }
+}
+const whyTail = (why, sep = ': ') => { const w = sanitizeChat(why, 80).trim(); return w ? `${sep}${w}` : '' }
+// The offered list everywhere (kev's question, the teacher, the leader, the LLM policy): options under the top goal.
+const offeredFor = o => goalStack.filter(o, optionsFor(o))
+const goalStepOf = o => { const s = goalStack.step(o), d = goalStack.depth(); return { ...s, local: s.index - 100 * d, pushed: d > 0 } }
+bot.on('chat', (username, message) => {
+  if (finished || !username || username === bot.username) return
+  const text = String(message ?? '').trim().slice(0, 200)
+  if (!text) return
+  const t = +now().toFixed(1)
+  leaderRequests.push({ t, name: username, text, asked: false, answered: null })
+  elog.event({ t, kind: 'audience_request', name: username, text })
+  log(`chat <${username}> ${text}`)
+  if (goalsOn) leaderNote('audience_request')
+})
 bot.on('death', () => {
   dead = true; deaths++; mem.deaths = deaths; elog.event({ t: now(), kind: 'death', pos: bot.entity?.position }); leaderNote('death')
   if (pendingLeader) { elog.event({ t: now(), kind: 'leader_dropped', id: pendingLeader.id, reason: 'death' }); pendingLeader = null }   // an override for a life that ended
@@ -142,7 +178,7 @@ function startSubtask(id, source, obs) {
     if (!byLeader) recent = [...recent, { id, result: r.result }].slice(-REPEAT_WINDOW)
     lastResult = { id, result: r.result, repeats, recent }
     elog.event({ t: now(), kind: 'subtask_done', id, result: r.result, detail: r.detail ?? null })
-    if (r.detail !== 'leader') leaderNote('subtask_done')   // the leader's own interrupt is not news to it
+    if (r.detail !== 'leader') { leaderNote('subtask_done'); if (goalsOn && r.result !== 'ok') leaderNote('subtask_failed') }   // the leader's own interrupt is not news to it
     log(`${id} -> ${r.result}${r.detail ? ` (${r.detail})` : ''}`)
   }).catch(e => {
     recent = [...recent, { id, result: 'failed' }].slice(-REPEAT_WINDOW)
@@ -161,7 +197,11 @@ function tick() {
   const t = now()
   const cur = motor.current ? { name: motor.current.name, arg: motor.current.arg, elapsedS: motor.elapsedS(), progress: motor.progress() } : null
   const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal, withhold })
-  const step = stepFn(obs), c = counts(obs)
+  const goalEvents = goalStack.update(obs, t)   // a pushed goal done or stuck pops before this tick's step and text
+  obs.goalText = goalStack.describe(obs)
+  obs.goalStep = goalStepOf(obs)
+  const step = obs.goalStep, c = counts(obs)
+  for (const e of goalEvents) onGoalEvent(e, t)
   if (goal === 'nether') {
     const st = stageOf(obs).index
     if (st > stageReached) { stageReached = st; elog.event({ t, kind: 'stage_done', stage: st }); log(`stage ${st} reached at ${t.toFixed(0)} s`) }
@@ -170,7 +210,9 @@ function tick() {
     doneAt = t; const it = goal === 'nether' ? 'nether_portal' : 'iron_pickaxe'; elog.event({ t, kind: 'goal_done', item: it }); log(`GOAL: ${it} at ${t.toFixed(0)} s`)
     if (goal === 'nether') { stageReached = 5; elog.event({ t, kind: 'stage_done', stage: 5 }) }   // stage 5: the whole chain (a lit portal)
   }
-  elog.sample({ t, step: step.index, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done })
+  const doneIds = goalEvents.filter(e => e.kind === 'goal_done').map(e => e.goal.id)
+  elog.sample({ t, step: step.index, goal_id: step.goal_id, rawIron: c.rawIron, ingots: c.ingots, health: dead ? 0 : obs.health, dead, timeOfDay: obs.timeOfDay, day: obs.day, done: obs.done,
+    ...(doneIds.length ? { goals_done: doneIds } : {}) })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead })
   if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); leaderNote('interrupt'); motor.interrupt(why) }
@@ -192,7 +234,7 @@ async function decide(obs, t) {
   asking = true
   try {
     const decision = !motor.busy && !dead
-    const { qs, labels } = buildQuestions(obs, { decision })
+    const { qs, labels } = buildQuestions(obs, { decision, goals: goalStack })
     if (!Object.keys(qs).length) return
     const text = serialize(obs)
     let answers, latency = null, source = null, chosen = null
@@ -212,13 +254,13 @@ async function decide(obs, t) {
     let teacherLabel = labels.next_subtask ?? null, why = null, plannerLatency = null, leaderUse = null
     if (decision && pendingLeader) {   // a leader override waits for this decision point; kev's answers are still logged
       const p = pendingLeader; pendingLeader = null
-      if (optionsFor(obs).some(o => o.id === p.id)) leaderUse = p
+      if (offeredFor(obs).some(o => o.id === p.id)) leaderUse = p
       else { elog.event({ t, kind: 'leader_dropped', id: p.id }); log(`leader: ${p.id} no longer offered, kev chooses`) }
     }
     if (leaderUse) { chosen = leaderUse.id; source = 'leader'; why = leaderUse.why }
     else if (decision && policy === 'llm') {
       // The LLM leads: it picks from the same offered list; its choice becomes the next_subtask label (LLM-teacher data).
-      const opts = optionsFor(obs)
+      const opts = offeredFor(obs)
       const forecasts = forecastsOf(answers)
       try {
         const a = await askPlanner({ url: llmUrl, model: llmModel, stateText: text, options: opts, history: elog.events.slice(-12), forecasts: kevUrl ? forecasts : {} })
@@ -252,15 +294,18 @@ function forecastsOf(answers) {
 // keeps driving meanwhile. The snapshot pins the subtask the leader judged: the running one, or, when asked while
 // idle, the one kev starts next (bound in startSubtask).
 function leaderTick(obs, t) {
-  const event = pickEvent(leaderEvents); leaderEvents = []
+  // A request not yet shown to the leader (it arrived while a call was in flight) keeps the trigger armed.
+  if (goalsOn && leaderRequests.some(r => !r.asked)) leaderEvents.push('audience_request')
+  const event = pickEvent(leaderEvents, goalsOn ? leaderMode : null); leaderEvents = []   // the other modes pick as before
   if (!leaderTrigger.due({ t, event, inFlight: !!leaderAsk })) return
   leaderTrigger.asked(t)
   // The synchronous part (snapshot and prompt context) must never throw into the tick: a leader bug costs one call, not the episode.
   let snap, ctx, first
   try {
-    const opts = optionsFor(obs)
+    const opts = offeredFor(obs)
     const currentId = motor.current?.id ?? null
-    snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts, threatNear: threatNearIn(obs) }
+    const requests = goalsOn ? leaderRequests.filter(r => !r.answered) : []
+    snap = { t: +t.toFixed(1), event: leaderTrigger.reason, currentId, bindNext: !motor.busy, offered: opts, threatNear: threatNearIn(obs), requests }
     leaderAsk = snap
     first = leaderCalls++ === 0
     const forecasts = Object.fromEntries(Object.entries(forecastHist).map(([q, h]) => [q, h[h.length - 1]]))
@@ -270,7 +315,9 @@ function leaderTick(obs, t) {
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
+      ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
     }
+    for (const r of requests) r.asked = true
   } catch (e) {
     leaderAsk = null
     elog.event({ t, kind: 'leader_error', error: String(e?.message || e).slice(0, 200) }); log(`leader: snapshot failed: ${e?.message || e}`)
@@ -289,19 +336,58 @@ function leaderAnswered(snap, a, err) {
   const currentId = motor.current?.id ?? null
   // Guards: a hostile near when asked or now (either blocks leaving a threat response); the live subtask-result window.
   const threatNear = snap.threatNear || threatNearIn(lastObs)
-  const res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: snap.currentId, offered: snap.offered, threatNear, recentResults: recent })
+  let res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: snap.currentId, offered: snap.offered, threatNear, recentResults: recent, goalsEnabled: goalsOn })
+  // Goal answers act on the stack here; the requests the call was shown are answered by whatever came back.
+  const reqs = err ? [] : snap.requests || []
+  for (const r of reqs) r.answered = { t: +t.toFixed(1), kind: res.kind }
+  let pushed = null
+  if (res.kind === 'push_goal') {
+    const src = reqs.length ? `audience:${reqs[0].name}` : 'leader'
+    try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1) }) }
+    catch (e) { res = { kind: 'invalid', id: 'push_goal', reason: String(e?.message || e).slice(0, 160) } }
+  } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
+  for (const r of reqs) r.answered.kind = res.kind
   elog.leader.push({ t_asked: snap.t, t_answered: +t.toFixed(1), trigger: snap.event, current_id: snap.currentId, current_id_at_answer: currentId,
     action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, reason: res.reason ?? null, threat_near: threatNear, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
     latency_ms: a?.latency_ms ?? null, tokens: a?.tokens ?? null, prompt_tokens: a?.prompt_tokens ?? null, tps: a?.tps != null ? +a.tps.toFixed(1) : null,
     prompt_chars: a?.prompt_chars ?? null, prompt_hash: a?.prompt_hash ?? null, offered: snap.offered.map(o => o.id), think: leaderThink,
-    error: err ? String(err.message || err).slice(0, 200) : null })
+    error: err ? String(err.message || err).slice(0, 200) : null,
+    ...(goalsOn ? { goal: a?.goal ?? null, goal_id: pushed?.id ?? null, requests: (snap.requests || []).map(r => ({ t: r.t, name: r.name })) } : {}) })
   if (res.kind === 'override') {
     elog.event({ t, kind: 'leader_override', from: currentId, to: res.id, why: a.why })
     pendingLeader = { id: res.id, why: a.why, t_asked: snap.t, t_answered: +t.toFixed(1), latency_ms: a.latency_ms, thinking_chars: a.thinking?.length ?? 0 }
     if (motor.busy) motor.interrupt('leader')
-  } else elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
+  } else if (res.kind === 'push_goal') {
+    const g = { id: pushed.id, kind: pushed.kind, arg: pushed.arg, count: pushed.count, source: pushed.source }
+    elog.event({ t, kind: 'goal_pushed', goal: g, why: a.why ?? null })
+    goalLog.push({ ...g, t: +t.toFixed(1), why: a.why ?? null, end_t: null, outcome: null })
+    say(`On it: ${goalPhrase(g)}${whyTail(a.why) || '.'}`)
+  } else if (res.kind === 'pop_goal') {
+    const g = goalStack.top(), popped = { id: g.id, kind: g.kind, arg: g.arg, count: g.count, source: g.source }
+    goalStack.pop('leader')
+    elog.event({ t, kind: 'goal_popped', goal: popped, why: a.why ?? null })
+    closeGoal(popped.id, t, 'popped')
+    say(`Dropping that${whyTail(a.why) || '.'}`)
+  } else if (res.kind === 'cannot') {
+    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why: a.why ?? null })
+    say(`Can't do that yet${whyTail(a.why) || '.'}`)
+  } else {
+    elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
+    // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
+    if (res.kind === 'invalid' && res.id === 'push_goal' && reqs.length) say(`Can't do that yet${whyTail(res.reason) || '.'}`)
+  }
   log(`leader (${snap.event}, ${a?.latency_ms ?? '-'} ms): ${res.kind}${res.id ? ` -> ${res.id}` : ''}${res.reason ? ` [${res.reason}]` : ''}${a?.why ? ` (${a.why})` : ''}${err ? ` error: ${err.message}` : ''}`)
 }
+
+// A pushed goal finished (goal_done) or popped by the stuck rule (goal_failed): logged, told to the leader and the chat.
+function onGoalEvent(e, t) {
+  elog.event({ t, kind: e.kind, goal: e.goal, ...(e.reason ? { reason: e.reason } : {}) })
+  leaderNote(e.kind)
+  closeGoal(e.goal.id, t, e.kind === 'goal_done' ? 'done' : `failed${e.reason ? ` (${e.reason})` : ''}`)
+  log(`goal #${e.goal.id} ${goalPhrase(e.goal)}: ${e.kind}${e.reason ? ` (${e.reason})` : ''}`)
+  say(e.kind === 'goal_done' ? `Done: ${goalPhrase(e.goal)}.` : `Gave up on ${goalPhrase(e.goal)}: ${e.reason ?? 'stuck'}`)
+}
+function closeGoal(id, t, outcome) { const g = goalLog.find(x => x.id === id); if (g && !g.outcome) { g.end_t = +t.toFixed(1); g.outcome = outcome } }
 
 // Chain mode: the stage_done events are the one source of truth. stage_reached is the highest stage index entered
 // (0..4, 5 once the portal is lit); stage_times maps each index to the second it was first reached.
@@ -312,6 +398,13 @@ function stageMeta() {
   return { goal, stage_reached: stageReached, stage_times: times }
 }
 
+// meta.goals: the pushed goals with their outcome (null: still on the stack at the end) and the chat requests.
+function goalsMeta() {
+  const n = o => goalLog.filter(g => (g.outcome || '').startsWith(o)).length
+  return { pushed: goalLog.length, done: n('done'), failed: n('failed'), popped: n('popped'), open: goalLog.filter(g => !g.outcome).length,
+    goals: goalLog, requests: leaderRequests.map(r => ({ t: r.t, name: r.name, text: r.text, answered: r.answered })) }
+}
+
 async function finish(reason) {
   if (finished) return
   const t = now()
@@ -319,7 +412,9 @@ async function finish(reason) {
   if (leaderAsk) { elog.leader.push({ t_asked: leaderAsk.t, t_answered: null, trigger: leaderAsk.event, current_id: leaderAsk.currentId, kind: 'unfinished', action: null, id: null, latency_ms: null, think: leaderThink }); leaderAsk = null }
   motor.interrupt('episode_end')
   elog.timeline = injectDeaths(elog.timeline, elog.events)   // the sampler rarely catches the few ticks between death and respawn
-  elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, ...stageMeta(), video_frames: recorder ? recorder.frames() : null })
+  elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, ...stageMeta(), video_frames: recorder ? recorder.frames() : null,
+    video_dupes: recorder ? recorder.stats().dupes : null,
+    ...(goalsOn || goalLog.length || leaderRequests.length ? { goals: goalsMeta() } : {}) })
   const json = elog.toJSON(), recs = elog.toRecords()
   fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(json)); wrote = true
   fs.writeFileSync(path.join('out', `${name}.jsonl`), recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : ''))

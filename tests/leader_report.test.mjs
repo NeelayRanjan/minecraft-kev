@@ -183,3 +183,51 @@ test('renderHeaderTable: a log with no leader shows "leader mode | off"', () => 
   const table = renderHeaderTable(s, 'r2_kev_s3000')
   assert.match(table, /\| leader mode \| off \|/)
 })
+
+// A synthetic subgoals run: two chat requests (one pushed a goal that completed, one answered cannot), a leader-pushed
+// goal the stuck rule failed, and one left open at the end.
+function goalsLog() {
+  return {
+    meta: { minutes: 6, deaths: 0, end_reason: 'time', ended_t: 360, leader: { mode: 'subgoals', think: false, model: 'm', url: 'u' } },
+    events: [
+      { t: 30, kind: 'audience_request', name: 'alice', text: 'gather 8 cobblestone' },
+      { t: 34, kind: 'goal_pushed', goal: { id: 1, kind: 'gather', arg: 'cobblestone', count: 8, source: 'audience:alice' }, why: 'the audience asked' },
+      { t: 80, kind: 'goal_done', goal: { id: 1, kind: 'gather', arg: 'cobblestone', count: 8, source: 'audience:alice' } },
+      { t: 100, kind: 'audience_request', name: 'bob', text: 'find a village' },
+      { t: 103, kind: 'leader_cannot', action: 'cannot', why: 'no village detector yet' },
+      { t: 120, kind: 'goal_pushed', goal: { id: 2, kind: 'find', arg: 'diamond_ore', count: null, source: 'leader' }, why: 'diamonds next' },
+      { t: 420, kind: 'goal_failed', goal: { id: 2, kind: 'find', arg: 'diamond_ore', count: null, source: 'leader' }, reason: 'stuck' },
+      { t: 300, kind: 'goal_pushed', goal: { id: 3, kind: 'go_to', arg: 'base', count: null, source: 'leader' }, why: 'home' },
+    ],
+    decisions: [],
+    leader: [
+      { t_asked: 30, t_answered: 34, trigger: 'audience_request', kind: 'push_goal', action: 'push_goal', goal_id: 1, requests: [{ t: 30, name: 'alice' }], why: 'the audience asked', latency_ms: 4000 },
+      { t_asked: 100, t_answered: 103, trigger: 'audience_request', kind: 'cannot', action: 'cannot', goal_id: null, requests: [{ t: 100, name: 'bob' }], why: 'no village detector yet', latency_ms: 3000 },
+      { t_asked: 118, t_answered: 120, trigger: 'goal_done', kind: 'push_goal', action: 'push_goal', goal_id: 2, requests: [], why: 'diamonds next', latency_ms: 2000 },
+      { t_asked: 298, t_answered: 300, trigger: 'periodic', kind: 'push_goal', action: 'push_goal', goal_id: 3, requests: [], why: 'home', latency_ms: 2000 },
+    ],
+  }
+}
+
+test('goals: pushed goals with source, outcome and duration, requests with their answers, goal actions in the mix', () => {
+  const s = summarizeLeaderLog(goalsLog())
+  assert.equal(s.stats.actionMix.push_goal, 3)
+  assert.equal(s.stats.actionMix.cannot, 1)
+  assert.equal(s.stats.actionMix.pop_goal, 0)
+  assert.deepEqual(s.goals.pushed.map(p => [p.id, p.goal, p.source, p.outcome, p.durationS]),
+    [[1, 'gather(cobblestone, 8)', 'audience:alice', 'done', 46], [2, 'find(diamond_ore)', 'leader', 'failed (stuck)', 300], [3, 'go_to(base)', 'leader', 'open', 60]])
+  assert.deepEqual(s.goals.requests.map(r => [r.name, r.answeredT, r.answer]),
+    [['alice', 34, 'push_goal gather(cobblestone, 8)'], ['bob', 103, 'cannot: no village detector yet']])
+  const md = renderReport(s, 'gs')
+  assert.match(md, /## Goals/)
+  assert.match(md, /\| 1 \| gather\(cobblestone, 8\) \| audience:alice \| 34\.0s \| done \| 46\.0s \|/)
+  assert.match(md, /\| push_goal \| 3 \|/)
+  assert.match(md, /\| 100\.0s \| bob \| find a village \| 103\.0s \| cannot: no village detector yet \|/)
+})
+
+test('goals: a run of another mode with no goal activity renders no Goals section and no goal rows', () => {
+  const s = summarizeLeaderLog(syntheticLog())
+  assert.ok(!('push_goal' in s.stats.actionMix))
+  const md = renderReport(s, 'x')
+  assert.ok(!md.includes('## Goals') && !md.includes('push_goal'))
+})

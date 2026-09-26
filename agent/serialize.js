@@ -103,7 +103,8 @@ function describeArmor(obs) {
 export function serialize(obs) {
   const chain = obs.goal === 'nether'
   let first
-  if (chain) first = `Minecraft survival, day ${(obs.day ?? 0) + 1}. ${describeChain(obs)}`
+  // obs.goalText: the runner's GoalStack.describe(obs) (equal to describeChain(obs) while only the chain is on the stack)
+  if (chain) first = `Minecraft survival, day ${(obs.day ?? 0) + 1}. ${obs.goalText ?? describeChain(obs)}`
   else {
     const step = techStep(obs)
     const goal = step.index === 8 ? 'iron pickaxe done; survive until morning' : `get an iron pickaxe (step ${step.index} of 7: ${step.text})`

@@ -1,6 +1,8 @@
-// Low-rate first-person video recorder built on prismarine-viewer's headless internals: renders on a fixed timer
+// Low-rate first-person video recorder built on prismarine-viewer's headless internals: renders on its own cadence
 // (default 5 fps) instead of the stock headless() loop that renders as fast as it can, and pipes JPEG frames to ffmpeg.
-// Frame k of the output corresponds to episode time k / fps (the recorder starts at the runner's t0).
+// Frame k of the output corresponds to episode time k / fps (the recorder starts at the runner's t0) -- by
+// construction, not by luck: a separate writer clock writes exactly one frame per tick, duplicating the last
+// encoded JPEG when a fresh render isn't ready, so the output never falls behind even if rendering is slow.
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
@@ -32,25 +34,48 @@ export function startRecorder(bot, { output, fps = 5, width = 448, height = 448,
   bot.on('move', cam)
   const ff = spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', String(fps), '-i', 'pipe:0', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', output])
   ff.stderr.on('data', d => log(`ffmpeg: ${String(d).trim()}`))
-  let frames = 0, busy = false
-  const timer = setInterval(() => {
-    if (busy || !ff.stdin.writable) return
-    busy = true
+
+  // lastJpeg is whatever the most recent successful render produced; a black frame before the first one lands, so
+  // the writer clock below always has something legal to write even if rendering hasn't produced anything yet.
+  let lastJpeg = createCanvas(width, height).toBuffer('image/jpeg', { quality: 0.8 })
+  let renderBusy = false, rendered = 0
+  const renderTimer = setInterval(() => {
+    if (renderBusy) return
+    renderBusy = true
     try {
       viewer.update()
       renderer.render(viewer.scene, viewer.camera)
-      ff.stdin.write(canvas.toBuffer('image/jpeg', { quality: 0.8 }))
-      frames++
-    } catch (e) { log(`recorder: ${e.message}`) } finally { busy = false }
+      lastJpeg = canvas.toBuffer('image/jpeg', { quality: 0.8 })
+      rendered++
+    } catch (e) { log(`recorder: ${e.message}`) } finally { renderBusy = false }
   }, 1000 / fps)
+
+  // Writer clock: decoupled from the render clock above, and drift-free (it targets episode time, not tick count),
+  // so frame k always lands at k / fps even when a render was slow, threw, or never happened yet -- it just
+  // re-writes lastJpeg, counted as a dupe whenever it's not the first write of a freshly rendered frame.
+  const t0 = Date.now()
+  let written = 0, dupes = 0, lastWritten = null
+  const writeTimer = setInterval(() => {
+    if (!ff.stdin.writable) return
+    const target = Math.floor((Date.now() - t0) * fps / 1000)
+    while (written <= target) {
+      if (lastJpeg === lastWritten) dupes++
+      lastWritten = lastJpeg
+      ff.stdin.write(lastJpeg)
+      written++
+    }
+  }, 1000 / fps)
+
   log(`recording ${output} at ${fps} fps, ${width}x${height}`)
   return {
-    frames: () => frames,
+    frames: () => written,
+    stats: () => ({ written, rendered, dupes }),
     stop: () => new Promise(resolve => {
-      clearInterval(timer)
+      clearInterval(renderTimer)
+      clearInterval(writeTimer)
       bot.removeListener('move', cam)
       try { worldView.removeListenersFromBot(bot) } catch {}
-      ff.once('close', code => { log(`recorder: ${frames} frames, ffmpeg exit ${code}`); resolve(frames) })
+      ff.once('close', code => { log(`recorder: ${written} frames (${rendered} rendered, ${dupes} dupes), ffmpeg exit ${code}`); resolve(written) })
       ff.stdin.end()
     }),
   }

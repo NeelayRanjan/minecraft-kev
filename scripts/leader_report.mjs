@@ -3,7 +3,8 @@
 // deaths, end reason), leader call statistics (action mix, latency p50/p90/max, thinking/prompt chars, truncated
 // count), a milestone-2 verdict (iron pickaxe + survive the first night), override outcomes (did the replacement's
 // first run end ok?), agreement between an applied leader answer and kev's own choice, what kev did next after a
-// "continue", and the full decision log with a thinking appendix. Works the same for a log with no leader at all
+// "continue", a Goals section for a subgoals run (pushed goals with source, outcome and duration; chat requests and
+// how the leader answered them), and the full decision log with a thinking appendix. Works the same for a log with no leader at all
 // (--policy kev alone): the header shows "leader mode | off" and the leader-call sections are empty.
 // Reads out/<name>.json (agent/run_episode.mjs, chain mode, with or without --leader). Pure computation lives in
 // agent/leader_report.js (summarizeLeaderLog, renderReport, milestone2Line, renderComparisonLine); this file is
@@ -39,4 +40,8 @@ fs.writeFileSync(outPath, report)
 console.log(renderHeaderTable(summary, name))
 console.log(milestone2Line(json))
 console.log(renderStatsSection(summary))
+if (summary.goals.pushed.length || summary.goals.requests.length) {
+  const g = summary.goals, n = o => g.pushed.filter(p => p.outcome.startsWith(o)).length
+  console.log(`goals: ${g.pushed.length} pushed (${n('done')} done, ${n('failed')} failed, ${n('popped')} popped, ${n('open')} open); requests: ${g.requests.length} (${g.requests.filter(r => r.answer).length} answered)`)
+}
 console.log(`report written to ${outPath}`)

@@ -83,21 +83,22 @@ export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen
 // num_predict covers the thinking too, so it is larger. The caller sets a longer timeout for the very first call
 // (the 27B model may still be loading).
 export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'qwen38-27b-iq3xxs', think = false, numPredict = think ? 1500 : 200, numCtx = 4096,   // prompts run 1.4-2.9k tokens; 8192 cost ~5 GB of KV cache on the 27B and evicted the user's other model
-  temperature = 0.2, timeoutMs = think ? 150_000 : 45_000, ...ctx }) {
+  temperature = 0.2, timeoutMs = think ? 150_000 : 45_000, goals = false, ...ctx }) {
+  // goals: the subgoals leader (schema and parser accept push_goal / pop_goal / cannot and return `goal`)
   const messages = buildLeaderMessages(ctx)
   const promptText = messages.map(m => m.content).join('\n')
   const t0 = Date.now()
   const res = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: false, format: leaderSchema(ctx.options), think, options: { temperature, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '90m' }),
+    body: JSON.stringify({ model, messages, stream: false, format: leaderSchema(ctx.options, { goals }), think, options: { temperature, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '90m' }),
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`leader ${res.status}: ${(await res.text()).slice(0, 200)}`)
   const body = await res.json()
   const raw = body?.message?.content ?? ''
-  const { action, why } = parseLeaderAnswer(raw, ctx.options)
+  const { action, why, goal } = parseLeaderAnswer(raw, ctx.options, { goals })
   // truncated: num_predict ran out (with thinking, usually inside the thinking, so the answer is empty -> invalid)
-  return { action, why, truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
+  return { action, why, ...(goals ? { goal } : {}), truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
     tokens: body?.eval_count ?? null, prompt_tokens: body?.prompt_eval_count ?? null,
     tps: body?.eval_count && body?.eval_duration ? body.eval_count / (body.eval_duration / 1e9) : null,
     prompt_chars: promptText.length, prompt_hash: crypto.createHash('sha1').update(promptText).digest('hex').slice(0, 12) }

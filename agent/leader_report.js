@@ -4,6 +4,7 @@
 
 const STAGE_NAMES = ['iron pickaxe', 'iron tools', 'iron armor', 'diamond tools', 'lit nether portal']
 const ACTIONS = ['continue', 'override', 'stale', 'invalid', 'error', 'blocked', 'dropped']
+const GOAL_ACTIONS = ['push_goal', 'pop_goal', 'cannot']   // the subgoals leader's goal-level answers
 
 const isNum = x => typeof x === 'number' && Number.isFinite(x)
 const nums = arr => arr.filter(isNum)
@@ -117,6 +118,30 @@ function decisionLogRows(calls, events, decisions) {
   })
 }
 
+const goalText = g => g ? `${g.kind}${g.arg != null || g.count != null ? `(${[g.arg, g.count].filter(x => x != null).join(', ')})` : ''}` : '-'
+
+// Goal stack activity (--leader subgoals): every pushed goal (goal_pushed) with its source and how it ended (the
+// goal_done / goal_failed / goal_popped event with the same goal id; open when none), and every chat request
+// (audience_request) with the leader call that was shown it and what that call answered.
+export function goalsSummary(events, calls, endedT = null) {
+  const ends = new Map()
+  for (const e of events) if (['goal_done', 'goal_failed', 'goal_popped'].includes(e.kind) && e.goal?.id != null && !ends.has(e.goal.id)) ends.set(e.goal.id, e)
+  const pushed = events.filter(e => e.kind === 'goal_pushed' && e.goal).map(e => {
+    const end = ends.get(e.goal.id)
+    const outcome = !end ? 'open' : end.kind === 'goal_done' ? 'done' : end.kind === 'goal_popped' ? 'popped' : `failed${end.reason ? ` (${end.reason})` : ''}`
+    const endT = end ? end.t : endedT
+    return { id: e.goal.id, goal: goalText(e.goal), source: e.goal.source ?? null, t: e.t, outcome, endT: end ? end.t : null,
+      durationS: isNum(endT) && isNum(e.t) ? endT - e.t : null, why: e.why ?? null }
+  })
+  const requests = events.filter(e => e.kind === 'audience_request').map(e => {
+    const call = calls.find(l => (l.requests || []).some(r => r.t === e.t && r.name === e.name))
+    const pushedBy = call?.goal_id != null ? pushed.find(p => p.id === call.goal_id) : null
+    return { t: e.t, name: e.name ?? null, text: e.text ?? '', answeredT: call ? call.t_answered ?? null : null, kind: call ? call.kind : null,
+      answer: !call ? null : pushedBy ? `push_goal ${pushedBy.goal}` : call.kind === 'cannot' || call.kind === 'pop_goal' ? `${call.kind}: ${String(call.why || '').slice(0, 120)}` : call.kind }
+  })
+  return { pushed, requests }
+}
+
 export function summarizeLeaderLog(json) {
   const meta = json.meta || {}
   const leaderMeta = meta.leader || {}
@@ -140,6 +165,8 @@ export function summarizeLeaderLog(json) {
   const actionMix = Object.fromEntries(ACTIONS.map(k => [k, 0]))
   for (const l of calls) if (Object.prototype.hasOwnProperty.call(actionMix, l.kind)) actionMix[l.kind]++
   actionMix.dropped = events.filter(e => e.kind === 'leader_dropped').length
+  const goalCalls = calls.filter(l => GOAL_ACTIONS.includes(l.kind)).length
+  if (header.mode === 'subgoals' || goalCalls) for (const k of GOAL_ACTIONS) actionMix[k] = calls.filter(l => l.kind === k).length
 
   const latencies = nums(calls.map(l => l.latency_ms))
   const stats = {
@@ -162,7 +189,8 @@ export function summarizeLeaderLog(json) {
     .slice(0, 10)
     .map(l => ({ t: l.t_asked, text: String(l.thinking).slice(0, 1500) }))
 
-  return { header, stats, overrides, overrideOkCount, agreement, continueThen, continueThenCounts, rows, thinkingAppendix, milestone2: milestone2(json) }
+  const goals = goalsSummary(events, calls, meta.ended_t ?? null)
+  return { header, stats, overrides, overrideOkCount, agreement, continueThen, continueThenCounts, rows, thinkingAppendix, milestone2: milestone2(json), goals }
 }
 
 // ---- rendering -------------------------------------------------------------------------------------------------
@@ -207,6 +235,7 @@ export function renderStatsSection(summary) {
     '| action | count |',
     '|---|---|',
     ...ACTIONS.map(k => `| ${k} | ${s.actionMix[k] ?? 0} |`),
+    ...GOAL_ACTIONS.filter(k => k in s.actionMix).map(k => `| ${k} | ${s.actionMix[k]} |`),
     '',
     `latency p50 / p90 / max: ${fmt1(s.latencyP50Ms)} / ${fmt1(s.latencyP90Ms)} / ${fmt1(s.latencyMaxMs)} ms`,
     `thinking chars (median, over calls with any): ${s.thinkingCharsMedian ?? '-'}`,
@@ -249,6 +278,28 @@ function renderOverridesSection(summary) {
   lines.push('| t | overridden subtask | replacement | replacement result |', '|---|---|---|---|')
   for (const o of summary.overrides) lines.push(`| ${fmtSecs(o.t)} | ${o.from ?? '(idle)'} | ${o.to} | ${o.result ?? '(no matching subtask_done found)'} |`)
   lines.push('', `replacements ending ok: ${summary.overrideOkCount}/${summary.overrides.length}`, '')
+  return lines.join('\n')
+}
+
+// Only for a run with goal activity (a subgoals leader, a pushed goal or a chat request): otherwise nothing, so the
+// reports of the other modes are unchanged.
+export function renderGoalsSection(summary) {
+  const g = summary.goals
+  if (!g || (summary.header.mode !== 'subgoals' && !g.pushed.length && !g.requests.length)) return null
+  const lines = ['## Goals', '']
+  if (!g.pushed.length) lines.push('no goals pushed this run.', '')
+  else {
+    lines.push('| # | goal | source | pushed at | outcome | duration | why |', '|---|---|---|---|---|---|---|')
+    for (const p of g.pushed) lines.push(`| ${p.id} | ${esc(p.goal)} | ${esc(p.source ?? '-')} | ${fmtSecs(p.t)} | ${esc(p.outcome)} | ${fmtSecs(p.durationS)}${p.outcome === 'open' ? ' (to the end)' : ''} | ${esc(String(p.why || '').slice(0, 120))} |`)
+    lines.push('')
+  }
+  lines.push('requests from the chat:', '')
+  if (!g.requests.length) lines.push('no requests this run.', '')
+  else {
+    lines.push('| t | from | request | answered at | answer |', '|---|---|---|---|---|')
+    for (const r of g.requests) lines.push(`| ${fmtSecs(r.t)} | ${esc(r.name)} | ${esc(r.text)} | ${fmtSecs(r.answeredT)} | ${esc(r.answer ?? '(unanswered)')} |`)
+    lines.push('')
+  }
   return lines.join('\n')
 }
 
@@ -298,9 +349,10 @@ export function renderReport(summary, name) {
     renderHeaderTable(summary, name),
     renderStatsSection(summary),
     renderMilestone2Section(summary.milestone2),
+    renderGoalsSection(summary),
     renderOverridesSection(summary),
     renderAgreementSection(summary),
     renderDecisionLog(summary),
     renderThinkingAppendix(summary),
-  ].join('\n')
+  ].filter(x => x != null).join('\n')
 }

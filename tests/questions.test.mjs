@@ -121,3 +121,61 @@ test('labelDecisions: a step that drops (items lost on death, chain mode) is not
   labelDecisions(ds, [{ t: 0, step: 21 }, { t: 30, step: 11 }, { t: 61, step: 11 }])
   assert.equal(ds[0].labels.subgoal_succeeds_60s, false)
 })
+
+// ---- the goal stack (Task 3): questions from GoalStack, labels per goal ------------------------------------------
+import { GoalStack } from '../agent/goals.js'
+import { serialize } from '../agent/serialize.js'
+const chainObs = over => baseObs({ goal: 'nether', armor: {}, portalLit: false, ...over })
+const withStack = (s, o) => { o.goalText = s.describe(o); const st = s.step(o), d = s.depth(); o.goalStep = { ...st, local: st.index - 100 * d, pushed: d > 0 }; return o }
+
+test('goal stack: with only the default entry, questions, labels and state text equal the stackless ones', () => {
+  const fixtures = [
+    chainObs({}), chainObs({ inventory: { oak_log: 3 }, blocks: [{ name: 'oak_log', dist: 10, dir: 'north', dy: 0 }] }),
+    chainObs({ inventory: { iron_pickaxe: 1, cobblestone: 5 }, nearestHostile: { name: 'zombie', dist: 6, dir: 'west', dy: 0 }, entities: [{ name: 'zombie', kind: 'hostile', dist: 6, dir: 'west', dy: 0 }] }),
+    chainObs({ inventory: { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1, water_bucket: 1, flint_and_steel: 1 },
+      armor: { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }, portalFrame: true, portalLit: true }),
+    baseObs(), baseObs({ inventory: { stone_pickaxe: 1 } }), baseObs({ inventory: { iron_pickaxe: 1 } }),
+  ]
+  for (const o of fixtures) for (const decision of [false, true]) {
+    const s = new GoalStack({ goal: o.goal === 'nether' ? 'nether' : 'iron_pickaxe' })
+    const plain = buildQuestions(o, { decision })
+    const o2 = withStack(s, { ...o })
+    assert.deepEqual(buildQuestions(o2, { decision, goals: s }), plain)
+    assert.equal(serialize(o2), serialize(o))
+  }
+})
+
+test('goal stack: a pushed goal filters the offered list, labels with its teacher and always asks the step question', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'gather', arg: 'cobblestone', count: 8, source: 'audience:alice', t: 0 })
+  const o = withStack(s, chainObs({ inventory: { iron_pickaxe: 1, cobblestone: 3, oak_planks: 8, stick: 2 }, base: { crafting_table: { dist: 3 }, furnace: { dist: 4 } }, blocks: [{ name: 'stone', dist: 3 }] }))
+  const { qs, labels } = buildQuestions(o, { decision: true, goals: s })
+  const ids = Object.keys(qs.next_subtask.criteria)
+  assert.ok(ids.includes('mine_stone') && !ids.includes('craft(sticks)') && !ids.includes('gather_wood'))
+  assert.equal(labels.next_subtask, 'mine_stone')
+  assert.match(qs.subgoal_succeeds_60s.instructions, /gather 8 cobblestone/)
+  assert.match(serialize(o).split('\n')[0], /^Minecraft survival, day 1\. Goal from the audience \(alice\): gather 8 cobblestone/)
+  // a chain past step 48 does not ask the step question; a goal pushed on it does (the gate reads the unbased step)
+  const s2 = new GoalStack({ goal: 'nether' })
+  const done = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1, diamond_pickaxe: 1, diamond_sword: 1, diamond_axe: 1, water_bucket: 1, flint_and_steel: 1 }
+  const late = () => chainObs({ inventory: done, armor: { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 }, portalFrame: true, portalLit: true })
+  assert.ok(!buildQuestions(withStack(s2, late()), { decision: false, goals: s2 }).qs.subgoal_succeeds_60s)
+  s2.push({ kind: 'gather', arg: 'cobblestone', count: 8, source: 'leader', t: 0 })
+  assert.ok(buildQuestions(withStack(s2, late()), { decision: false, goals: s2 }).qs.subgoal_succeeds_60s)
+})
+
+test('subgoal_succeeds_60s under a pushed goal: a goal change is not progress; the active goal done in the horizon is success', () => {
+  const tl = [{ t: 0, step: 30, goal_id: 0 }, { t: 10, step: 101, goal_id: 1 }, { t: 70, step: 101, goal_id: 1 }].map(x => sample(x.t, x))
+  const ds = [dec(0, ['subgoal_succeeds_60s'])]
+  labelDecisions(ds, tl); assert.equal(ds[0].labels.subgoal_succeeds_60s, false)
+  const tl2 = [sample(0, { step: 30, goal_id: 0 }), sample(10, { step: 101, goal_id: 1 }), sample(15, { step: 101, goal_id: 1 }),
+    sample(40, { step: 30, goal_id: 0, goals_done: [1] }), sample(90, { step: 30, goal_id: 0 })]
+  const ds2 = [dec(15, ['subgoal_succeeds_60s']), dec(0, ['subgoal_succeeds_60s'])]
+  labelDecisions(ds2, tl2)
+  assert.equal(ds2[0].labels.subgoal_succeeds_60s, true)    // goal 1 done at 40, within 60 s of 15
+  assert.equal(ds2[1].labels.subgoal_succeeds_60s, false)   // goal 0 made no progress of its own
+  // progress inside the same goal still counts; a pop back to a goal whose own step advanced counts for that goal
+  const tl3 = [sample(0, { step: 102, goal_id: 1 }), sample(20, { step: 103, goal_id: 1 }), sample(70, { step: 103, goal_id: 1 })]
+  const ds3 = [dec(0, ['subgoal_succeeds_60s'])]
+  labelDecisions(ds3, tl3); assert.equal(ds3[0].labels.subgoal_succeeds_60s, true)
+})

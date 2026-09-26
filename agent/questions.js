@@ -24,22 +24,28 @@ export function questionFor(qid, { stepText = '', hostile = '', optionDescs = {}
   }
 }
 
-export function buildQuestions(obs, { decision }) {
+// goals: the runner's GoalStack (agent/goals.js): the offered list is its filter over options(obs) and the teacher its
+// teacher (both identity with only the default entry). obs.goalStep: the stack's step ({index, text, local, pushed});
+// when absent the step is computed as before. The forecast question is gated on the unbased (local) step: the chain's
+// < 48 or the tech tree's <= 7 for the default entry, always for a pushed goal (it is popped once done).
+export function buildQuestions(obs, { decision, goals = null }) {
   const qs = {}, labels = {}
   const chain = obs.goal === 'nether'
-  const step = chain ? chainStep(obs) : techStep(obs)
-  const tech = chain ? techStep(obs) : step
+  const gs = obs.goalStep ?? null
+  const step = gs ?? (chain ? chainStep(obs) : techStep(obs))
+  const local = gs ? (gs.local ?? gs.index) : step.index
+  const tech = chain || gs?.pushed ? techStep(obs) : step
   const c = counts(obs)
   if (decision) {
-    const opts = options(obs)
+    const opts = goals ? goals.filter(obs, options(obs)) : options(obs)
     qs.next_subtask = questionFor('next_subtask', { optionDescs: Object.fromEntries(opts.map(o => [o.id, o.desc])) })
-    labels.next_subtask = teacherSubtask(obs)
+    labels.next_subtask = goals ? goals.teacher(obs) : teacherSubtask(obs)
     if (obs.nearestHostile && obs.nearestHostile.dist <= HOSTILE_RANGE) {
       qs.threat_response = questionFor('threat_response', { hostile: obs.nearestHostile.name.replace(/_/g, ' ') })
       labels.threat_response = teacherThreat(obs)
     }
   }
-  if (chain ? step.index < 48 : step.index <= 7) { qs.subgoal_succeeds_60s = questionFor('subgoal_succeeds_60s', { stepText: step.text }); labels.subgoal_succeeds_60s = null }
+  if (gs?.pushed || (chain ? local < 48 : local <= 7)) { qs.subgoal_succeeds_60s = questionFor('subgoal_succeeds_60s', { stepText: step.text }); labels.subgoal_succeeds_60s = null }
   if (tech.index === 5 && c.rawIron === 0) { qs.iron_found_3min = questionFor('iron_found_3min'); labels.iron_found_3min = null }
   qs.damage_next_20s = questionFor('damage_next_20s'); labels.damage_next_20s = null
   if (obs.phase === 'dusk' || obs.phase === 'night') { qs.survive_until_morning = questionFor('survive_until_morning'); labels.survive_until_morning = null }
@@ -58,9 +64,13 @@ export function questionMeta() {
 }
 
 // ---- post-hoc labels over the per-second timeline -------------------------------------------------------------
-// timeline samples: {t, step, rawIron, ingots, health, dead, timeOfDay, day, done}
+// timeline samples: {t, step, rawIron, ingots, health, dead, timeOfDay, day, done} plus, with the goal stack, goal_id
+// (the goal on top at that second) and goals_done (ids of pushed goals completed at that second, only when any).
 const after = (tl, t) => tl.filter(s => s.t > t)
 const at = (tl, t) => { let cur = tl[0]; for (const s of tl) { if (s.t <= t) cur = s; else break } return cur }
+// Step progress counts only within one goal: a push or a pop changes the step's base, which is not progress. Samples
+// without goal_id (older logs, injected deaths) compare as before.
+const sameGoal = (a, b) => a.goal_id == null || b.goal_id == null || a.goal_id === b.goal_id
 
 export function labelDecisions(decisions, timeline) {
   const tl = [...timeline].sort((a, b) => a.t - b.t)
@@ -73,7 +83,7 @@ export function labelDecisions(decisions, timeline) {
       let v = null
       if (qid === 'subgoal_succeeds_60s') {
         const win = after(tl, d.t).filter(s => s.t <= d.t + HORIZONS.step)
-        if (win.some(s => s.step > now.step || s.done)) v = true
+        if (win.some(s => (sameGoal(s, now) && s.step > now.step) || s.done || (now.goal_id != null && s.goals_done?.includes(now.goal_id)))) v = true
         else if (end >= d.t + HORIZONS.step) v = false
       } else if (qid === 'iron_found_3min') {
         const win = after(tl, d.t).filter(s => s.t <= d.t + HORIZONS.iron)
