@@ -184,3 +184,27 @@ export function planChatLines({ pushed = [], planLines = [], chain = null } = {}
   if (chain) out.push(cut(`Chain: ${String(chain.stage).replace(/_/g, ' ')}, step ${chain.index} of ${chain.of}: ${chain.text}`))
   return out
 }
+
+// A goal as the bot says it in chat ("On it: ...", "Done: ...", "Gave up on ..."). go_to(player:<name>) and receive
+// speak to the requester (live stress session: "On it: go to player:Spacers Choice"): "come to you" and "take the <n>
+// <item> from you", or the player's name when it is someone else. requester: the requesting player (default: the name
+// in the goal's source 'audience:<name>').
+export function goalPhrase(g, requester = null) {
+  const h = x => String(x ?? '').replace(/_/g, ' ')
+  const who = requester ?? (typeof g.source === 'string' && g.source.startsWith('audience:') ? g.source.slice(9) : null)
+  const you = name => (name && name === who ? 'you' : name)
+  switch (g.kind) {
+    case 'gather': return `gather ${g.count ?? ''} ${h(g.arg)}`.replace(/\s+/g, ' ')
+    case 'craft_item': return `craft ${h(g.arg)}`
+    case 'find': return `find ${h(g.arg)}`
+    case 'go_to': {
+      const m = /^player:(\w{1,16})$/.exec(g.arg ?? '')
+      return m ? `come to ${you(m[1])}` : `go to ${h(g.arg)}`
+    }
+    case 'receive': return `take the ${g.count != null ? `${g.count} ` : ''}${h(g.arg)} from ${g.from ? you(g.from) : 'you'}`
+    case 'build': return `build ${h(g.arg)}`
+    case 'survive_night': return 'survive the night'
+    case 'return_to_base': return 'return to base'
+    default: return `${h(g.kind)}${g.arg ? ` ${h(g.arg)}` : ''}`
+  }
+}

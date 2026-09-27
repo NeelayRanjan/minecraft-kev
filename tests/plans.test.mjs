@@ -245,3 +245,20 @@ test('planChatLines: pushed goals, plans, the chain step; at most 3 lines of at 
   assert.equal(long.length, 3); for (const l of long) assert.ok(l.length <= 200, l.length)
   assert.deepEqual(planChatLines({ pushed: [], planLines: ['no plans'], chain: null }), ['No plans.'])
 })
+
+// Live stress session: "On it: go to player:Spacers Choice" and "On it: receive redstone block". goalPhrase speaks to the
+// requester: "come to you" / "take the 2 redstone block from you" (a name when the player is someone else).
+import { goalPhrase } from '../agent/plans.js'
+test('goalPhrase: go_to(player) and receive address the requester; the other kinds as before', () => {
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Spacers_Choice', source: 'audience:Spacers_Choice' }), 'come to you')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Steve', source: 'audience:Spacers_Choice' }), 'come to Steve')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Steve', source: 'leader' }), 'come to Steve')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Steve' }, 'Steve'), 'come to you')
+  assert.equal(goalPhrase({ kind: 'receive', arg: 'redstone_block', count: 2, from: 'Spacers_Choice', source: 'audience:Spacers_Choice' }), 'take the 2 redstone block from you')
+  assert.equal(goalPhrase({ kind: 'receive', arg: 'redstone_block', count: 2, from: 'Steve', source: 'audience:Spacers_Choice' }), 'take the 2 redstone block from Steve')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'y:12' }), 'go to y:12')
+  assert.equal(goalPhrase({ kind: 'gather', arg: 'cobblestone', count: 8 }), 'gather 8 cobblestone')
+  assert.equal(goalPhrase({ kind: 'craft_item', arg: 'iron_pickaxe' }), 'craft iron pickaxe')
+  assert.equal(goalPhrase({ kind: 'survive_night' }), 'survive the night')
+  assert.equal(goalPhrase({ kind: 'hunt', arg: 'white_wool', count: 3 }), 'hunt white wool')
+})

@@ -33,7 +33,7 @@ import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStac
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
-import { PlanBook, planTitle, stepText, guardPlanAnswer, planChatLines } from './plans.js'
+import { PlanBook, planTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
 import { expandItem } from './recipes.js'
 import { PluginRegistry, appendRequestLog } from './plugins.js'
 import { startStatusServer } from './status_page.js'
@@ -200,19 +200,7 @@ const planBook = new PlanBook()
 const requestLogPath = path.join('out', `${name}.requests.jsonl`)
 const PLAN_WORDS = new Set(['plan', 'plans', 'stack'])   // chat words answered by code, never by a leader call
 let lastForecasts = {}   // kev's latest forecasts (the status page)
-const goalPhrase = g => {
-  const h = x => String(x ?? '').replace(/_/g, ' ')
-  switch (g.kind) {
-    case 'gather': return `gather ${g.count ?? ''} ${h(g.arg)}`.replace(/\s+/g, ' ')
-    case 'craft_item': return `craft ${h(g.arg)}`
-    case 'find': return `find ${h(g.arg)}`
-    case 'go_to': return `go to ${h(g.arg)}`
-    case 'build': return `build ${h(g.arg)}`
-    case 'survive_night': return 'survive the night'
-    case 'return_to_base': return 'return to base'
-    default: return `${h(g.kind)}${g.arg ? ` ${h(g.arg)}` : ''}`
-  }
-}
+// goalPhrase (plans.js): go_to(player) and receive speak to the requester
 const whyTail = (why, sep = ': ') => { const w = sanitizeChat(why, 200).trim(); return w ? `${sep}${w}` : '' }
 // The offered list everywhere (kev's question, the teacher, the leader, the LLM policy): options under the top goal.
 const offeredFor = o => goalStack.filter(o, optionsFor(o))
@@ -483,7 +471,7 @@ function leaderAnswered(snap, a, err) {
     const g = { id: pushed.id, kind: pushed.kind, arg: pushed.arg, count: pushed.count, source: pushed.source }
     elog.event({ t, kind: 'goal_pushed', goal: g, why: a.why ?? null })
     goalLog.push({ ...g, t: +t.toFixed(1), why: a.why ?? null, end_t: null, outcome: null })
-    say(`On it: ${goalPhrase(g)}${res.note ? ` (${sanitizeChat(res.note, 60)})` : ''}${whyTail(a.why) || '.'}`)
+    say(`On it: ${goalPhrase({ ...g, ...(pushed.from ? { from: pushed.from } : {}) }, reqs[0]?.name ?? null)}${res.note ? ` (${sanitizeChat(res.note, 60)})` : ''}${whyTail(a.why) || '.'}`)
   } else if (res.kind === 'pop_goal' && goalStack.top().plan_id != null) {
     // a plan step: popping it would only see it pushed again next tick, so the plan skips the step instead
     editPlans({ op: 'skip', plan_id: null, why: a.why ?? null, via: 'pop_goal' }, t)
