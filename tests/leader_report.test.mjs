@@ -370,3 +370,21 @@ test('renderReport: wires the requestLines option into the Motor backlog section
   assert.match(withEntries, /## Motor backlog/)
   assert.match(withEntries, /\| a \| b \| no \|/)
 })
+
+// Blueprint plans: a build/dig step shows its title and where it goes, and the blueprint's last progress (meta.blueprints,
+// written by finish(); else the last blueprint_progress event) beside its outcome.
+test('plansSummary / renderPlansSection: a blueprint plan with its progress', () => {
+  const plan = { id: 2, title: 'hut (5x5x3)', source: 'audience:tester', t: 30, cursor: 1, status: 'running', end_t: null, reason: null,
+    steps: [{ kind: 'gather', arg: 'cobblestone', count: 12 }, { kind: 'build', arg: 'bp1', count: null, title: 'hut (5x5x3)', where: 'in front of you' }] }
+  const json = { meta: { minutes: 10, plans: [plan], blueprints: { bp1: { title: 'hut (5x5x3)', kind: 'build', progress: 'layer 2 of 4, 30 of 71 blocks', finished: false } } }, events: [], decisions: [], leader: [] }
+  const s = summarizeLeaderLog(json)
+  assert.deepEqual(s.plans[0].steps.map(x => [x.text, x.outcome, x.progress ?? null]), [['mine 12 cobblestone', 'done', null], ['build hut (5x5x3) in front of you', 'running', 'layer 2 of 4, 30 of 71 blocks']])
+  const md = renderPlansSection(s.plans)
+  assert.match(md, /\| 2\. build hut \(5x5x3\) in front of you \| running: layer 2 of 4, 30 of 71 blocks \|/)
+  // the fallback: the last blueprint_progress event
+  const ev = { meta: { minutes: 10 }, decisions: [], leader: [], events: [
+    { t: 30, kind: 'plan_added', plan: { id: 1, title: 'room (3x3x2)', source: 'leader', steps: [{ kind: 'dig', arg: 'bp3', count: null, title: 'room (3x3x2)', where: 'here' }] } },
+    { t: 31, kind: 'plan_step', plan_id: 1, step_index: 0, of: 1, step: { kind: 'dig', arg: 'bp3', count: null }, goal_id: 1 },
+    { t: 40, kind: 'blueprint_progress', id: 'bp3', progress: '4 of 18 cells' }, { t: 50, kind: 'blueprint_progress', id: 'bp3', progress: '12 of 18 cells' }] }
+  assert.deepEqual(summarizeLeaderLog(ev).plans[0].steps.map(x => [x.text, x.outcome, x.progress]), [['dig room (3x3x2) here', 'running', '12 of 18 cells']])
+})

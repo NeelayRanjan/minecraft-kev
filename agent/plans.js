@@ -38,6 +38,19 @@ export function stepText({ kind, arg, count, from, title, where } = {}) {
   }
 }
 
+// The chat line announcing a new plan: its numbered steps; a plan whose only step is a blueprint says what it does
+// ("Plan #4: building hut (5x5x3) in front of you.").
+export function planAnnouncement(p) {
+  const [only] = p.steps
+  if (p.steps.length === 1 && (only.kind === 'build' || only.kind === 'dig') && only.title)
+    return `Plan #${p.id}: ${only.kind === 'build' ? 'building' : 'digging'} ${only.title}${only.where ? ` ${only.where}` : ''}.`
+  return `Plan #${p.id} ${p.title}: ${p.steps.map((s, i) => `${i + 1}) ${stepText(s)}`).join(' ')}`
+}
+// The chat line when a plan step starts; a blueprint step adds its progress ("layer 1 of 4, 0 of 71 blocks").
+export function stepStartText(step, index, of, progress = '') {
+  return `Step ${index + 1}/${of}: ${stepText(step)}${progress ? ` (${progress})` : ''}`
+}
+
 export class PlanBook {
   constructor() { this.plans = []; this.nextId = 1 }
   static fromJSON({ plans = [] } = {}) {

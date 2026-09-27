@@ -158,14 +158,14 @@ export function goalsSummary(events, calls, endedT = null) {
 // without `plans` (the same gap as `deaths`), so meta.plans can be missing even though the plan_* events are all
 // there; planRowsFromEvents rebuilds the same shape from plan_added/plan_step/plan_done/plan_blocked/plan_edit for
 // that case.
-function planRowFromMeta(p) {
+function planRowFromMeta(p, progress = {}) {
   const steps = p.steps.map((s, i) => {
     let outcome
     if (i < p.cursor) outcome = s.skipped ? 'skipped' : 'done'
     else if (i === p.cursor && p.status === 'blocked') outcome = `blocked${p.reason ? ` (${p.reason})` : ''}`
     else if (i === p.cursor && p.status === 'running') outcome = 'running'
     else outcome = 'pending'
-    return { index: i, text: stepText(s), outcome }
+    return withProgress({ index: i, text: stepText(s), outcome }, s, progress)
   })
   const end = p.status === 'done' ? `done at ${fmtSecs(p.end_t)}`
     : p.status === 'blocked' ? `blocked at ${fmtSecs(p.end_t)} (step ${p.cursor + 1})${p.reason ? `: ${p.reason}` : ''}`
@@ -178,7 +178,7 @@ function planRowFromMeta(p) {
 // step) after it, and a plan_edit "skip" between the two turns "done" into "skipped" (skip carries no plan_id, so
 // this can misattribute a skip to the wrong plan when more than one plan was ever active; meta.plans has no such
 // ambiguity, which is why it is preferred).
-function planRowsFromEvents(events) {
+function planRowsFromEvents(events, progress = {}) {
   const added = events.filter(e => e.kind === 'plan_added')
   const skips = events.filter(e => e.kind === 'plan_edit' && e.op === 'skip')
   return added.map(e => {
@@ -195,7 +195,7 @@ function planRowsFromEvents(events) {
       else if (cur && nextT != null) outcome = skips.some(sk => sk.t > cur.t && sk.t <= nextT) ? 'skipped' : 'done'
       else if (cur) outcome = 'running'
       else outcome = 'pending'
-      return { index: i, text: stepText(s), outcome }
+      return withProgress({ index: i, text: stepText(s), outcome }, s, progress)
     })
     const end = doneEv ? `done at ${fmtSecs(doneEv.t)}`
       : blockedEv ? `blocked at ${fmtSecs(blockedEv.t)} (step ${blockedEv.step_index + 1})${blockedEv.reason ? `: ${blockedEv.reason}` : ''}`
@@ -205,10 +205,24 @@ function planRowsFromEvents(events) {
   })
 }
 
+// A blueprint step (build/dig of a bp<n>) carries the blueprint's last progress line: meta.blueprints (finish()) or,
+// without it, the last blueprint_progress event of that id.
+function blueprintProgress(json) {
+  const out = {}
+  for (const e of json.events || []) if (e.kind === 'blueprint_progress' && e.id) out[e.id] = e.progress
+  for (const [id, b] of Object.entries(json.meta?.blueprints || {})) if (b?.progress) out[id] = b.progress
+  return out
+}
+function withProgress(row, step, progress) {
+  const p = (step.kind === 'build' || step.kind === 'dig') && step.arg ? progress[step.arg] : null
+  return p ? { ...row, progress: p } : row
+}
+
 export function plansSummary(json) {
   const metaPlans = json.meta?.plans
-  if (metaPlans && metaPlans.length) return metaPlans.map(planRowFromMeta)
-  return planRowsFromEvents(json.events || [])
+  const progress = blueprintProgress(json)
+  if (metaPlans && metaPlans.length) return metaPlans.map(p => planRowFromMeta(p, progress))
+  return planRowsFromEvents(json.events || [], progress)
 }
 
 export function summarizeLeaderLog(json) {
@@ -383,7 +397,7 @@ export function renderPlansSection(plans) {
   for (const p of plans) {
     lines.push(`#${p.id} ${esc(p.title)} (source: ${esc(p.source ?? '-')}, added ${fmtSecs(p.t)})`, '')
     lines.push('| step | outcome |', '|---|---|')
-    for (const s of p.steps) lines.push(`| ${s.index + 1}. ${esc(s.text)} | ${esc(s.outcome)} |`)
+    for (const s of p.steps) lines.push(`| ${s.index + 1}. ${esc(s.text)} | ${esc(s.outcome)}${s.progress ? `: ${esc(s.progress)}` : ''} |`)
     lines.push('', `end state: ${esc(p.end)}`, '')
   }
   return lines.join('\n')

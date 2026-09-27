@@ -31,9 +31,14 @@ import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
-import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
-import { PlanBook, planTitle, stepText, guardPlanAnswer } from './plans.js'
-import { expandItem } from './recipes.js'
+import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, registerBlueprintAccessor, isBlueprintId } from './goals.js'
+import { PlanBook, planTitle, stepText, guardPlanAnswer, planAnnouncement, stepStartText, BLOCKED_WINDOW_S } from './plans.js'
+import { expandItem, expandBlueprint } from './recipes.js'
+import { Vec3 } from 'vec3'
+import { BlueprintBook, bookAccessor } from './blueprint_book.js'
+import { makeBlueprint, checkParams } from './templates.js'
+import { foundation, layerCut, facingFromYaw } from './blueprints.js'
+import { anchorFor, facingToward, parseDataPos, splitGatherSteps, blueprintTitle, progressText, blueprintGrid } from './blueprint_plans.js'
 import { PluginRegistry, appendRequestLog } from './plugins.js'
 import { startStatusServer } from './status_page.js'
 import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
@@ -134,6 +139,15 @@ registry.watch()
 motor.plugins = registry
 registerOptionProvider((o, g) => registry.optionsFor(o, g))
 elog.event({ t: 0, kind: 'plugins_loaded', loaded: pluginsLoaded.loaded, failed: pluginsLoaded.failed })
+// The blueprint book (agent/blueprint_book.js): every blueprint of the episode by id (bp<n>), read through the bot's
+// world. The same accessor goes to the goal layer (build(bp<n>) / dig(bp<n>) goals) and to the motor (the
+// build_blueprint / dig_blueprint executors). A blueprint counts as on the surface when its anchor sees the sky.
+const blueprintBook = new BlueprintBook()
+const blockAtP = p => bot.blockAt(new Vec3(p.x, p.y, p.z))
+const skyAt = p => { const b = p && blockAtP(p); return !!b && (b.skyLight ?? 0) >= 12 }
+const bpAccessor = bookAccessor(blueprintBook, { blockAt: blockAtP, isSurface: bp => skyAt(bp?.anchor) })
+motor.blueprints = bpAccessor
+registerBlueprintAccessor(bpAccessor)
 let recorder = null
 if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
 // The live view (--live-view <port>): prismarine-viewer's browser web viewer, separate from the recorder above (which
@@ -173,6 +187,10 @@ let lastIdleWaitT = null   // last leaderNote('idle_wait'): kev picking wait und
 // decision, the last 5 values of each forecast (the trend line) and kev's last pick with its top alternatives.
 let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}, kevPick = null, leaderCalls = 0
 let lastObs = null   // the latest tick's obs: the leader's threat guard re-checks it when an answer arrives
+// Blueprints: the bot's last walk direction (a blueprint made where the bot arrives faces it), the last position it
+// was measured from, and the feedback on a refused free-form blueprint (shown to the next leader call; a second refusal
+// is answered cannot).
+let lastWalkFacing = null, lastWalkPos = null, bpFeedback = null
 const threatNearIn = o => !!(o?.nearestHostile && o.nearestHostile.dist <= 16)
 const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
 // Chat: requests from players (never the bot itself, never system lines) for the leader's prompt (agent/leader.js
@@ -225,6 +243,8 @@ bot.on('message', (jsonMsg, position) => {
     elog.event({ t, kind: 'chat_command', name: c.name, text: text.trim().toLowerCase() })
     log(`chat <${c.name}> ${text} (answered by code)`)
     for (const line of planBook.render()) say(line)
+    const bl = activeBlueprintId()
+    if (bl) { try { const line = blueprintBook.line(bl, blockAtP, lastObs?.inventory ?? {}); if (line) say(line) } catch {} }
     return
   }
   requestBook.add({ t, name: c.name, text })
@@ -256,6 +276,8 @@ function startSubtask(id, source, obs) {
     if (!byLeader) recent = [...recent, { id, result: r.result }].slice(-REPEAT_WINDOW)
     lastResult = { id, result: r.result, repeats, recent }
     elog.event({ t: now(), kind: 'subtask_done', id, result: r.result, detail: r.detail ?? null })
+    const bpRun = /^(?:build|dig)_blueprint\((bp\d+)\)$/.exec(id)
+    if (bpRun) { try { elog.event({ t: now(), kind: 'blueprint_progress', id: bpRun[1], progress: progressText(blueprintBook.progress(bpRun[1], blockAtP)) }) } catch {} }
     if (r.detail !== 'leader') { leaderNote('subtask_done'); if (goalsOn && r.result !== 'ok') leaderNote('subtask_failed') }   // the leader's own interrupt is not news to it
     log(`${id} -> ${r.result}${r.detail ? ` (${r.detail})` : ''}`)
   }).catch(e => {
@@ -281,6 +303,10 @@ function tick() {
   obs.goalTop = pubGoal(goalStack.top())         // receive(<item>) reads the giver and the count here (not in the state text)
   obs.goalText = goalStack.describe(obs)
   obs.goalStep = goalStepOf(obs)
+  const topGoal = goalStack.top()   // a build/dig blueprint goal on top: its line in the state text (none otherwise)
+  obs.blueprintLine = (topGoal.kind === 'build' || topGoal.kind === 'dig') && isBlueprintId(topGoal.arg) ? blueprintBook.line(topGoal.arg, blockAtP, obs.inventory) : null
+  if (lastWalkPos && Math.hypot(obs.pos.x - lastWalkPos.x, obs.pos.z - lastWalkPos.z) >= 0.5) lastWalkFacing = facingToward(lastWalkPos, obs.pos) ?? lastWalkFacing
+  lastWalkPos = { x: obs.pos.x, y: obs.pos.y, z: obs.pos.z }
   const step = obs.goalStep, c = counts(obs)
   if (goal === 'nether') {
     const st = stageOf(obs).index
@@ -403,8 +429,10 @@ function leaderTick(obs, t) {
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
-      ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
+      ...(goalsOn ? { goals: true, blueprints: true, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })),
+        blueprintCut: blueprintCutFor(t), blueprintFeedback: bpFeedback ? { title: bpFeedback.title, reason: bpFeedback.reason } : null } : {}),
     }
+    if (bpFeedback) bpFeedback.shown = true
     requestBook.shown(shownReqs.map(r => r.id))
   } catch (e) {
     leaderAsk = null
@@ -446,7 +474,14 @@ function leaderAnswered(snap, a, err) {
     catch (e) { res = { kind: 'invalid', id: 'push_goal', reason: String(e?.message || e).slice(0, 160) } }
   } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
   // an invalid push or plan answer is replied to below ("Can't do that yet: <reason>"), so it answers the requests like cannot
-  const settleAs = settleKind(res, reqs.length > 0)
+  // A refused free-form blueprint: the first refusal goes back to the leader with the reason (BLUEPRINT FEEDBACK in the
+  // next prompt; the requests stay open and the next call comes at once); a second one is answered cannot.
+  let bpRetry = false
+  if (res.kind === 'invalid' && res.id === 'plan_blueprint') {
+    if (!bpFeedback) { bpFeedback = { title: res.title ?? 'blueprint', reason: res.reason ?? 'refused', t: +t.toFixed(1), shown: false }; bpRetry = true }
+    else bpFeedback = null
+  } else if (bpFeedback?.shown && res.kind !== 'error') bpFeedback = null   // the call that saw it answered something else
+  const settleAs = bpRetry ? 'invalid' : settleKind(res, reqs.length > 0)
   const waiting = reqs.filter(r => !r.answered)
   const notNow = requestBook.settle(reqs.map(r => r.id), settleAs, +t.toFixed(1))
   const settled = waiting.filter(r => r.answered).map(r => ({ t: r.t, name: r.name, as: r.answered.kind }))
@@ -493,6 +528,14 @@ function leaderAnswered(snap, a, err) {
   } else if (res.kind === 'say') {
     elog.event({ t, kind: 'leader_say', text: res.text, why: a.why ?? null })
     say(res.text)
+  } else if (res.kind === 'plan_build' || res.kind === 'plan_dig' || res.kind === 'plan_blueprint') {
+    planBlueprint(res, reqs, src, a.why ?? null).catch(e => {
+      log(`blueprint plan failed: ${e?.stack || e}`)
+      try { elog.event({ t: now(), kind: 'blueprint_error', error: String(e?.message || e).slice(0, 200) }); say(`Can't plan that: ${sanitizeChat(e?.message || e, 120)}`) } catch {}
+    })
+  } else if (bpRetry) {
+    elog.event({ t, kind: 'blueprint_refused', title: bpFeedback.title, reason: bpFeedback.reason, why: a?.why ?? null })
+    leaderNote('audience_request')   // the next call (with the feedback) comes at once
   } else {
     elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
     // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
@@ -521,7 +564,7 @@ function onGoalEvent(e, t) {
 
 // ---- plans ------------------------------------------------------------------------------------------------------------
 const planOf = id => planBook.plans.find(p => p.id === id)
-const stepOf = s => s ? { kind: s.kind, arg: s.arg ?? null, count: s.count ?? null, ...(s.from != null ? { from: s.from } : {}) } : null
+const stepOf = s => s ? { kind: s.kind, arg: s.arg ?? null, count: s.count ?? null, ...(s.from != null ? { from: s.from } : {}), ...(s.title ? { title: s.title, where: s.where ?? null } : {}) } : null
 const humanItem = x => String(x).replace(/_/g, ' ')
 const capital = s => s.charAt(0).toUpperCase() + s.slice(1)
 
@@ -558,6 +601,12 @@ function syncPlans(obs, t) {
     closeGoal(top.id, t, 'popped')
   }
   if (!want) return
+  if ((want.kind === 'dig' || want.kind === 'build') && want.lazy && !want.arg) {   // at_y: the blueprint is made where the bot arrived
+    const made = makeLazyBlueprint(want, t)
+    if (made.reason) { for (const ev of planBook.advance({ kind: 'goal_failed', plan_id: want.plan_id, step_index: want.step_index, reason: made.reason }, t)) onPlanEvent(ev, t); return }
+    planOf(want.plan_id).steps[want.step_index].arg = made.id
+    want.arg = made.id
+  }
   const p = planOf(want.plan_id), goal = planStepGoal(want, obs)
   let g
   try { g = goalStack.push({ ...goal, source: p.source, t: +t.toFixed(1), obs, plan_id: want.plan_id, step_index: want.step_index }) }
@@ -570,14 +619,16 @@ function syncPlans(obs, t) {
   goalLog.push({ ...pg, plan_id: p.id, step_index: want.step_index, t: +t.toFixed(1), why: null, end_t: null, outcome: null })
   elog.event({ t, kind: 'plan_step', plan_id: p.id, step_index: want.step_index, of: p.steps.length, step: stepOf(want), goal_id: g.id, target: g.count })
   log(`plan #${p.id} ${p.title}: step ${want.step_index + 1}/${p.steps.length} ${stepText(want)} (goal #${g.id}${g.count != null ? `, target ${g.count}` : ''})`)
-  say(`Step ${want.step_index + 1}/${p.steps.length}: ${stepText(want)}`)
+  let progress = ''
+  if (isBlueprintId(want.arg)) { try { progress = progressText(blueprintBook.progress(want.arg, blockAtP)) } catch {} }
+  say(stepStartText(want, want.step_index, p.steps.length, progress))
 }
 
 function addPlan({ title, steps, source }, t, why = null) {
   const p = planBook.add({ title, steps, source, t: +t.toFixed(1) })
   elog.event({ t, kind: 'plan_added', plan: { id: p.id, title: p.title, source: p.source, steps: p.steps.map(stepOf) }, why })
   log(`plan #${p.id} ${p.title}: ${p.steps.map(stepText).join(', ')}`)
-  say(`Plan #${p.id} ${p.title}: ${p.steps.map((s, i) => `${i + 1}) ${stepText(s)}`).join(' ')}`)
+  say(planAnnouncement(p))
   return p
 }
 
@@ -609,6 +660,135 @@ function planItem(res, reqs, source, t, why) {
     elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: [], held: true, why })
     say(`Already have ${title}.`)
   } else addPlan({ title, steps: ex.steps, source }, t, why)
+}
+
+// ---- blueprint plans (plan_build / plan_dig / plan_blueprint) ------------------------------------------------------
+// Where a shape goes (agent/blueprint_plans.js anchorFor), fixed now: the requesting player's floored feet and look
+// direction; a player with no entity in view: the server-reported position (/data get entity), faced from the bot; no
+// player (the leader acting alone): the bot, facing its last walk direction.
+async function anchorForRequest(name) {
+  const self = { pos: bot.entity.position, yaw: bot.entity.yaw, facing: lastWalkFacing }
+  if (!name) return anchorFor({ bot: self })
+  const e = bot.players?.[name]?.entity
+  if (e?.position) return { ...anchorFor({ player: { pos: e.position, yaw: e.yaw }, bot: self }), playerPos: e.position.clone?.() ?? e.position }
+  const serverPos = await queryPlayerPos(name)
+  return { ...anchorFor({ serverPos, bot: self }), playerPos: serverPos }
+}
+// The server's answer to `/data get entity <name> Pos` (the bot is an op), or null within ms.
+function queryPlayerPos(name, ms = 3000) {
+  return new Promise(resolve => {
+    let done = false
+    const finish = v => { if (done) return; done = true; clearTimeout(timer); bot.removeListener('message', onMsg); resolve(v) }
+    const onMsg = (msg, position) => {
+      if (position === 'chat') return
+      let text = ''
+      try { text = String(msg?.toString?.() ?? '') } catch {}
+      const p = parseDataPos(text, name)
+      if (p) finish(p)
+      else if (/^No entity was found/.test(text.trim())) finish(null)
+    }
+    const timer = setTimeout(() => finish(null), ms)
+    bot.on('message', onMsg)
+    try { bot.chat(`/data get entity ${name} Pos`) } catch { finish(null) }
+  })
+}
+const PENDING_BP = 'bp0'   // the blueprint step's id while pricing (the book's ids start at bp1)
+const verbOf = res => res.kind === 'plan_build' || res.blueprint?.kind === 'build' ? 'build' : 'dig'
+
+// A template or free-form answer -> a blueprint anchored now (or, with at_y, made on arrival) -> priced by the recipe
+// expander (gather steps split at the goal caps) -> a plan titled "<template> (<dims>)". Refusals are a chat reply and
+// a motor-backlog line; a duplicate of an active plan asked by nobody adds nothing.
+async function planBlueprint(res, reqs, source, why) {
+  const name = reqs[0]?.name ?? null
+  const place = await anchorForRequest(name)
+  if (finished) return
+  const t = now(), o = lastObs
+  const refuse = (reason, title) => {
+    elog.event({ t, kind: 'plan_refused', blueprint: title, reason, why })
+    say(`Can't ${verbOf(res)} ${title}: ${reason}.`)
+    logRequests(reqs, t, { kind: res.kind, title, refused: reason, missing: null, why })
+  }
+  const lazy = res.kind === 'plan_dig' && res.at_y != null
+  const mine = place.from === 'bot'
+  let bp = null, probe
+  const provisional = { template: res.template, params: res.params, material: res.material ?? null, kind: res.kind === 'plan_build' ? 'build' : 'dig' }
+  try {
+    if (res.kind === 'plan_blueprint') bp = { ...res.blueprint, anchor: place.anchor, facing: place.facing }
+    else if (!lazy) {
+      const chk = checkParams(res.template, { ...res.params, ...(res.material ? { material: res.material } : {}) }, { anchorY: place.anchor.y })
+      if (!chk.ok) return refuse(chk.reason, blueprintTitle(provisional))
+      bp = makeBlueprint(res.template, chk.params, chk.params.material ?? null, { anchor: place.anchor, facing: place.facing })
+    }
+    // a dig made on arrival is priced as a room here (a dig takes only a pickaxe)
+    probe = bp ?? makeBlueprint('room', {}, null, { anchor: place.anchor, facing: place.facing })
+  } catch (e) { return refuse(String(e?.message || e), blueprintTitle(provisional)) }
+  const title = bp ? blueprintTitle(bp) : blueprintTitle(provisional)
+  const where = lazy ? `at y ${res.at_y}` : bp.kind === 'build' ? (mine ? 'in front of me' : 'in front of you') : (mine ? 'where I am' : 'here')
+  const dup = planBook.activeByTitle(title)
+  if (dup && !reqs.length) { elog.event({ t, kind: 'plan_duplicate', plan_id: dup.id, title, why }); say(`Already on it: plan #${dup.id}.`); return }
+  const ex = expandBlueprint(probe, { ...(o?.inventory || {}) }, { placed: placedStations(o), foundationCount: bp?.kind === 'build' ? foundation(bp, blockAtP).length : 0, id: PENDING_BP })
+  if (ex.reason) return refuse(ex.reason, title)
+  if (ex.missing.length) return refuse(`needs ${ex.missing.map(humanItem).join(', ')} (no way to get it)`, title)
+  const mats = ex.steps.filter(st => st.arg !== PENDING_BP)
+  const gate = mats.length && o ? checkPlanGates(mats, o) : null
+  if (gate) return refuse(gate.reason, title)
+  const id = bp ? blueprintBook.add({ ...bp, title }) : null
+  const bpStep = { kind: probe.kind, arg: id, count: null, title, where, ...(lazy ? { lazy: { template: res.template, params: res.params }, at_y: res.at_y } : {}) }
+  const steps = [...splitGatherSteps(mats), ...(lazy ? [{ kind: 'go_to', arg: `y:${res.at_y}`, count: null }] : []), bpStep]
+  const p = addPlan({ title, steps, source }, t, why)
+  const pp = place.playerPos ? { x: +place.playerPos.x.toFixed(2), y: +place.playerPos.y.toFixed(2), z: +place.playerPos.z.toFixed(2) } : null
+  elog.event({ t, kind: 'blueprint_plan', plan_id: p.id, id, title, bp_kind: probe.kind, template: res.template ?? null, from: place.from, player: name, player_pos: pp,
+    anchor: lazy ? null : place.anchor, facing: lazy ? null : place.facing, at_y: lazy ? res.at_y : null })
+  log(`blueprint plan #${p.id} ${title}: ${lazy ? `made at y ${res.at_y} on arrival` : `${id} anchored at ${place.anchor.x},${place.anchor.y},${place.anchor.z} facing ${place.facing} (${place.from}${name ? ` ${name}` : ''})`}`)
+}
+
+// The at_y dig step when it comes up: anchored at the bot, facing its last walk direction; stairs targets re-checked
+// against the arrival y. { id } | { reason }.
+function makeLazyBlueprint(step, t) {
+  const f = bot.entity.position
+  const anchor = { x: Math.floor(f.x), y: Math.floor(f.y), z: Math.floor(f.z) }, facing = lastWalkFacing ?? facingFromYaw(bot.entity.yaw)
+  const { template, params } = step.lazy
+  const chk = checkParams(template, params, { anchorY: anchor.y })
+  if (!chk.ok) return { reason: chk.reason }
+  try {
+    const id = blueprintBook.add({ ...makeBlueprint(template, chk.params, null, { anchor, facing }), title: step.title })
+    elog.event({ t, kind: 'blueprint_made', plan_id: step.plan_id, id, title: step.title, anchor, facing })
+    log(`blueprint ${id} ${step.title}: anchored on arrival at ${anchor.x},${anchor.y},${anchor.z} facing ${facing}`)
+    return { id }
+  } catch (e) { return { reason: String(e?.message || e) } }
+}
+
+// The blueprint shown on the status page and in `plan`: the top goal's, else the front plan's next blueprint step's,
+// else the one added last.
+function activeBlueprintId() {
+  const top = goalStack.top()
+  if ((top.kind === 'build' || top.kind === 'dig') && isBlueprintId(top.arg)) return top.arg
+  for (const p of planBook.active()) { const st = p.steps.slice(p.cursor).find(x => isBlueprintId(x.arg)); if (st) return st.arg }
+  return null
+}
+// The leader's 9x9 cut while a blueprint goal is active (on top) or blocked (a plan blocked within the window at a
+// blueprint step); null otherwise, so the prompt is unchanged without one.
+function blueprintCutFor(t) {
+  let id = null
+  const top = goalStack.top()
+  if ((top.kind === 'build' || top.kind === 'dig') && isBlueprintId(top.arg)) id = top.arg
+  else {
+    const p = [...planBook.plans].reverse().find(q => q.status === 'blocked' && q.end_t != null && t - q.end_t <= BLOCKED_WINDOW_S && isBlueprintId(q.steps[q.cursor]?.arg))
+    id = p ? p.steps[p.cursor].arg : null
+  }
+  const bp = id && blueprintBook.get(id)
+  if (!bp) return null
+  const pr = blueprintBook.progress(id, blockAtP)
+  return { title: blueprintTitle(bp), layer: pr.layer, of: pr.layers, lines: layerCut(bp, pr.layer - 1, blockAtP, bot.entity.position) }
+}
+function blueprintsMeta() {
+  const out = {}
+  for (const [id, bp] of blueprintBook.blueprints) {
+    let pr = null
+    try { pr = blueprintBook.progress(id, blockAtP) } catch {}
+    out[id] = { title: bp.title, kind: bp.kind, template: bp.template ?? null, anchor: bp.anchor, facing: bp.facing, progress: progressText(pr), finished: !!pr?.finished }
+  }
+  return out
 }
 
 // edit (the leader's, or pop_goal on a plan step): skip | drop | move_front | clear; the reply is the plan book's line.
@@ -655,7 +835,8 @@ async function finish(reason) {
   elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, ...stageMeta(), video_frames: recorder ? recorder.frames() : null,
     video_dupes: recorder ? recorder.stats().dupes : null,
     ...(goalsOn || goalLog.length || requestBook.all.length ? { goals: goalsMeta() } : {}),
-    ...(planBook.plans.length ? { plans: planBook.toJSON().plans } : {}) })
+    ...(planBook.plans.length ? { plans: planBook.toJSON().plans } : {}),
+    ...(blueprintBook.blueprints.size ? { blueprints: blueprintsMeta() } : {}) })
   const json = elog.toJSON(), recs = elog.toRecords()
   fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(json)); wrote = true
   fs.writeFileSync(path.join('out', `${name}.jsonl`), recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : ''))
@@ -676,7 +857,16 @@ function statusState() {
     forecasts: lastForecasts, chat: chatLines.slice(-10),
     leader: elog.leader.slice(-10).map(l => ({ t: l.t_answered ?? l.t_asked, action: l.action, kind: l.kind, why: l.why })),
     plugins: registry.list(),
+    blueprint: statusBlueprint(),
   }
+}
+function statusBlueprint() {
+  try {
+    const id = activeBlueprintId() ?? (blueprintBook.next > 1 ? `bp${blueprintBook.next - 1}` : null)
+    const bp = id && blueprintBook.get(id)
+    if (!bp) return null
+    return { ...blueprintGrid(bp, blockAtP, blueprintBook.scaffolds.get(id) ?? []), id, progress: progressText(blueprintBook.progress(id, blockAtP)) }
+  } catch (e) { return { title: `blueprint view failed: ${e?.message || e}`, layers: [] } }
 }
 let statusSrv = null
 if (statusPort) {

@@ -237,3 +237,18 @@ test('stepText: a blueprint step with its title and where it goes; without a tit
   assert.equal(stepText({ kind: 'dig', arg: null, title: 'strip mine (len 32)', where: 'at y -58' }), 'dig strip mine (len 32) at y -58')
   assert.equal(stepText({ kind: 'build', arg: 'bp1' }), 'build bp1')
 })
+
+import { planAnnouncement, stepStartText } from '../agent/plans.js'
+test('planAnnouncement: the numbered steps; a plan that is only its blueprint says building/digging <title> <where>', () => {
+  const hut = { kind: 'build', arg: 'bp1', count: null, title: 'hut (5x5x3)', where: 'in front of you' }
+  assert.equal(planAnnouncement({ id: 3, title: 'hut (5x5x3)', steps: [{ kind: 'gather', arg: 'cobblestone', count: 32 }, { kind: 'gather', arg: 'cobblestone', count: 28 }, hut] }),
+    'Plan #3 hut (5x5x3): 1) mine 32 cobblestone 2) mine 28 cobblestone 3) build hut (5x5x3) in front of you')
+  assert.equal(planAnnouncement({ id: 4, title: 'hut (5x5x3)', steps: [hut] }), 'Plan #4: building hut (5x5x3) in front of you.')
+  assert.equal(planAnnouncement({ id: 5, title: 'room (3x3x2)', steps: [{ kind: 'dig', arg: 'bp2', title: 'room (3x3x2)', where: 'here' }] }), 'Plan #5: digging room (3x3x2) here.')
+  assert.equal(planAnnouncement({ id: 6, title: 'compass', steps: [{ kind: 'craft_item', arg: 'compass', count: 1 }] }), 'Plan #6 compass: 1) craft compass')
+})
+test('stepStartText: the step line, with the blueprint\'s progress when it has one', () => {
+  assert.equal(stepStartText({ kind: 'gather', arg: 'cobblestone', count: 8 }, 0, 2), 'Step 1/2: mine 8 cobblestone')
+  assert.equal(stepStartText({ kind: 'build', arg: 'bp1', title: 'hut (5x5x3)', where: 'in front of you' }, 1, 2, 'layer 1 of 4, 0 of 71 blocks'),
+    'Step 2/2: build hut (5x5x3) in front of you (layer 1 of 4, 0 of 71 blocks)')
+})
