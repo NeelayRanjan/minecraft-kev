@@ -1083,3 +1083,19 @@ test('buildLeaderMessages: INVENTORY (exact) after the state, with chat only; th
   assert.equal(buildLeaderMessages({ ...bpGoalCtx, requests: [], inventory })[1].content, buildLeaderMessages({ ...bpGoalCtx, requests: [] })[1].content, 'no chat: unchanged')
   assert.ok(!buildLeaderMessages({ ...bpBaseCtx, inventory })[1].content.includes('INVENTORY'), 'goals mode only')
 })
+
+// Follow-ups for the retry session. A: the probe's white bed came back as plan_item "bed" (unknown item): the model's
+// name is normalized first (case, spaces, minecraft: prefix); still unknown, the request text's item is planned.
+import { unknownItemBackstop } from '../agent/leader.js'
+test('plan_item: the model item normalized; an unknown item falls back to the request text', () => {
+  const g = { currentId: 'mine_iron', askedCurrentId: 'mine_iron', offered, goalsEnabled: true }
+  assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'White Bed', count: 1 } } }).item, 'white_bed')
+  assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'minecraft:torch' } } }).item, 'torch')
+  const bad = applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'bed', count: 1 }, why: 'a bed' } })
+  assert.deepEqual(bad, { kind: 'invalid', id: 'plan_item', reason: 'unknown item bed' })
+  const reqs = [{ t: 1, name: 'Spacers_Choice', text: 'can you make me a white bed' }]
+  assert.deepEqual(unknownItemBackstop(bad, reqs, {}), { kind: 'plan_item', id: null, item: 'white_bed', count: 1, why: '', via: 'unknown_item' })
+  assert.equal(unknownItemBackstop(bad, [{ t: 1, name: 'A', text: 'make me a bed' }], {}), null, 'no item in the request: the invalid stands')
+  assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'plan_item', reason: 'bad count 0' }, reqs, {}), null)
+  assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'push_goal', reason: 'unknown item bed' }, reqs, {}), null)
+})

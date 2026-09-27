@@ -31,7 +31,7 @@ import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
-  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop } from './leader.js'
+  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
 import { PlanBook, planTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
@@ -442,6 +442,11 @@ function leaderAnswered(snap, a, err) {
   if (res.kind === 'cannot' && lastObs) {
     const b = cannotBackstop(res, reqs, lastObs.inventory, { placed: placedStations(lastObs) })
     if (b) { elog.event({ t, kind: 'leader_cannot_replanned', item: b.item, count: b.count, why: a?.why ?? null }); log(`leader: cannot replaced by plan_item ${b.item} x${b.count}`); res = b }
+  }
+  // likewise a plan_item naming an unknown item ("bed"): the request text's item ("white bed" -> white_bed) is planned
+  if (res.kind === 'invalid' && lastObs) {
+    const b = unknownItemBackstop(res, reqs, lastObs.inventory, { placed: placedStations(lastObs) })
+    if (b) { elog.event({ t, kind: 'leader_item_replanned', item: b.item, count: b.count, reason: res.reason, why: a?.why ?? null }); log(`leader: ${res.reason}, planning ${b.item} x${b.count} from the request`); res = { ...b, why: a?.why ?? '' } }
   }
   // The plan guards (plans.guardPlanAnswer): a duplicate title adds nothing; a plan blocked within 10 minutes is not
   // planned again unless a request that arrived after the block asks (settled as cannot, "still blocked: <reason>").

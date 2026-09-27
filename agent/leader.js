@@ -181,15 +181,26 @@ export function itemInRequest(text) {
 // item whose expansion has steps or a missing leaf becomes plan_item (the code plans it or says what is missing);
 // otherwise null and the cannot stands.
 export function cannotBackstop(res, requests = [], inventory = {}, { placed } = {}) {
-  if (res?.kind !== 'cannot' || res.night || res.guard || !requests?.length) return null
-  for (const r of requests.slice(0, MAX_REQUESTS)) {
+  if (res?.kind !== 'cannot' || res.night || res.guard) return null
+  return requestItemPlan(requests, inventory, placed, res.why ?? '', 'cannot')
+}
+// The same for a plan_item the validator refused as an unknown item (retry probe: "white bed" came back as plan_item
+// "bed"): the request text's item is planned instead, else null and the invalid answer stands.
+export function unknownItemBackstop(res, requests = [], inventory = {}, { placed } = {}) {
+  if (res?.kind !== 'invalid' || res.id !== 'plan_item' || !String(res.reason ?? '').startsWith('unknown item')) return null
+  return requestItemPlan(requests, inventory, placed, '', 'unknown_item')
+}
+function requestItemPlan(requests, inventory, placed, why, via) {
+  for (const r of (requests || []).slice(0, MAX_REQUESTS)) {
     const m = itemInRequest(r?.text)
     if (!m) continue
     const ex = expandItem(m.item, m.count, inventory || {}, placed ? { placed } : {})
-    if (ex.steps.length || ex.missing.length) return { kind: 'plan_item', id: null, item: m.item, count: m.count, why: res.why ?? '', via: 'cannot' }
+    if (ex.steps.length || ex.missing.length) return { kind: 'plan_item', id: null, item: m.item, count: m.count, why, via }
   }
   return null
 }
+// A model's item name as minecraft-data spells it: lowercase, no minecraft: prefix, spaces and dashes to underscores.
+const normItem = n => typeof n === 'string' ? n.trim().toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_') : n
 
 // The say guards (live stress session: say used to acknowledge instead of acting, 7 identical lines, and to refuse with
 // invented reasons). requests: the ones the call showed; recentSays: the leader's say texts so far (the last SAY_MEMORY
@@ -219,10 +230,11 @@ function applyPlanAnswer(action, answer, why, obs) {
   if (action === 'plan_item') {
     const it = answer.item
     if (!it || typeof it !== 'object') return bad('plan_item without an item')
-    if (!isItem(it.name)) return bad(`unknown item ${it.name}`)
+    const name = normItem(it.name)
+    if (!isItem(name)) return bad(`unknown item ${it.name}`)
     const count = it.count ?? 1
     if (!Number.isInteger(count) || count < 1) return bad(`bad count ${count}`)
-    return { kind: 'plan_item', id: null, item: it.name, count: Math.min(64, count), why }   // the expander's cap: the title matches the plan
+    return { kind: 'plan_item', id: null, item: name, count: Math.min(64, count), why }   // the expander's cap: the title matches the plan
   }
   if (action === 'plan_steps') {
     const raw = answer.steps
