@@ -47,6 +47,30 @@ test('interrupt aborts the running executor and reports the reason', async () =>
   assert.equal(motor.busy, false)
 })
 
+test('goto with its own Movements drops the goal before restoring the default Movements, however the walk settles', async () => {
+  for (const outcome of ['resolve', 'NoPath', 'Timeout']) {
+    const bot = fakeBot()
+    const calls = []
+    let goal = null, motor = null
+    bot.pathfinder.setGoal = g => { goal = g; calls.push(`goal:${g ? 'set' : 'null'}`) }
+    bot.pathfinder.setMovements = m => calls.push(`movements:${m === motor?.walkMovements ? 'walk' : m === motor?.movements ? 'default' : 'other'}`)
+    // pathfinder.goto sets its goal and settles without clearing it (an empty path, NoPath, a think timeout)
+    bot.pathfinder.goto = async g => {
+      bot.pathfinder.setGoal(g)
+      await sleep(5)
+      if (outcome !== 'resolve') { const e = new Error(outcome); e.name = outcome; throw e }
+    }
+    motor = new Motor(bot, mcDataFor('1.20.4'), new EpisodeMemory())
+    motor.deadline = Date.now() + 60_000
+    calls.length = 0
+    await motor.walkTo({ x: 1, y: 64, z: 1 }).catch(() => {})
+    const restore = calls.lastIndexOf('movements:default')
+    assert.ok(restore > 0, `${outcome}: default Movements restored (${calls.join(' ')})`)
+    assert.equal(calls[restore - 1], 'goal:null', `${outcome}: the goal is dropped right before (${calls.join(' ')})`)
+    assert.equal(goal, null, `${outcome}: no goal left live`)
+  }
+})
+
 import { Vec3 } from 'vec3'
 import { liquidAround } from '../agent/motor.js'
 
@@ -315,3 +339,4 @@ test('planksLog: the most-held log, unless the top goal wants one species and it
   assert.equal(planksLog({ birch_log: 5, oak_log: 1 }, { kind: 'chain', arg: null }), 'birch_log')
   assert.equal(planksLog({}, null), undefined)
 })
+

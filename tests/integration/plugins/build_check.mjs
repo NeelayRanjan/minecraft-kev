@@ -39,6 +39,20 @@ motor.log = s => {
   baseLog(s)
 }
 
+// Diagnostics (BUILD_TRACE=1): any path the pathfinder plans with block placements or digs, with the Movements it used
+// and who set them last (how fix round 2's root cause was found: default Movements replanning a goal left live).
+if (process.env.BUILD_TRACE) {
+  const pf = bot.pathfinder
+  const name = m => m === motor.walkMovements ? 'walk' : m === motor.movements ? 'default' : m === motor.dryMovements ? 'dry' : 'other'
+  let cur = null, lastSet = ''
+  const orig = pf.setMovements.bind(pf)
+  pf.setMovements = m => { cur = m; lastSet = new Error().stack.split('\n').slice(2, 6).map(s => s.trim()).join(' < '); return orig(m) }
+  bot.on('path_update', r => {
+    const acts = r.path.filter(p => p.toPlace?.length || p.toBreak?.length)
+    if (acts.length) log(`TRACE path with ${acts.length} place/break steps, movements ${name(cur)}, status ${r.status}, busy ${motor.busy} ${motor.current?.id ?? ''}; last setMovements: ${lastSet}`)
+  })
+}
+
 async function arena () {
   await A.reset()
   await cmd(`/fill ${X - 12} ${Y + 5} ${Z - 12} ${X + 12} ${Y + 14} ${Z + 12} air`)
@@ -76,6 +90,18 @@ function complete (id) {
 const hut = anchor => makeBlueprint('hut', { w: 5, d: 5, h: 3 }, 'cobblestone', { anchor, facing: 'north' })
 const anchorHere = () => ({ x: X, y: Y, z: Z })
 const run = name => !only || only.has(name)
+// A walk (no digging, no towers) that fails after 40 s instead of hanging the check.
+async function walkCapped (goal) {
+  motor.deadline = Date.now() + 60_000
+  const trail = []
+  const onTick = () => {
+    const p = bot.entity.position, v = bot.entity.velocity
+    trail.push(`${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)} v${v.y.toFixed(2)},${v.z.toFixed(2)}${bot.entity.onGround ? 'g' : ''}${bot.entity.isCollidedHorizontally ? 'H' : ''} ${Object.entries(bot.controlState).filter(([, on]) => on).map(([k]) => k.slice(0, 2)).join('')}`)
+    if (trail.length > 80) trail.shift()
+  }
+  bot.on('physicsTick', onTick)
+  try { await motor.walkWithin(goal, 40_000) } catch (e) { log(`walk trace (last ticks): ${trail.join(' | ')}`); throw e } finally { bot.removeListener('physicsTick', onTick) }
+}
 
 // (a) flat hut
 if (run('a')) {
@@ -150,7 +176,7 @@ if (run('d')) {
   const top = { x: X, y: Y + 5, z: Z - 7 }
   await cmd(`/tp ${USER} ${X + 0.5} ${Y} ${Z + 0.5}`); await bot.waitForTicks(20)
   let walked = false
-  try { await motor.walkTo(new goals.GoalBlock(top.x, top.y + 1, top.z)); walked = true } catch (e) { log(`walk up: ${e?.name} ${e?.message}`) }
+  try { await walkCapped(new goals.GoalBlock(top.x, top.y + 1, top.z)); walked = true } catch (e) { log(`walk up: ${e?.name} ${e?.message} (at ${bot.entity.position})`) }
   const f = bot.entity.position.floored()
   check(walked && blockAt(top)?.name === 'cobblestone' && f.x === top.x && f.y === top.y + 1 && f.z === top.z, `(d) the bot walks up onto the top step (at ${f})`)
 }
@@ -173,7 +199,7 @@ if (run('e')) {
   const low = { x: X, y: Y + 1, z: Z - 5 }
   await cmd(`/tp ${USER} ${X + 0.5} ${Y + 6} ${Z + 0.5}`); await bot.waitForTicks(30)
   let walked = false
-  try { await motor.walkTo(new goals.GoalBlock(low.x, low.y + 1, low.z)); walked = true } catch (e) { log(`walk down: ${e?.name} ${e?.message}`) }
+  try { await walkCapped(new goals.GoalBlock(low.x, low.y + 1, low.z)); walked = true } catch (e) { log(`walk down: ${e?.name} ${e?.message} (at ${bot.entity.position})`) }
   const f = bot.entity.position.floored()
   check(walked && blockAt(low)?.name === 'cobblestone' && f.x === low.x && f.y === low.y + 1 && f.z === low.z, `(e) the bot walks down to the lowest step (at ${f})`)
 }

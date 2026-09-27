@@ -47,6 +47,7 @@ export function fleeTargetPos({ hostilePos, attacker, livePlayerPos } = {}) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const MIN_STEP_MS = 2000   // a building step (a walk, a dig, a placement) is not started with less time left than this
+const STALL_MS = 5000      // a building walk that has not moved the bot for this long ends as a Timeout
 const PLACE_MS = 6000      // a placement: equip + placeBlock (its server-reply wait is 5 s)
 const ok = detail => ({ result: 'ok', detail })
 const fail = (result, detail) => ({ result, detail })
@@ -356,7 +357,14 @@ export class Motor {
     this.check()
     if (!movements) return this.bot.pathfinder.goto(goal)
     this.bot.pathfinder.setMovements(movements)
-    try { await this.bot.pathfinder.goto(goal) } finally { this.bot.pathfinder.setMovements(this.movements) }
+    // pathfinder.goto settles on an empty path, a NoPath or a think Timeout without clearing its goal: the pathfinder
+    // keeps walking toward it, and restoring the default Movements (digging, 1x1 towers, dirt/cobblestone scaffolding)
+    // under a live goal replans it with those (build_check (c): the bot towered cobblestone into a hut's interior and
+    // stood on its roof). Drop the goal first, then restore.
+    try { await this.bot.pathfinder.goto(goal) } finally {
+      this.bot.pathfinder.setGoal(null)
+      this.bot.pathfinder.setMovements(this.movements)
+    }
   }
   walkTo(goal) { return this.goto(goal, this.walkMovements) }
 
@@ -1481,20 +1489,32 @@ export class Motor {
     return null
   }
 
-  // walkTo capped at min(ms, timeLeft()): past the cap the goal is dropped and a Timeout is thrown (a GoalBlock the bot
-  // cannot settle in, a step edge it slides off, replans forever; the caller treats it like NoPath). NoTime when the
-  // budget is already under MIN_STEP_MS; a walk cut by the budget (not by its own 15 s) throws NoTime too.
+  // A capped walk for building: walkTo (walkMovements), at most min(ms, timeLeft()); past the cap the goal is dropped
+  // and a Timeout is thrown (a GoalBlock the bot cannot settle in, a step edge it slides off, replans forever; the
+  // caller treats it like NoPath). NoTime when the budget is already under MIN_STEP_MS; a walk cut
+  // by the budget (not by its own cap) throws NoTime too. A walk that has not moved the bot for STALL_MS ends at once
+  // as a Timeout: the bot sometimes hangs mid-jump against the face of the next step of a 1-wide staircase (y + 0.42,
+  // gravity applied every tick, the position never changing) while the pathfinder waits forever (build_check (d), seen
+  // in about 1 of 10 runs under the load of three parallel servers, with or without the fix-round-2 goal change).
   async walkWithin(goal, ms = 15_000) {
     const cap = Math.min(ms, this.timeLeft())
     const err = name => { const e = new Error(`no arrival in ${(cap / 1000).toFixed(1)} s`); e.name = name; return e }
     if (cap < MIN_STEP_MS) throw err('NoTime')
-    let timer
+    let timer, watch
     try {
       await Promise.race([
         this.walkTo(goal),
         new Promise((_, rej) => { timer = setTimeout(() => { try { this.bot.pathfinder.setGoal(null) } catch {} rej(err(cap < ms ? 'NoTime' : 'Timeout')) }, cap) }),
+        new Promise((_, rej) => {
+          let last = this.bot.entity.position.clone(), since = Date.now()
+          watch = setInterval(() => {
+            const p = this.bot.entity.position
+            if (p.distanceTo(last) > 0.05) { last = p.clone(); since = Date.now(); return }
+            if (Date.now() - since > STALL_MS) { try { this.bot.pathfinder.setGoal(null) } catch {} rej(err('Timeout')) }
+          }, 250)
+        }),
       ])
-    } finally { clearTimeout(timer) }
+    } finally { clearTimeout(timer); clearInterval(watch) }
   }
 
   // Shuffle to the centre of the cell the bot stands in (sneaking: never off an edge), so its 0.6 m body leaves the
