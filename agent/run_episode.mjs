@@ -403,7 +403,8 @@ function leaderTick(obs, t) {
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
-      ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
+      // blueprints: false until the runner wires the blueprint book (the blueprint plan's Task 7 passes true)
+      ...(goalsOn ? { goals: true, blueprints: false, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
     }
     requestBook.shown(shownReqs.map(r => r.id))
   } catch (e) {

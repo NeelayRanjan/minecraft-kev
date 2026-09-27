@@ -91,13 +91,13 @@ export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'q
   const t0 = Date.now()
   const res = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, messages, stream: false, format: leaderSchema(ctx.options, { goals }), think, options: { temperature, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '90m' }),
+    body: JSON.stringify({ model, messages, stream: false, format: leaderSchema(ctx.options, { goals, blueprints: !!ctx.blueprints }), think, options: { temperature, num_predict: numPredict, num_ctx: numCtx }, keep_alive: '90m' }),
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`leader ${res.status}: ${(await res.text()).slice(0, 200)}`)
   const body = await res.json()
   const raw = body?.message?.content ?? ''
-  const { action, why, goal, ...plan } = parseLeaderAnswer(raw, ctx.options, { goals })   // plan: item | title + steps | edit | text | build | dig | blueprint
+  const { action, why, goal, ...plan } = parseLeaderAnswer(raw, ctx.options, { goals, blueprints: !!ctx.blueprints })   // plan: item | title + steps | edit | text | build | dig | blueprint
   // truncated: num_predict ran out (with thinking, usually inside the thinking, so the answer is empty -> invalid)
   return { action, why, ...(goals ? { goal, ...plan } : {}), truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
     tokens: body?.eval_count ?? null, prompt_tokens: body?.prompt_eval_count ?? null,
