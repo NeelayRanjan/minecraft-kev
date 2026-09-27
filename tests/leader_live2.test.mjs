@@ -89,3 +89,21 @@ test('item 19: stay is pushed and popped through the leader; the prompt has the 
   const lines = planChatLines({ pushed: goalStackView(s, o).pushed, planLines: ['no plans'], chain: null })
   assert.match(lines[0], /^Goals: #1 Staying with Steve until you say I can go/)
 })
+
+// 9: generic item names ("bed" is not an item in 1.20.4) map to a default variant, in plan_item and in the request text.
+import { ITEM_ALIASES, itemAlias, itemInRequest } from '../agent/leader.js'
+import { isItem } from '../agent/recipes.js'
+test('item 9: the alias table maps generic names to real items, for plan_item and the request matcher', () => {
+  for (const [k, v] of Object.entries(ITEM_ALIASES)) { assert.equal(isItem(k), false, `${k} is not an item itself`); assert.equal(isItem(v), true, `${v} is an item`) }
+  for (const [k, v] of [['bed', 'white_bed'], ['wool', 'white_wool'], ['planks', 'oak_planks'], ['log', 'oak_log'], ['boat', 'oak_boat'], ['door', 'oak_door'],
+    ['stairs', 'oak_stairs'], ['slab', 'oak_slab'], ['fence', 'oak_fence'], ['carpet', 'white_carpet'], ['concrete', 'white_concrete'], ['dye', 'white_dye'],
+    ['banner', 'white_banner'], ['sign', 'oak_sign']]) assert.equal(itemAlias(k), v, k)
+  assert.equal(itemAlias('compass'), 'compass'); assert.equal(itemAlias('button'), 'button', 'ambiguous: not aliased')
+  const r = applyAnswer({ answer: { action: 'plan_item', item: { name: 'Bed', count: 2 } }, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true })
+  assert.deepEqual(r, { kind: 'plan_item', id: null, item: 'white_bed', count: 2, why: '' })
+  assert.deepEqual(itemInRequest('can you make me a bed'), { item: 'white_bed', count: 1 })
+  assert.deepEqual(itemInRequest('I want 2 beds'), { item: 'white_bed', count: 2 })
+  assert.deepEqual(itemInRequest('make a white bed'), { item: 'white_bed', count: 1 })
+  assert.deepEqual(itemInRequest('craft some stairs'), { item: 'oak_stairs', count: 1 })
+  assert.deepEqual(itemInRequest('make a red bed'), { item: 'red_bed', count: 1 }, 'a named colour wins')
+})

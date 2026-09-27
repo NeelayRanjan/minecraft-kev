@@ -1116,13 +1116,15 @@ test('plan_item: the model item normalized; an unknown item falls back to the re
   const g = { currentId: 'mine_iron', askedCurrentId: 'mine_iron', offered, goalsEnabled: true }
   assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'White Bed', count: 1 } } }).item, 'white_bed')
   assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'minecraft:torch' } } }).item, 'torch')
-  const bad = applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'bed', count: 1 }, why: 'a bed' } })
-  assert.deepEqual(bad, { kind: 'invalid', id: 'plan_item', reason: 'unknown item bed' })
+  // (live_retry item 9: "bed" is now an alias of white_bed; a made-up name stands in for the unknown item)
+  assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'bed', count: 1 } } }).item, 'white_bed')
+  const bad = applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'bedd', count: 1 }, why: 'a bed' } })
+  assert.deepEqual(bad, { kind: 'invalid', id: 'plan_item', reason: 'unknown item bedd' })
   const reqs = [{ t: 1, name: 'Spacers_Choice', text: 'can you make me a white bed' }]
   assert.deepEqual(unknownItemBackstop(bad, reqs, {}), { kind: 'plan_item', id: null, item: 'white_bed', count: 1, why: '', via: 'unknown_item' })
-  assert.equal(unknownItemBackstop(bad, [{ t: 1, name: 'A', text: 'make me a bed' }], {}), null, 'no item in the request: the invalid stands')
+  assert.equal(unknownItemBackstop(bad, [{ t: 1, name: 'A', text: 'make me a bedd' }], {}), null, 'no item in the request: the invalid stands')
   assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'plan_item', reason: 'bad count 0' }, reqs, {}), null)
-  assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'push_goal', reason: 'unknown item bed' }, reqs, {}), null)
+  assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'push_goal', reason: 'unknown item bedd' }, reqs, {}), null)
 })
 // B: say also for a request that starts with a question word (the session's "where are you" had no '?').
 test('hasQuestion: a question mark, or a leading question word', () => {

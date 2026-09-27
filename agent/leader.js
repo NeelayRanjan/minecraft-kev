@@ -164,10 +164,17 @@ export function applyAnswer({ answer, currentId, askedCurrentId, offered, threat
 // the first minecraft-data item wins, with the integer right before it as the count (else 1). Common English words
 // that happen to be items are skipped.
 const NOT_ITEM_WORDS = new Set(['air', 'light', 'target', 'chain', 'lead', 'barrier', 'structure_void', 'jigsaw'])
+// Generic names that are not items in 1.20.4 (live retry session: "bed" was planned as `bed`), to one unambiguous
+// default variant; applied to plan_item's item and to the request text. A name with a colour or wood ("red bed") is
+// already an item and wins.
+export const ITEM_ALIASES = { bed: 'white_bed', wool: 'white_wool', planks: 'oak_planks', plank: 'oak_planks', log: 'oak_log', boat: 'oak_boat',
+  door: 'oak_door', stairs: 'oak_stairs', slab: 'oak_slab', fence: 'oak_fence', fence_gate: 'oak_fence_gate', trapdoor: 'oak_trapdoor',
+  carpet: 'white_carpet', concrete: 'white_concrete', dye: 'white_dye', banner: 'white_banner', sign: 'oak_sign' }
+export const itemAlias = n => (typeof n === 'string' && Object.hasOwn(ITEM_ALIASES, n) ? ITEM_ALIASES[n] : n)
 export function itemInRequest(text) {
   const w = String(text ?? '').toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean)
   const forms = x => [x, x.replace(/s$/, ''), x.replace(/es$/, '')]
-  const hit = x => forms(x).find(f => !NOT_ITEM_WORDS.has(f) && isItem(f)) ?? null
+  const hit = x => { const f = forms(x).find(f => !NOT_ITEM_WORDS.has(f) && isItem(itemAlias(f))); return f ? itemAlias(f) : null }
   const countAt = i => (i > 0 && /^\d+$/.test(w[i - 1]) ? Math.max(1, Math.min(64, Number(w[i - 1]))) : 1)
   for (let i = 0; i < w.length; i++) {
     if (/^\d+$/.test(w[i])) continue
@@ -241,7 +248,7 @@ function applyPlanAnswer(action, answer, why, obs) {
   if (action === 'plan_item') {
     const it = answer.item
     if (!it || typeof it !== 'object') return bad('plan_item without an item')
-    const name = normItem(it.name)
+    const name = itemAlias(normItem(it.name))
     if (!isItem(name)) return bad(`unknown item ${it.name}`)
     const count = it.count ?? 1
     if (!Number.isInteger(count) || count < 1) return bad(`bad count ${count}`)
