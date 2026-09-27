@@ -60,7 +60,8 @@ export function toWorld (bp, { col, row, layer }) {
   }
 }
 
-// Every cell that is not a space, in order layer, row, col. `pos` only when the blueprint has an anchor and facing.
+// Every cell that is not a space, in order layer, row, col. Throws on a character that is neither a legend key,
+// '.' nor ' ' (validate reports it as a reason first). `pos` only when the blueprint has an anchor and facing.
 export function cells (bp) {
   const out = []
   const placedIn = bp.anchor && FORWARD[bp.facing]
@@ -68,7 +69,8 @@ export function cells (bp) {
     for (let col = 0; col < line.length; col++) {
       const ch = line[col]
       if (ch === ' ') continue
-      const want = ch === '.' ? 'air' : (bp.legend?.[ch] ?? null)
+      if (ch !== '.' && !Object.hasOwn(bp.legend ?? {}, ch)) throw new Error(`unknown legend character "${ch}"`)
+      const want = ch === '.' ? 'air' : bp.legend[ch]
       const c = { col, row, layer }
       out.push(placedIn ? { ...c, pos: toWorld(bp, c), want } : { ...c, want })
     }
@@ -141,16 +143,33 @@ export function foundation (bp, blockAt) {
   return out
 }
 
-// Full, orientation-free blocks only this round.
+// Full, orientation-free cubes only this round. A block is placeable when minecraft-data 1.20.4 says its collision
+// shape is exactly one full cube in every state (blockCollisionShapes; this refuses chests, cauldrons, campfires,
+// anvils, lanterns, honey, dirt paths, soul sand...), it has a same-name item, and its name is not denied (blocks with
+// orientation or state, and full-cube blocks with special behaviour: slime, beacon, ...).
 const DENY = [
   /door/, /(^|_)bed$/, /stairs/, /slab/, /torch/, /pane/, /fence/, /sign/, /wall_/, /_wall$/, /button/,
   /pressure_plate/, /lever/, /carpet/, /rail/, /ladder/, /vine/, /flower_pot/, /^potted_/,
   /^water$/, /^lava$/, /air$/,
+  /cauldron/, /campfire/, /anvil/, /lantern/, /dripleaf/, /head$/, /skull/, /candle/, /banner/, /coral/,
+  /^chain$/, /^composter$/, /^beacon$/, /^conduit$/, /^scaffolding$/, /^honey_block$/, /^slime_block$/,
+  /^turtle_egg$/, /^sea_pickle$/, /^pointed_dripstone$/, /^bell$/, /^lectern$/, /^grindstone$/, /^stonecutter$/,
+  /^enchanting_table$/, /^brewing_stand$/, /^end_rod$/, /^lightning_rod$/, /^hopper$/, /^daylight_detector$/, /^cake$/,
 ]
+const SHAPES = md.blockCollisionShapes
+function fullCubeInEveryState (name) {
+  const ids = SHAPES?.blocks?.[name]
+  if (ids == null) return false
+  return [].concat(ids).every(id => {
+    const shape = SHAPES.shapes[id]
+    return shape?.length === 1 && shape[0].join(',') === '0,0,0,1,1,1'
+  })
+}
 export function isPlaceable (name) {
   const block = md.blocksByName[name]
   if (!block || block.boundingBox !== 'block') return false
   if (!md.itemsByName[name]) return false
+  if (!fullCubeInEveryState(name)) return false
   return !DENY.some(re => re.test(name))
 }
 
@@ -174,7 +193,7 @@ export function validate (bp, { maxSize = 9, maxBlocks = 150, placeable = isPlac
   if (!streamed && (w > maxSize || d > maxSize || h > maxSize)) return fail(`too big: ${w}x${d}x${h} (max ${maxSize})`)
   for (const rows of bp.layers) {
     for (const line of rows) {
-      for (const ch of line) if (ch !== ' ' && ch !== '.' && !(ch in legend)) return fail(`unknown legend character "${ch}"`)
+      for (const ch of line) if (ch !== ' ' && ch !== '.' && !Object.hasOwn(legend, ch)) return fail(`unknown legend character "${ch}"`)
     }
   }
   const cs = cells(bp)

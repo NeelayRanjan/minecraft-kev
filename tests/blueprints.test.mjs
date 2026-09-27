@@ -71,6 +71,13 @@ test('cells skips spaces and maps "." to air', () => {
   assert.deepEqual(cs[1], { col: 2, row: 0, layer: 0, pos: { x: 11, y: 64, z: 20 }, want: 'air' })
 })
 
+test('cells throws on an unknown legend character; validate reports it instead', () => {
+  const bp = { kind: 'build', legend: { '#': 'stone' }, layers: [['#X#']] }
+  assert.throws(() => cells(bp), /unknown legend character "X"/)
+  assert.deepEqual(validate(bp), { ok: false, reason: 'unknown legend character "X"' })
+  assert.throws(() => materials(bp), /unknown legend character/)
+})
+
 test('itemForBlock: same-name item, grass_block -> dirt, null when no item places it', () => {
   assert.equal(itemForBlock('stone'), 'stone')
   assert.equal(itemForBlock('oak_planks'), 'oak_planks')
@@ -121,6 +128,16 @@ test('isPlaceable: full blocks with an item; doors, stairs, slabs, torches, wall
   for (const n of ['oak_door', 'red_bed', 'oak_stairs', 'stone_slab', 'torch', 'glass_pane', 'oak_fence',
     'oak_sign', 'cobblestone_wall', 'stone_button', 'lever', 'white_carpet', 'rail', 'ladder', 'vine',
     'flower_pot', 'water', 'lava', 'air', 'snow', 'not_a_block']) assert.equal(isPlaceable(n), false, n)
+})
+
+test('isPlaceable: boundingBox "block" is not enough; the collision shape must be one full cube', () => {
+  for (const n of ['target', 'glass', 'ice', 'oak_leaves', 'oak_log', 'crafting_table', 'grass_block']) assert.equal(isPlaceable(n), true, n)
+  for (const n of ['cauldron', 'campfire', 'soul_campfire', 'composter', 'beacon', 'conduit', 'scaffolding',
+    'honey_block', 'slime_block', 'turtle_egg', 'sea_pickle', 'big_dripleaf', 'anvil', 'chipped_anvil',
+    'damaged_anvil', 'lantern', 'soul_lantern', 'chain', 'pointed_dripstone', 'chest', 'hopper', 'bell', 'cake',
+    'end_rod', 'lightning_rod', 'dirt_path', 'soul_sand', 'skeleton_skull', 'candle', 'white_banner',
+    'brain_coral_block', 'lectern', 'grindstone', 'stonecutter', 'enchanting_table', 'brewing_stand',
+    'daylight_detector', 'cactus']) assert.equal(isPlaceable(n), false, n)
 })
 
 test('validate: ok for a plain floor and a free-standing staircase with its supports', () => {
