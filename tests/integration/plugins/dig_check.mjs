@@ -8,6 +8,7 @@
 //       no lava anywhere but the source (nothing released into the dug area)
 //   (d) stairs_down_to 10 levels below the start (two segments): dug, then the bot walks (no digging) up to the start,
 //       down to the last step and back up
+//   (e) the same over a 4-deep pocket under steps 3 and 4: floor blocks placed, the stairs complete, walked down
 // Usage: node tests/integration/plugins/dig_check.mjs [--port 25577] [--seed plugins-dig] [--only a,b,...]
 // PASS/FAIL; exit 0 on PASS.
 import { Vec3 } from 'vec3'
@@ -124,6 +125,25 @@ if (run('d')) {
   check(down.ok && blockAt({ x: last.x, y: last.y - 1, z: last.z })?.boundingBox === 'block', `(d) the bot walks down to the last step (at ${down.at})`)
   const up2 = await walk(start, 'back up')
   check(up2.ok, `(d) and back up to the start (at ${up2.at})`)
+}
+
+// (e) stairs_down_to 10 levels below with a 4-deep pocket (a cave) under the floors of steps 3 and 4: floor blocks are
+// placed from the held cobblestone, the stairs complete and the bot walks down to the last step (fix round 2)
+if (run('e')) {
+  log('--- (e) stairs_down_to over a 4-deep pocket')
+  await arena([`${X - 3} ${Y - 14} ${Z - 13} ${X + 3} ${Y + 3} ${Z - 1} stone`, `${X - 3} ${Y - 14} ${Z} ${X + 3} ${Y - 1} ${Z + 2} stone`,
+    `${X - 1} ${Y - 8} ${Z - 3} ${X + 1} ${Y - 4} ${Z - 3} air`, `${X - 1} ${Y - 9} ${Z - 4} ${X + 1} ${Y - 5} ${Z - 4} air`])
+  await cmd(`/give ${USER} cobblestone 16`)
+  const start = { x: X, y: Y, z: Z }
+  const bp = makeBlueprint('stairs_down_to', { y: Y - 10 }, null, { anchor: start, facing: 'north' })
+  const id = book.add(bp)
+  const r = await digLoop(id)
+  const floors = [{ x: X, y: Y - 4, z: Z - 3 }, { x: X, y: Y - 5, z: Z - 4 }]
+  const bridged = floors.every(f => blockAt(f)?.boundingBox === 'block')
+  check(r.finished && bridged, `(e) stairs over the pocket dug in ${r.calls} calls, floors ${floors.map(f => blockAt(f)?.name).join(' ')} (last ${r.last?.result} ${r.last?.detail ?? ''})`)
+  const last = { x: X, y: Y - 10, z: Z - 10 }
+  const down = await walk(last, 'down to the last step')
+  check(down.ok, `(e) the bot walks down to the last step, the target level (at ${down.at})`)
 }
 
 await A.finish()
