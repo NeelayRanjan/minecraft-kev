@@ -926,7 +926,7 @@ test('plan_blueprint: the legend is normalized first (live probe: "." keyed to a
 // Live stress session: the leader chose plan_dig in a runner without the blueprint wiring and the request was settled
 // silently. Without `blueprints` the goals prompt and schema are byte-identical to the ones before the blueprint answers
 // (66867fc; fixtures rendered from that commit), and the parser refuses a blueprint action.
-import { leaderSystemGoals } from '../agent/leader.js'
+import { leaderSystemGoals, persona, HOW_I_WORK } from '../agent/leader.js'
 // The goals-prompt edits the live-fixes round made on purpose (brief items 4-6), applied to the 66867fc text: with them
 // the prompt without blueprints equals 66867fc's exactly, so nothing else changed.
 export const LIVE_EDITS = [
@@ -953,6 +953,7 @@ export const LIVE2_EDITS = [
   ['Examples: "make me a compass" -> plan_item compass count 1;', 'Examples: "make me a compass" -> plan_item compass count 1; "enough leather for a leather helmet, don\'t craft it" -> plan_item leather_helmet count 1 materials_only true;'],
   ['"item": {"name": "<item>", "count": <integer>} (plan_item only)', '"item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only)'],
   ['Never answer cannot for an item without trying plan_item first. plan_steps only', 'Never answer cannot for an item without trying plan_item first. Storage blocks unpack into 9 of their item (1 redstone block = 9 redstone, 1 iron block = 9 iron ingots; coal, gold, diamond, emerald and lapis blocks too): a held or offered storage block helps, and the code unpacks it when a plan needs the item. plan_steps only'],
+  ['"continue" remains the default when there is no request and the goals make progress.\n\nAnswer with JSON only', `"continue" remains the default when there is no request and the goals make progress.\n\n${persona()}\n${HOW_I_WORK}\n\nAnswer with JSON only`],
   ['(edit only), "text": "<line>" (say only), "why": "<one sentence>"}', '(edit only), "text": "<line>" (say only), "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}'],
 ]
 export const USER2_EDITS = [

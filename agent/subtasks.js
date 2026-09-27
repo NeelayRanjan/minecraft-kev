@@ -32,6 +32,7 @@ export const SHELTER_HEALTH = 6
 const SHELTERED_KEEP = new Set(['eat', 'wait', 'fight', 'flee', 'pillar_up', 'build_shelter'])
 export const shelteredLow = obs => obs.goal === 'nether' && isNight(obs) && (obs.health ?? 20) <= SHELTER_HEALTH
   && (!!obs.underground || (obs.last?.id === 'build_shelter' && obs.last?.result === 'ok'))
+export const SHELTER_DEPTH = 3   // build_shelter digs this many cells down and seals one below the ground (motor.js)
 export const LOW_AIR = 10   // of 20: policy.DROWNING_OXYGEN
 const LOW_AIR_OPTIONS = new Set(['wait', 'fight', 'flee', 'pillar_up'])   // the escapes in policy.js; eating while drowning would be interrupted at once
 export const NIGHT_REFUGES = ['build_shelter', 'explore_toward(down)', 'return_to_base']   // withhold only when one is offered

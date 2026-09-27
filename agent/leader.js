@@ -13,8 +13,9 @@
 //
 // Pure: the runner (agent/run_episode.mjs) owns the transport (planner.js askLeader), the timing and the motor.
 import { GOAL_KINDS, validateGoal, RECIPES, PRODUCERS, FINDABLE_NOW, PLACES, STRUCTURES } from './goals.js'
-import { isItem, expandItem } from './recipes.js'
-import { stepText } from './plans.js'
+import { isItem, expandItem, HUNT } from './recipes.js'
+import { SHELTER_DEPTH } from './subtasks.js'
+import { stepText, BLOCKED_WINDOW_S } from './plans.js'
 import { TEMPLATES, checkParams, describeTemplates } from './templates.js'
 import { validate, cells } from './blueprints.js'
 
@@ -135,12 +136,12 @@ export function askedIdFor(snap, currentId) {
 }
 
 export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [], goalsEnabled = false, obs = null,
-  requests = [], recentSays = [] }) {
+  requests = [], recentSays = [], botName = null }) {
   const action = answer?.action ?? null
   if (!action) return { kind: 'invalid', id: null }
   if (goalsEnabled && GOAL_ACTIONS.includes(action)) {
     const why = typeof answer.why === 'string' ? answer.why : ''
-    if (action === 'say') return guardSay(applyPlanAnswer(action, answer, why, obs), requests, recentSays)
+    if (action === 'say') return guardSay(applyPlanAnswer(action, answer, why, obs), requests, recentSays, botName)
     if (PLAN_ACTIONS.includes(action)) return applyPlanAnswer(action, answer, why, obs)
     if (action !== 'push_goal') return { kind: action, id: null, why }
     const raw = answer.goal
@@ -218,13 +219,21 @@ const sameText = (a, b) => String(a).trim().toLowerCase() === String(b).trim().t
 // word is a question word (players skip the '?': "where are you", "do you have an iron pick").
 const QUESTION_WORDS = new Set(['what', 'where', 'when', 'why', 'how', 'who', 'which', 'whose', 'is', 'are', 'am', 'do', 'does', 'did',
   'can', 'could', 'will', 'would', 'have', 'has', 'should'])
-const asksQuestion = text => { const s = String(text ?? '').trim().toLowerCase(); return s.includes('?') || QUESTION_WORDS.has(s.split(/[^a-z]+/)[0]) }
-export const hasQuestion = (requests = []) => requests.slice(0, MAX_REQUESTS).some(r => asksQuestion(r?.text))
-function guardSay(res, requests, recentSays) {
+// Also (live retry session: "hey kevin, tell me about yourself" got no say): a request opening with tell, explain,
+// describe or show, and one that names the bot (a whole word, any case) and asks something anywhere in it (a '?', a
+// question word or one of those verbs).
+const TELL_WORDS = new Set(['tell', 'explain', 'describe', 'show'])
+const asksQuestion = (text, botName = null) => {
+  const s = String(text ?? '').trim().toLowerCase(), words = s.split(/[^a-z0-9_]+/).filter(Boolean)
+  if (s.includes('?') || QUESTION_WORDS.has(words[0]) || TELL_WORDS.has(words[0])) return true
+  return !!botName && words.includes(String(botName).toLowerCase()) && words.some(w => QUESTION_WORDS.has(w) || TELL_WORDS.has(w))
+}
+export const hasQuestion = (requests = [], botName = null) => requests.slice(0, MAX_REQUESTS).some(r => asksQuestion(r?.text, botName))
+function guardSay(res, requests, recentSays, botName = null) {
   if (res.kind !== 'say') return res
   const bad = reason => ({ kind: 'invalid', id: 'say', reason })
   if (!requests?.length) return bad('nothing to reply to')
-  if (!hasQuestion(requests)) return bad('say only answers a question; nobody asked one')
+  if (!hasQuestion(requests, botName)) return bad('say only answers a question; nobody asked one')
   if ((recentSays || []).slice(-SAY_MEMORY).some(t => sameText(t, res.text))) return bad('repeated reply')
   return res
 }
@@ -363,10 +372,10 @@ const BLUEPRINT_SCHEMA = {
 export const BLUEPRINT_ACTIONS = ['plan_build', 'plan_dig', 'plan_blueprint']
 const goalActionsFor = ({ blueprints = false } = {}) => blueprints ? GOAL_ACTIONS : GOAL_ACTIONS.filter(a => !BLUEPRINT_ACTIONS.includes(a))
 // requests: the ones the prompt shows; say is in the action enum only when one of them asks a question (hasQuestion).
-export const leaderSchema = (options, { goals = false, blueprints = false, requests = [] } = {}) => goals ? {
+export const leaderSchema = (options, { goals = false, blueprints = false, requests = [], botName = null } = {}) => goals ? {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['continue', ...goalActionsFor({ blueprints }).filter(a => a !== 'say' || hasQuestion(requests)), ...options.map(o => o.id)] },
+    action: { type: 'string', enum: ['continue', ...goalActionsFor({ blueprints }).filter(a => a !== 'say' || hasQuestion(requests, botName)), ...options.map(o => o.id)] },
     goal: STEP_SCHEMA,
     item: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' }, materials_only: { type: 'boolean' } }, required: ['name'] },
     title: { type: 'string' },
@@ -475,7 +484,20 @@ ${describeTemplates()}
 Use a template whenever one fits; write your own blueprint (plan_blueprint) only for a shape no template covers, full blocks only, at most 9x9x9.
 Examples: "build me a small stone hut" -> plan_build hut w 5 d 5 h 3 material cobblestone; "stairs up 6 blocks" -> plan_build staircase_up height 6; "dig a 3x3x2 cave here" -> plan_dig room w 3 d 3 h 2; "mine down to y 12" -> plan_dig stairs_down_to y 12; "strip mine for diamonds" -> plan_dig strip_mine at_y -58.
 `
-export function leaderSystemGoals({ blueprints = false } = {}) {
+// The persona and HOW I WORK (live retry session: Kevin invented a village search and claimed staircases keep it safe):
+// true facts only, from the code's constants.
+const SEARCH_M = 32   // hunt(<mob>) and mine(<block>) look this far (agent/plugins/hunt.mjs, mine.mjs RANGE)
+const minutes = s => `${Math.round(s / 60)} minute${Math.round(s / 60) === 1 ? '' : 's'}`
+export const HOW_I_WORK = ['HOW I WORK (true facts; never claim anything else about yourself):',
+  `- I look for animals, mobs and ore within ${SEARCH_M} m; farther away I have to explore first.`,
+  `- Most goals that make no progress for ${minutes(GOAL_KINDS.craft_item.stuckS)} are given up.`,
+  `- A blocked plan is not tried again for ${minutes(BLOCKED_WINDOW_S)} unless a player asks again.`,
+  `- The blocks I can find: ${FINDABLE_NOW.map(x => x.replace(/_/g, ' ')).join(', ')}; I have no village finder yet.`,
+  `- I hunt ${[...new Set(Object.values(HUNT).flatMap(h => h.mobs))].join(', ')} (for ${Object.keys(HUNT).map(x => x.replace(/_/g, ' ')).join(', ')}).`,
+  `- At night I dig ${SHELTER_DEPTH} blocks down and seal the top; over lava or water I pillar up instead.`,
+  '- Whether I keep my items when I die depends on the server\'s keepInventory rule.'].join('\n')
+export const persona = (botName = 'Kevin') => `You are ${botName}, a Minecraft bot the audience steers from chat. Friendly, a bit dramatic, honest about what you can and cannot do.`
+export function leaderSystemGoals({ blueprints = false, botName = 'Kevin' } = {}) {
   const bpActions = blueprints ? ', plan_build, plan_dig, plan_blueprint' : ''
   const bpFormat = blueprints ? ' | "plan_build" | "plan_dig" | "plan_blueprint"' : ''
   const bpFields = blueprints ? ', "build" (plan_build only), "dig" (plan_dig only), "blueprint" (plan_blueprint only)' : ''
@@ -506,6 +528,9 @@ Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
 Audience requests always come before the default goal chain; the chain resumes afterwards.
 Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot. The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.
 "continue" remains the default when there is no request and the goals make progress.
+
+${persona(botName)}
+${HOW_I_WORK}
 
 Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}`
 }
@@ -773,7 +798,7 @@ function renderBlueprint(cut, feedback) {
 
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
   subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null,
-  blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null, conversation = [], inventory = null }) {
+  blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null, conversation = [], inventory = null, botName = null }) {
   const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
@@ -802,5 +827,5 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
     goals ? 'Reply with JSON only: {"action": "continue" | "plan_item" | "plan_steps" | "edit" | "say" | "push_goal" | "pop_goal" | "cannot" | "<subtask id from the list>", "goal" (push_goal), "item" (plan_item), "title" and "steps" (plan_steps), "edit" (edit), "text" (say), "reply" (any action), "why": "<one sentence>"}'
       : 'Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}',
   ].join('\n')
-  return [{ role: 'system', content: goals ? leaderSystemGoals({ blueprints }) : LEADER_SYSTEM }, { role: 'user', content: user }]
+  return [{ role: 'system', content: goals ? leaderSystemGoals({ blueprints, ...(botName ? { botName } : {}) }) : LEADER_SYSTEM }, { role: 'user', content: user }]
 }

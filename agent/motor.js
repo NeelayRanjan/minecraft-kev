@@ -2,7 +2,7 @@
 // result, has a hard timeout, and can be interrupted by the runner (threat, damage, death). Never learned.
 import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
-import { parseOption, FOOD, TABLE_ITEMS, counts } from './subtasks.js'
+import { parseOption, FOOD, TABLE_ITEMS, counts, SHELTER_DEPTH } from './subtasks.js'
 import { portalLayout } from './stages.js'
 import { reachSpots, faces, bestFace, scaffoldPlan, occupiedCells, clearSpots, lineOfSight, isSolid, key as cellKey, at as cellAt, REACH, EYE } from './reach.js'
 
@@ -87,7 +87,7 @@ export function lavaAdjacent(blockAt, pos) {
 // where the ground beside the hole gives it something to be placed against (on flat ground a seal at the surface level
 // has no neighbour). Lava or water in a dug cell or beside one (the staircase digger's liquidAround idea), or in the
 // floor it ends on, means not here. The liquid's name, else null. Pure.
-export const SHELTER_DEPTH = 3
+export { SHELTER_DEPTH }
 const LIQUID = n => n === 'lava' || n === 'water'
 export function shelterColumnLiquid(blockAt, feet) {
   for (let dy = -1; dy >= -SHELTER_DEPTH; dy--) for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {

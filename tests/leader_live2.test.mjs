@@ -144,3 +144,33 @@ test('item 11: a materials plan refreshes against its materials, is titled "mate
 test('item 12: the goals prompt says storage blocks unpack into 9 of their item', () => {
   assert.match(leaderSystemGoals(), /Storage blocks unpack into 9 of their item \(1 redstone block = 9 redstone/)
 })
+
+// 13: say for "tell me about yourself" and for a question addressed to the bot by name; a persona and a HOW I WORK block
+// of true facts from the code's constants (Kevin invented a village search and claimed staircases keep it safe).
+import { hasQuestion, HOW_I_WORK } from '../agent/leader.js'
+test('item 13: say is offered for tell/explain/describe/show openers and for a question naming the bot', () => {
+  const ask = (text, botName) => hasQuestion([{ t: 1, name: 'A', text }], botName)
+  for (const t of ['tell me about yourself', 'Explain how you work', 'describe your base', 'show me your inventory']) assert.equal(ask(t), true, t)
+  assert.equal(ask('hey kevin, tell me about yourself', 'Kevin'), true)
+  assert.equal(ask('hey Kevin what are you doing', 'Kevin'), true)
+  assert.equal(ask('kevin you there?', 'Kevin'), true)
+  assert.equal(ask('bye kevin', 'Kevin'), false, 'names the bot, no question')
+  assert.equal(ask('hey kevin, tell me about yourself'), false, 'without the bot name only openers count')
+  assert.equal(ask('kevinator where is it', 'Kevin'), false, 'not the bot\'s name: a whole word only')
+  assert.equal(ask('hey kevinator tell me', 'Kevin'), false, 'the name must be a whole word')
+  assert.ok(leaderSchema(opts, { goals: true, requests: [{ t: 1, name: 'A', text: 'hey kevin, tell me about yourself' }], botName: 'Kevin' }).properties.action.enum.includes('say'))
+  const r = applyAnswer({ answer: { action: 'say', text: 'I am Kevin!' }, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true,
+    requests: [{ t: 1, name: 'A', text: 'hey kevin, tell me about yourself' }], recentSays: [], botName: 'Kevin' })
+  assert.equal(r.kind, 'say')
+})
+test('item 13: the goals prompt has the persona and a HOW I WORK block of at most 8 true lines', () => {
+  const sys = leaderSystemGoals()
+  assert.match(sys, /You are Kevin, a Minecraft bot the audience steers from chat\. Friendly, a bit dramatic, honest about what you can and cannot do\./)
+  assert.match(leaderSystemGoals({ botName: 'Bob' }), /You are Bob, a Minecraft bot/)
+  const lines = HOW_I_WORK.split('\n').filter(l => l.startsWith('- '))
+  assert.ok(lines.length >= 6 && lines.length <= 8, `${lines.length} lines`)
+  for (const re of [/32 m/, /5 minutes/, /10 minutes unless a player asks again/, /no village finder/, /sheep, cow, pig, chicken, spider, squid/, /dig/, /keepInventory/])
+    assert.match(HOW_I_WORK, re)
+  assert.ok(sys.includes(HOW_I_WORK))
+  assert.doesNotMatch(LEADER_SYSTEM, /HOW I WORK|You are Kevin/)
+})

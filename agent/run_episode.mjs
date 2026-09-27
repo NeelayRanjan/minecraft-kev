@@ -410,7 +410,7 @@ function leaderTick(obs, t) {
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
       // blueprints: false until the runner wires the blueprint book (the blueprint plan's Task 7 passes true)
       ...(goalsOn ? { goals: true, blueprints: false, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })),
-        feedback: leaderFeedbackNext, conversation: chatLines.slice(-8), inventory: { ...(obs.inventory || {}) } } : {}),
+        feedback: leaderFeedbackNext, conversation: chatLines.slice(-8), inventory: { ...(obs.inventory || {}) }, botName: me } : {}),
     }
     leaderFeedbackNext = null
     requestBook.shown(shownReqs.map(r => r.id))
@@ -434,7 +434,7 @@ function leaderAnswered(snap, a, err) {
   const threatNear = snap.threatNear || threatNearIn(lastObs)
   // say guards: a say needs a shown request with a question and must not repeat one of the leader's last 5 lines
   let res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: askedIdFor(snap, currentId), offered: snap.offered, threatNear, recentResults: recent,
-    goalsEnabled: goalsOn, obs: lastObs, requests: snap.requests || [], recentSays: recentSayTexts(elog.events) })
+    goalsEnabled: goalsOn, obs: lastObs, requests: snap.requests || [], recentSays: recentSayTexts(elog.events), botName: me })
   // The night rule: gather, find and go_to(surface) at dusk/night on the surface wait for the morning (answered as cannot).
   if (res.kind === 'push_goal' && nightBlocksGoal(res.goal, lastObs)) res = { kind: 'cannot', id: null, why: `${goalPhrase(res.goal)} has to wait until morning`, night: true, goal: res.goal }
   // A pushed goal gets the plan steps' treatment (goals.routePush): counted kinds read the count as n more (held + n);
