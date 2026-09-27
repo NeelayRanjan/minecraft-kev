@@ -38,9 +38,9 @@ test('oak stairs without a table: planks for the table, the table, then the stai
     ['gather(planks, 4)', 'craft_item(crafting_table, 1)', 'craft_item(oak_stairs, 4)'])
 })
 
-test('white bed: shears, two sheep sheared (3 wool at 2 each), craft', () => {
+test('white bed: shears, 3 white wool hunted (the goal kind names the drop), craft', () => {
   assert.deepEqual(ids(expandItem('white_bed', 1, { oak_planks: 3, iron_ingot: 2 }, TABLE)),
-    ['craft_item(shears, 1)', 'hunt(sheep, 2)', 'craft_item(white_bed, 1)'])
+    ['craft_item(shears, 1)', 'hunt(white_wool, 3)', 'craft_item(white_bed, 1)'])
 })
 
 test('ender pearl: no producer, no recipe -> missing, no steps', () => {

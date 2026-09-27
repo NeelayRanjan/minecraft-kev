@@ -207,7 +207,7 @@ test('validateGoal against the declared vocabularies', () => {
   for (const bad of [{ kind: 'find', arg: 'village_house' }, { kind: 'find', arg: 'village' }, { kind: 'build', arg: 'house' },
     { kind: 'chain' }, { kind: 'iron_pickaxe' }, { kind: 'teleport' }, { kind: 'craft_item', arg: 'netherite_sword' },
     { kind: 'gather', arg: 'cobblestone', count: 0 }, { kind: 'gather', arg: 'cobblestone', count: 65 }, { kind: 'gather', arg: 'cobblestone' },
-    { kind: 'gather', arg: 'emerald', count: 3 }, { kind: 'go_to', arg: 'nether' }]) {
+    { kind: 'gather', arg: 'ender_pearl', count: 3 }, { kind: 'go_to', arg: 'nether' }]) {
     const r = validateGoal(bad)
     assert.equal(r.ok, false, JSON.stringify(bad))
     assert.equal(typeof r.reason, 'string')
@@ -331,6 +331,7 @@ test('go_to(y:<n>): validateGoal parses -64..320; done, filter and teacher key o
 
 // ---- Task 3: plans, new goal kinds, plan ids on the stack ---------------------------------------------------------
 import { registerOptionProvider, pluginOptions } from '../agent/goals.js'
+import { expandItem } from '../agent/recipes.js'
 
 const opt = id => { const m = /^(\w+)(?:\((\w+)\))?$/.exec(id); return { id, name: m[1], arg: m[2] ?? null, desc: `plugin ${id}` } }
 function withProvider(ids, fn) {
@@ -493,6 +494,42 @@ test('plugin-backed filters: under low air only the surface climb; at night on t
     assert.deepEqual(s.filter(wet, options(wet)).map(o => o.id).sort(), ['explore_toward(surface)', 'wait'])
     const night = chain({ inventory: { iron_pickaxe: 1, cobblestone: 5 }, phase: 'night', base: { crafting_table: { dist: 40 }, furnace: null } })
     const ids = s.filter(night, options(night)).map(o => o.id)
-    assert.ok(ids.includes('return_to_base') && ids.includes('build_shelter') && ids.includes('hunt(cow)'), ids.join(' '))
+    assert.ok(ids.includes('return_to_base') && ids.includes('build_shelter') && !ids.includes('hunt(cow)'), ids.join(' '))
   })
+})
+
+test('night rule for the plugin kinds: no surface plugin work at dusk/night on the surface, the stuck clock pauses; ore stays', () => {
+  const provider = ['hunt(cow)', 'mine(sand)', 'mine(redstone_ore)']
+  const night = chain({ inventory: { iron_pickaxe: 1 }, phase: 'night', base: { crafting_table: { dist: 31 }, furnace: null } })
+  const dusk = chain({ inventory: { iron_pickaxe: 1 }, phase: 'dusk', base: { crafting_table: { dist: 31 }, furnace: null } })
+  const below = chain({ inventory: { iron_pickaxe: 1 }, phase: 'night', underground: true, skyLight: 0 })
+  const day = chain({ inventory: { iron_pickaxe: 1 } })
+  withProvider(provider, () => {
+    for (const [goal, id] of [[{ kind: 'hunt', arg: 'leather', count: 2 }, 'hunt(cow)'], [{ kind: 'gather', arg: 'sand', count: 4 }, 'mine(sand)']]) {
+      const s = new GoalStack({ goal: 'nether' })
+      s.push({ ...goal, source: 'leader', t: 0 })
+      for (const o of [night, dusk]) {
+        const f = s.filter(o, options(o))
+        assert.ok(!f.some(x => x.id === id), `${id} at ${o.phase}`)
+        assert.equal(nightPaused(o, f), true, `${goal.kind} paused at ${o.phase}`)
+      }
+      assert.deepEqual(s.update(night, 0), []); assert.deepEqual(s.update(night, 1000), [], `${goal.kind}: no stuck pop at night`)
+      assert.ok(s.filter(below, options(below)).some(x => x.id === id), `${id} underground at night`)
+      assert.ok(s.filter(day, options(day)).some(x => x.id === id), `${id} by day`)
+    }
+    const ore = new GoalStack({ goal: 'nether' })
+    ore.push({ kind: 'gather', arg: 'redstone', count: 2, source: 'leader', t: 0 })
+    assert.ok(ore.filter(night, options(night)).some(x => x.id === 'mine(redstone_ore)'), 'ore mining stays offered')
+    assert.ok(ore.filter(below, options(below)).some(x => x.id === 'mine(redstone_ore)'))
+  })
+})
+
+test('every step expandItem emits passes validateGoal', () => {
+  for (const [item, n, inv] of [['compass', 1, {}], ['white_bed', 1, {}], ['clock', 1, {}], ['oak_stairs', 4, { birch_planks: 6 }], ['glass', 3, {}], ['torch', 4, {}]]) {
+    const { steps, missing } = expandItem(item, n, inv)
+    assert.deepEqual(missing, [], item)
+    assert.ok(steps.length > 0, item)
+    for (const st of steps) assert.deepEqual(validateGoal(st), { ok: true }, `${item}: ${JSON.stringify(st)} ${validateGoal(st).reason ?? ''}`)
+  }
+  assert.ok(expandItem('white_bed', 1, {}).steps.some(st => st.kind === 'hunt' && st.arg === 'white_wool'))
 })

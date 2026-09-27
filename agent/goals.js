@@ -64,6 +64,8 @@ const keepOnly = (options, keep) => options.filter(o => keep.has(o.id) || ALWAYS
 // plugin registry. The new kinds' filters add the provider's options that serve the goal (`relevant`) to the kept
 // set; a provider that throws offers nothing. As go_to does, they keep the night refuges at dusk/night on the surface
 // and, under low air, only the way out of the water (no plugin options: options() withholds all but the escapes).
+// The night rule (as nightPaused): at dusk/night on the surface no plugin option that works on the surface is added
+// (hunt(<mob>), mine(<block>) of a MINE 'surface' block), so the stuck clock pauses; ore mining stays.
 let optionProvider = () => []
 export function registerOptionProvider(fn) { optionProvider = typeof fn === 'function' ? fn : () => [] }
 export function pluginOptions(obs, goal) {
@@ -74,7 +76,14 @@ function keepWithPlugins(obs, goal, opts, keep, relevant) {
   const own = new Set(opts.map(o => o.id))
   if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
   const kept = keepOnly(opts, new Set([...keep, ...opts.map(o => o.id).filter(relevant), ...(nightOnSurface(obs) ? NIGHT_REFUGES : [])]))
-  return [...kept, ...pluginOptions(obs, goal).filter(o => relevant(o.id) && !own.has(o.id))]
+  const night = nightSurface(obs)
+  return [...kept, ...pluginOptions(obs, goal).filter(o => relevant(o.id) && !own.has(o.id) && !(night && surfaceWork(o.id)))]
+}
+const nightSurface = obs => isDuskOrNight(obs) && !obs.underground
+function surfaceWork(id) {
+  if (id.startsWith('hunt(')) return true
+  const m = /^mine\((\w+)\)$/.exec(id)
+  return !!m && Object.values(MINE).some(e => e?.where === 'surface' && e.blocks.includes(m[1]))
 }
 const firstPlugin = (obs, goal, relevant) => pluginOptions(obs, goal).map(o => o.id).find(relevant) ?? null
 const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
@@ -398,8 +407,6 @@ const DIAMOND_GOAL = (kind, arg) => (kind === 'gather' && arg === 'diamond') || 
 // (reason phrased for the audience). obs (optional) enables the stage gates.
 const countOk = n => Number.isInteger(n) && n >= 1 && n <= 64
 const BAD_COUNT = { ok: false, reason: 'count must be an integer from 1 to 64' }
-// Items the MINE table knows but a gather goal refuses (emerald ore: mountains only, too rare to search for).
-const NOT_GATHERED = { emerald: 'cannot gather emerald (too rare)' }
 export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
   if (!GOAL_KINDS[kind]) return { ok: false, reason: `unknown goal kind ${kind}` }
   if (DEFAULTS.has(kind)) return { ok: false, reason: `${kind} is the default goal and cannot be pushed` }
@@ -413,7 +420,6 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
       if (producerOf(arg)?.kind !== 'craft_item') return { ok: false, reason: `cannot craft ${humanize(arg)}` }
       return count == null || countOk(count) ? { ok: true } : BAD_COUNT
     case 'gather': {
-      if (NOT_GATHERED[arg]) return { ok: false, reason: NOT_GATHERED[arg] }
       if (!PRODUCERS[arg] && producerOf(arg)?.kind !== 'gather') return { ok: false, reason: `cannot gather ${arg}` }
       if (!countOk(count)) return BAD_COUNT
       if (arg === 'flint' && stage != null && stage < 4) return { ok: false, reason: 'flint comes later, when the bot builds the portal' }

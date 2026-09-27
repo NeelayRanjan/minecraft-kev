@@ -12,7 +12,8 @@
 // Ordering rule: the walk is post-order. A step is emitted after every step its inputs need: for a craft, first its
 // ingredients in recipe order (first appearance in the grid, row by row; held units by exact name, so the
 // variant whose wood the bot holds wins), then the crafting table if the grid is
-// larger than 2x2; for a smelt, its input then the furnace; for a hunt, the shears; for a MINE gather, the pickaxe
+// larger than 2x2; for a smelt, its input then the furnace; for a hunt, the shears (a hunt step names the drop and
+// the drops needed, the goal kind's form: hunt(white_wool, 3)); for a MINE gather, the pickaxe
 // tiers it lacks (to reach tier t the walk first reaches tier t-1: wooden before stone before iron). Steps with the
 // same (kind, arg) merge: the count adds up and the step keeps the position of its first emission.
 // The walk consumes a copy of the inventory as it allocates, and adds what it produces (surplus of a craft yield or a
@@ -197,7 +198,7 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
       if (p.tool && !(held(p.tool) > 0 || (need(p.tool, 1, depth) && (give(p.tool, 1), true)))) return false
       const mobs = Math.ceil(r / p.per)
       give(name, mobs * p.per - r)
-      emit('hunt', p.mobs[0], mobs)
+      emit('hunt', name, r)   // the goal kind's form: hunt(<drop>, <drops needed>) (goals.js)
       return true
     }
     // craft_item: the legacy table (yield 1: planks and sticks are gathered) or the best minecraft-data recipe
