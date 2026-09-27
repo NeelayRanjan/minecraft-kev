@@ -54,6 +54,15 @@ The session's other findings ride along (section 5).
 - Planner use (if the round has room, else first next round): the expander counts indexed items as available at a place and emits `withdraw` steps before mining/smelting for them.
 - Safety: Kevin opens only containers near an explicit request's anchor or a named waypoint; never takes from containers nobody pointed it at.
 
+## 3c. Placement: single blocks and small setups (added 2026-09-27, the user; moved into this round)
+
+- Single blocks: "put a crafting table here", "place a torch on this wall", "put a chest next to the furnace". Code enumerates legal cells near the request's anchor (the player's position and facing when the message arrived, or a waypoint/structure): support face, 1-2 cells of clearance as the block needs, not in a door gap or walkway, not blocking the path from the door; ranks them (against a wall, in a corner, near related stations); the leader's prompt shows the local floor plan in ASCII with the top 3 marked A/B/C and one line each; the leader answers `place { item, choice: A|B|C }` (default A). Blocks with facing (bed, door, torch, chest, furnace, stairs) are placed with the correct orientation (bed: foot toward the room's interior; wall torch: on the chosen wall face). Plugin `place_block(<item>)`; goal kind `place(item, spot)`; the item is planned first if not held (expander).
+- Small setups as mini-templates over the same placer: `crafting_corner` (table, furnace, chest against a wall), `bedroom_corner` (bed + torch), `storage_wall` (a row of up to 6 chests), `torch_ring(spacing 6)` ("light up the house / the mine entrance"). "set up a crafting area in the house" = crafting_corner anchored in the named structure.
+- Sleep: goal `sleep`: at dusk (or on request "go to bed"), walk to the nearest known bed (a waypoint/structure or one within 32 m), use it; stays until morning or woken; if no bed exists and wool/planks allow, the planner offers "make and place a bed at home first". Nights caused most deaths in every session.
+- Follow: goal `follow(player:<name>)` ("come with me"): walk behind the player within 3-5 m until released ("you can stop following"); threat rules apply; reuses go_to_player's follow.
+
+The round is executed as two plans in sequence: Plan A = sections 1, 2, 4, 5 (tree, leash, feeding, fixes, larger blueprints); Plan B = sections 3, 3b, 3c (waypoints, chests, placement, setups, sleep, follow), because Plan B's structure references and placement anchors build on waypoints and the tree.
+
 ## 4. Food (starvation)
 
 Kevin never ate in 24 minutes; starvation took him to exactly 1/20 health twice (Normal difficulty stops at 1). Fixes:
@@ -96,10 +105,9 @@ Templates accept up to 15x15 footprints (hut, wall, floor, room, pit); free-form
 
 ## 6. Out of scope
 
-- Single-block placement (bed, torches, chest, table at a spot) with candidate spots and the leader choosing A, B or C: the next round.
 - A terrain height-map view for the leader.
 - Retraining kev (DAgger with the tree's node labels): after this round.
-- The rounds after this one, in order: (1) single-block placement with code-found candidate spots (bed, torches, chest, table, doors, panes) and the leader choosing A/B/C; (2) composite houses (rooms, shared walls, door and window gaps, pitched full-block roofs, then facing blocks via (1)); (3) structure edits against remembered structures ("knock down this wall and make another room": the wall resolved from the player's position and facing when the message arrives, a dig blueprint for the wall cells plus an extension blueprint sharing the wall line; leader answers extend / remove_part / open_doorway over the structure's floor plan in ASCII).
+- The rounds after this one, in order: (1) composite houses (rooms, shared walls, door and window gaps, pitched full-block roofs, then facing blocks via section 3c); (2) structure edits against remembered structures ("knock down this wall and make another room": the wall resolved from the player's position and facing when the message arrives, a dig blueprint for the wall cells plus an extension blueprint sharing the wall line; leader answers extend / remove_part / open_doorway over the structure's floor plan in ASCII).
 
 ## 7. Testing and acceptance
 
