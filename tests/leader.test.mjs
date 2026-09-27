@@ -1099,3 +1099,10 @@ test('plan_item: the model item normalized; an unknown item falls back to the re
   assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'plan_item', reason: 'bad count 0' }, reqs, {}), null)
   assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'push_goal', reason: 'unknown item bed' }, reqs, {}), null)
 })
+// B: say also for a request that starts with a question word (the session's "where are you" had no '?').
+test('hasQuestion: a question mark, or a leading question word', () => {
+  for (const t of ['where are you', 'Do you have an iron pick', '  what are you up to right now', 'how many iron picks to you have', 'Can you make a bed', 'is it night'])
+    assert.equal(hasQuestion([{ t: 1, name: 'A', text: t }]), true, t)
+  for (const t of ['come here kev', 'make me a compass', 'island hopping', 'whatever', 'dig to y=12'])
+    assert.equal(hasQuestion([{ t: 1, name: 'A', text: t }]), false, t)
+})

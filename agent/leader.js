@@ -207,8 +207,12 @@ const normItem = n => typeof n === 'string' ? n.trim().toLowerCase().replace(/^m
 // count). A say is invalid with nothing to reply to, with no question among the requests, or when it repeats one of them.
 export const SAY_MEMORY = 5
 const sameText = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase()
-// A shown request (the first MAX_REQUESTS, as the prompt renders them) asks a question.
-export const hasQuestion = (requests = []) => requests.slice(0, MAX_REQUESTS).some(r => String(r?.text ?? '').includes('?'))
+// A shown request (the first MAX_REQUESTS, as the prompt renders them) asks a question: it contains '?' or its first
+// word is a question word (players skip the '?': "where are you", "do you have an iron pick").
+const QUESTION_WORDS = new Set(['what', 'where', 'when', 'why', 'how', 'who', 'which', 'whose', 'is', 'are', 'am', 'do', 'does', 'did',
+  'can', 'could', 'will', 'would', 'have', 'has', 'should'])
+const asksQuestion = text => { const s = String(text ?? '').trim().toLowerCase(); return s.includes('?') || QUESTION_WORDS.has(s.split(/[^a-z]+/)[0]) }
+export const hasQuestion = (requests = []) => requests.slice(0, MAX_REQUESTS).some(r => asksQuestion(r?.text))
 function guardSay(res, requests, recentSays) {
   if (res.kind !== 'say') return res
   const bad = reason => ({ kind: 'invalid', id: 'say', reason })
