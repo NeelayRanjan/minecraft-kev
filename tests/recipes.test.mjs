@@ -101,7 +101,10 @@ test('legacy items: gather for producers, craft_item for the legacy recipes (nev
 })
 
 test('cycles: iron_nugget goes through the legacy iron_ingot producer', () => {
-  assert.deepEqual(ids(expandItem('iron_nugget', 9, {})), ['gather(iron_ingot, 1)', 'craft_item(iron_nugget, 9)'])
+  // (final review, Important 5: with no pickaxe held the stone pickaxe tier is hoisted first)
+  const l = ids(expandItem('iron_nugget', 9, {}))
+  assert.deepEqual(l.slice(-2), ['gather(iron_ingot, 1)', 'craft_item(iron_nugget, 9)'])
+  before(l, 'craft_item(stone_pickaxe, 1)', 'gather(iron_ingot, 1)')
 })
 
 test('tables and tiers', () => {
@@ -181,4 +184,17 @@ test('any-wood recipes: chest from birch logs is gather(planks, 8) and one craft
   assert.deepEqual(ids(expandItem('chest', 1, { birch_log: 5 }, TABLE)), ['gather(planks, 8)', 'craft_item(chest, 1)'])
   assert.deepEqual(ids(expandItem('oak_stairs', 4, { birch_planks: 6 }, TABLE)), ['gather(oak_planks, 6)', 'craft_item(oak_stairs, 4)'])
   assert.ok(ids(expandItem('barrel', 1, {}, TABLE)).includes('gather(planks, 6)'), 'the planks of a barrel are any wood')
+})
+
+// Final review, Important 5: legacy ore gathers hoist their pickaxe tier too (raw_iron/iron_ingot stone, diamond iron,
+// obsidian diamond, flint none), so the plan gets the tool before the ore.
+test('legacy ore gathers hoist the pickaxe: diamond_sword from nothing crafts the iron pickaxe before gather(diamond)', () => {
+  const l = ids(expandItem('diamond_sword', 1, {}))
+  before(l, 'craft_item(iron_pickaxe, 1)', 'gather(diamond, 2)')
+  const door = ids(expandItem('iron_door', 1, {}))
+  before(door, 'craft_item(stone_pickaxe, 1)', 'gather(iron_ingot, 6)')
+  const obs = ids(expandItem('obsidian', 2, {}))
+  before(obs, 'craft_item(diamond_pickaxe, 1)', 'gather(obsidian, 2)')
+  assert.ok(!ids(expandItem('flint', 1, {})).some(s => s.includes('pickaxe')), 'flint needs no pickaxe')
+  assert.deepEqual(ids(expandItem('iron_nugget', 9, { stone_pickaxe: 1 })), ['gather(iron_ingot, 1)', 'craft_item(iron_nugget, 9)'])
 })

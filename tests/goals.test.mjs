@@ -5,6 +5,7 @@ import { chainStep, describeChain } from '../agent/stages.js'
 import { techStep, teacherSubtask } from '../agent/teacher.js'
 import { options } from '../agent/subtasks.js'
 import { baseObs } from './fixtures.mjs'
+import mcDataFor from 'minecraft-data'
 
 const chain = over => baseObs({ goal: 'nether', armor: {}, portalLit: false, ...over })
 const ironKit = { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }
@@ -587,4 +588,60 @@ test('gather(oak_planks): craft(planks) only with oak logs held; birch logs alon
   p.push({ kind: 'gather', arg: 'oak_planks', count: 6, source: 'leader', t: 0 })
   assert.equal(p.teacher(chain({ inventory: { iron_pickaxe: 1, birch_log: 3 }, blocks: [...stone, ...logs] })), 'gather_wood')
   assert.equal(p.teacher(chain({ inventory: { iron_pickaxe: 1, birch_log: 3, oak_log: 1 }, blocks: [...stone, ...logs] })), 'craft(planks)')
+})
+
+// Final review, Important 3: goals the leader pushes get the plan steps' treatment: counted kinds convert their count to
+// held + n, and a gather/craft_item outside the legacy tables whose prerequisites are missing becomes a plan.
+import { routePush, checkPlanGates, placedStations } from '../agent/goals.js'
+test('routePush: receive/hunt/smelt/non-legacy craft/MINE gather convert the count; missing prerequisites route to a plan', () => {
+  const o = chain({ inventory: { redstone: 5, iron_pickaxe: 1, white_wool: 1, glass: 2, cobblestone: 7 } })
+  assert.deepEqual(routePush({ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }, o),
+    { route: 'goal', goal: { kind: 'receive', arg: 'redstone', count: 9, from: 'Steve' } })
+  assert.deepEqual(routePush({ kind: 'gather', arg: 'redstone', count: 4 }, o), { route: 'goal', goal: { kind: 'gather', arg: 'redstone', count: 9 } })
+  assert.deepEqual(routePush({ kind: 'hunt', arg: 'leather', count: 2 }, o), { route: 'goal', goal: { kind: 'hunt', arg: 'leather', count: 2 } })
+  assert.deepEqual(routePush({ kind: 'smelt_item', arg: 'glass', count: 3 }, o), { route: 'goal', goal: { kind: 'smelt_item', arg: 'glass', count: 5 } })
+  // legacy kinds keep their absolute meaning (experiment 1 / chain unchanged)
+  assert.deepEqual(routePush({ kind: 'gather', arg: 'cobblestone', count: 8 }, o), { route: 'goal', goal: { kind: 'gather', arg: 'cobblestone', count: 8 } })
+  assert.deepEqual(routePush({ kind: 'craft_item', arg: 'iron_pickaxe', count: null }, o), { route: 'goal', goal: { kind: 'craft_item', arg: 'iron_pickaxe', count: null } })
+  assert.deepEqual(routePush({ kind: 'go_to', arg: 'base', count: null }, o), { route: 'goal', goal: { kind: 'go_to', arg: 'base', count: null } })
+  // gather(redstone) without the iron pickaxe: the expander's plan, never a bare goal that stalls 300 s
+  const bare = chain({ inventory: {} })
+  assert.deepEqual(routePush({ kind: 'gather', arg: 'redstone', count: 4 }, bare), { route: 'plan', item: 'redstone', count: 4 })
+  // a craft with every ingredient held and a table near: a bare goal (count = held + n); missing ingredients: a plan
+  const tbl = chain({ inventory: { iron_ingot: 4, redstone: 1, compass: 1 }, base: { crafting_table: { dist: 3 }, furnace: null } })
+  assert.deepEqual(routePush({ kind: 'craft_item', arg: 'compass', count: 1 }, tbl), { route: 'goal', goal: { kind: 'craft_item', arg: 'compass', count: 2 } })
+  assert.deepEqual(routePush({ kind: 'craft_item', arg: 'compass', count: 1 }, chain({ inventory: { compass: 1 } })), { route: 'plan', item: 'compass', count: 1 })
+})
+
+test('placedStations: a remembered table or furnace counts only within 32 m (as the motor walks to it)', () => {
+  assert.deepEqual(placedStations(chain({ base: { crafting_table: { dist: 20 }, furnace: { dist: 50 } } })), { crafting_table: true, furnace: false })
+  assert.deepEqual(placedStations(chain({ base: { crafting_table: null, furnace: null } })), { crafting_table: false, furnace: false })
+  assert.deepEqual(placedStations(null), { crafting_table: false, furnace: false })
+})
+
+// Final review, Important 5: the plan backstop. Every step, once the steps before it are assumed done, passes
+// validateGoal with obs; a gated step (diamond before iron armor, flint before stage 4) refuses the whole plan.
+test('checkPlanGates: diamond_sword at stage 0 is refused with the stage reason; compass passes', () => {
+  const o = chain({ inventory: {} })
+  const sword = checkPlanGates(expandItem('diamond_sword', 1, {}).steps, o)
+  assert.ok(sword && /iron armor/.test(sword.reason), JSON.stringify(sword))
+  assert.equal(sword.step.arg, 'diamond')
+  assert.equal(checkPlanGates(expandItem('compass', 1, {}).steps, o), null)
+  const armored = chain({ inventory: { iron_pickaxe: 1, iron_sword: 1, iron_axe: 1 }, armor: { iron_helmet: 1, iron_chestplate: 1, iron_leggings: 1, iron_boots: 1 } })
+  assert.equal(checkPlanGates(expandItem('diamond_sword', 1, armored.inventory).steps, armored), null)
+})
+
+test('every producible item from stage 0: each step validates, or the plan is refused only by a stage gate', () => {
+  const o = chain({ inventory: {} })
+  const md = mcDataFor('1.20.4')
+  let refused = 0
+  for (const { name } of md.itemsArray) {
+    const { steps, missing } = expandItem(name, 1, {})
+    if (missing.length || !steps.length) continue
+    const r = checkPlanGates(steps, o)
+    if (!r) continue
+    refused++
+    assert.ok(['diamond', 'flint', 'obsidian'].includes(r.step.arg) || (r.step.kind === 'find'), `${name}: ${JSON.stringify(r)}`)
+  }
+  assert.ok(refused > 0)
 })

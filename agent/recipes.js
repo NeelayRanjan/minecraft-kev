@@ -23,6 +23,7 @@
 // The walk consumes a copy of the inventory as it allocates, and adds what it produces (surplus of a craft yield or a
 // hunt, the crafted table, furnace, shears and pickaxes), so every quantity is net.
 //
+// Legacy ore gathers hoist their pickaxe tier like MINE steps (LEGACY_TIER: iron stone, diamond iron, obsidian diamond).
 // Not modelled: furnace fuel (the smelt goal handles it), tools other than pickaxes and shears, deepslate variants.
 // goals.js may import this module (a cycle): the goals tables are only read inside functions, never at load time.
 import mcDataFor from 'minecraft-data'
@@ -51,6 +52,9 @@ export const TOOL_TIER = { none: 0, wood: 1, stone: 2, iron: 3, diamond: 4 }
 const PICKAXE_TIER = { wooden_pickaxe: 1, golden_pickaxe: 1, stone_pickaxe: 2, iron_pickaxe: 3, diamond_pickaxe: 4, netherite_pickaxe: 4 }
 const PICKAXE_FOR = { 1: 'wooden_pickaxe', 2: 'stone_pickaxe', 3: 'iron_pickaxe', 4: 'diamond_pickaxe' }
 const MAX_COUNT = 64
+// The pickaxe tier a legacy ore gather needs (final review: gather(diamond) was planned with no iron pickaxe hoisted,
+// and the stage gate refused it later). cobblestone and coal keep the legacy option layer's own wooden pickaxe.
+const LEGACY_TIER = { raw_iron: 2, iron_ingot: 2, diamond: 3, obsidian: 4, flint: 0 }
 
 // Wood: the generic names `log`, `planks`, `sticks`/`stick` (the legacy path: goals.RECIPES ingredients, the legacy
 // gathers, charcoal's input) accept any species, held units counted over every `*_log` / `*_planks`. A species name
@@ -223,8 +227,9 @@ function walkTree(item, want, inventory, placed, hoist) {
   }
   function produce(name, r, p, depth) {
     if (p.kind === 'gather') {
-      if (p.mine && TOOL_TIER[p.mine.tool] > 0) tools.tier = Math.max(tools.tier, TOOL_TIER[p.mine.tool])
-      if (p.mine && TOOL_TIER[p.mine.tool] > 0 && !tier(TOOL_TIER[p.mine.tool], depth)) return false
+      const t = p.mine ? TOOL_TIER[p.mine.tool] : LEGACY_TIER[p.item] ?? 0
+      if (t > 0) tools.tier = Math.max(tools.tier, t)
+      if (t > 0 && !tier(t, depth)) return false
       emit('gather', p.item, r)
       return true
     }

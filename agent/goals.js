@@ -10,7 +10,7 @@ import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
   NIGHT_REFUGES, LOW_AIR, stuckOn, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 // A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
-import { MINE, SMELT, HUNT, producerOf, isItem } from './recipes.js'
+import { MINE, SMELT, HUNT, producerOf, isItem, expandItem } from './recipes.js'
 
 // Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
 // args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
@@ -491,6 +491,48 @@ export function planStepGoal(step, obs) {
   const goal = { kind, arg, count, ...(step.from != null ? { from: step.from } : {}) }
   if (COUNTED_KINDS.has(kind) && Number.isInteger(count)) goal.count = Math.min(64, goalHave(obs, kind, arg) + count)
   return goal
+}
+
+// The stations a plan may count as placed: a remembered crafting table or furnace within 32 m (the motor walks to a
+// remembered station only that far, findStation), so a far base table does not drop the table step. Pure.
+export const STATION_WALK_M = 32
+export function placedStations(obs) {
+  const within = s => !!(s && s.dist <= STATION_WALK_M)
+  return { crafting_table: within(obs?.base?.crafting_table), furnace: within(obs?.base?.furnace) }
+}
+
+// A goal the leader pushes (push_goal) gets the plan steps' treatment (final review: receive(redstone, 4) with 5 held
+// was done at once; gather(redstone) with no iron pickaxe stalled 300 s). Counted kinds read the count as n MORE:
+// receive, hunt, smelt_item, a non-legacy craft_item and the gather of a MINE item convert to held + n (planStepGoal).
+// A gather/craft_item outside the legacy tables whose prerequisites are missing (a pickaxe tier, a station, an
+// ingredient) is routed to the expander as a plan instead: {route: 'plan', item, count}. Legacy kinds (gather(log),
+// gather(cobblestone), craft_item(iron_pickaxe), ...) and the others keep today's meaning: {route: 'goal', goal}. Pure.
+const expandable = (kind, arg) => (kind === 'gather' && typeof arg === 'string' && mined(arg)) || (kind === 'craft_item' && typeof arg === 'string' && !legacyCraft(arg))
+export function routePush(goal, obs, { placed = placedStations(obs) } = {}) {
+  const { kind, arg } = goal
+  if (!(kind === 'receive' || kind === 'hunt' || kind === 'smelt_item' || expandable(kind, arg))) return { route: 'goal', goal }
+  const g = kind === 'craft_item' && goal.count == null ? { ...goal, count: 1 } : goal
+  if (expandable(kind, arg)) {
+    const ex = expandItem(arg, g.count, { ...(obs?.inventory || {}), [arg]: 0 }, { placed })
+    const single = !ex.missing.length && ex.steps.length === 1 && ex.steps[0].kind === kind && ex.steps[0].arg === arg
+    if (!single) return { route: 'plan', item: arg, count: g.count }
+  }
+  return { route: 'goal', goal: planStepGoal(g, obs) }
+}
+
+// The plan backstop (final review: 12 items expanded to a gather(diamond) the stage gate refused later): walks the
+// steps with the inventory the steps before each one produce and checks each pushed goal with validateGoal(_, obs).
+// The first refusal {step_index, step, reason}, or null when every step would be accepted. Pure.
+export function checkPlanGates(steps, obs) {
+  const inv = { ...(obs?.inventory || {}) }
+  for (let i = 0; i < steps.length; i++) {
+    const sim = { ...obs, inventory: { ...inv } }
+    const v = validateGoal(planStepGoal(steps[i], sim), sim)
+    if (!v.ok) return { step_index: i, step: steps[i], reason: v.reason }
+    const { arg, count } = steps[i]
+    if (typeof arg === 'string' && Number.isInteger(count)) inv[arg] = (inv[arg] || 0) + count
+  }
+  return null
 }
 
 // The stack: entries [default, ...pushed], top last. update() pops finished (goal_done) and stuck (goal_failed) goals.
