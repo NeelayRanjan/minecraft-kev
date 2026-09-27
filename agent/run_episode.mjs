@@ -4,6 +4,7 @@
 //   node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher|kev [--kev-url http://127.0.0.1:8009]
 //        [--goal iron_pickaxe|nether] [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--live-view 3007] [--no-server] [--difficulty normal] [--quiet]
 //        [--leader off|periodic15|events|periodic30_interrupts|subgoals --leader-think --leader-model m --leader-url u --leader-num-predict n]   (chain mode, needs --kev-url)
+//        [--name Kevin]   (the bot's username; default kev_<port % 100>)
 //        [--status-port 3008]   (a status page: plans, goal stack, subtask, forecasts, chat, leader, plugins at http://127.0.0.1:<port>)
 //
 // Writes out/<name>.json (meta / frames / decisions / events / timeline), out/<name>.jsonl (kev records with _meta),
@@ -16,7 +17,7 @@ import pathfinderPkg from 'mineflayer-pathfinder'
 import collectPkg from 'mineflayer-collectblock'
 import { plugin as pvp } from 'mineflayer-pvp'
 import mcDataFor from 'minecraft-data'
-import { startServer } from './server_ctl.js'
+import { startServer, botUsername } from './server_ctl.js'
 import { Motor } from './motor.js'
 import { EpisodeMemory, summarize, hurtFromDamageEvent } from './summary.js'
 import { serialize } from './serialize.js'
@@ -46,6 +47,7 @@ const flag = k => argv.includes(`--${k}`)
 const seed = opt('seed', '1'), port = Number(opt('port', 25580)), policy = opt('policy', 'teacher'), kevUrl = opt('kev-url', null)
 const epsAction = Number(opt('eps-action', 0)), minutes = Number(opt('minutes', 20)), successMin = Number(opt('success-minutes', 15))
 const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Number(opt('fps', 5)), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
+const botName = (() => { try { return botUsername({ port, name: opt('name', null) }) } catch (e) { console.error(e.message); process.exit(2) } })()
 const statusPort = opt('status-port', null)   // optional: the status page (agent/status_page.js)
 const liveViewPort = opt('live-view', null)   // optional, off by default: a browser view at http://127.0.0.1:<port> (prismarine-viewer's web viewer, not the recorder)
 const goal = opt('goal', 'iron_pickaxe')
@@ -81,7 +83,7 @@ function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = 
 
 // ---- server + bot ----------------------------------------------------------------------------------------------
 const server = noServer ? null : await startServer({ port, seed, log })
-const bot = createBot({ host: '127.0.0.1', port, username: `kev_${port % 100}`, version: '1.20.4', auth: 'offline' })
+const bot = createBot({ host: '127.0.0.1', port, username: botName, version: '1.20.4', auth: 'offline' })
 bot.loadPlugin(pathfinderPkg.pathfinder); bot.loadPlugin(collectPkg.plugin); bot.loadPlugin(pvp)
 let finished = false
 let wrote = false

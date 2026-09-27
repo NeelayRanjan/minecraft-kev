@@ -16,3 +16,13 @@ test('renderProperties appends a key the template lacks', () => {
   assert.match(out, /^server-port=1$/m)
   assert.match(out, /^level-seed=s$/m)
 })
+
+// The whole system is called Kevin (kev is only the 0.8b decision model): --name sets the bot's username; the default
+// stays kev_<port % 100>, so data generation and every existing script are unchanged.
+import { botUsername } from '../agent/server_ctl.js'
+test('botUsername: kev_<port % 100> by default; --name when it is a valid Minecraft name', () => {
+  assert.equal(botUsername({ port: 25580 }), 'kev_80')
+  assert.equal(botUsername({ port: 25595, name: null }), 'kev_95')
+  assert.equal(botUsername({ port: 25580, name: 'Kevin' }), 'Kevin')
+  for (const bad of ['Ke', 'x'.repeat(17), 'Kev in', 'Kévin', '']) assert.throws(() => botUsername({ port: 25580, name: bad }), /bad bot name/, bad)
+})
