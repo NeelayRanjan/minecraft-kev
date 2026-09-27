@@ -29,7 +29,7 @@ import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
-  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind } from './leader.js'
+  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
 import { PlanBook, planTitle, stepText, guardPlanAnswer } from './plans.js'
@@ -172,6 +172,7 @@ let lastIdleWaitT = null   // last leaderNote('idle_wait'): kev picking wait und
 // leader: events since the last tick (the trigger's input), the call in flight, an override waiting for the next
 // decision, the last 5 values of each forecast (the trend line) and kev's last pick with its top alternatives.
 let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}, kevPick = null, leaderCalls = 0
+let leaderFeedbackNext = null   // a refused say's FEEDBACK line for the next leader call (leader.leaderFeedback)
 let lastObs = null   // the latest tick's obs: the leader's threat guard re-checks it when an answer arrives
 const threatNearIn = o => !!(o?.nearestHostile && o.nearestHostile.dist <= 16)
 const leaderNote = kind => { if (leaderTrigger) leaderEvents.push(kind) }
@@ -404,8 +405,10 @@ function leaderTick(obs, t) {
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
       // blueprints: false until the runner wires the blueprint book (the blueprint plan's Task 7 passes true)
-      ...(goalsOn ? { goals: true, blueprints: false, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
+      ...(goalsOn ? { goals: true, blueprints: false, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })),
+        feedback: leaderFeedbackNext } : {}),
     }
+    leaderFeedbackNext = null
     requestBook.shown(shownReqs.map(r => r.id))
   } catch (e) {
     leaderAsk = null
@@ -425,8 +428,9 @@ function leaderAnswered(snap, a, err) {
   const currentId = motor.current?.id ?? null
   // Guards: a hostile near when asked or now (either blocks leaving a threat response); the live subtask-result window.
   const threatNear = snap.threatNear || threatNearIn(lastObs)
+  // say guards: a say needs a shown request with a question and must not repeat one of the leader's last 5 lines
   let res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: askedIdFor(snap, currentId), offered: snap.offered, threatNear, recentResults: recent,
-    goalsEnabled: goalsOn, obs: lastObs })
+    goalsEnabled: goalsOn, obs: lastObs, requests: snap.requests || [], recentSays: recentSayTexts(elog.events) })
   // The night rule: gather, find and go_to(surface) at dusk/night on the surface wait for the morning (answered as cannot).
   if (res.kind === 'push_goal' && nightBlocksGoal(res.goal, lastObs)) res = { kind: 'cannot', id: null, why: `${goalPhrase(res.goal)} has to wait until morning`, night: true, goal: res.goal }
   // A pushed goal gets the plan steps' treatment (goals.routePush): counted kinds read the count as n more (held + n);
@@ -448,6 +452,8 @@ function leaderAnswered(snap, a, err) {
   } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
   // an invalid push or plan answer is replied to below ("Can't do that yet: <reason>"), so it answers the requests like cannot
   const settleAs = settleKind(res, reqs.length > 0)
+  // a refused say settles nothing and sends nothing; with requests shown, the next call is told why (FEEDBACK)
+  if (goalsOn) leaderFeedbackNext = leaderFeedback(res, reqs.length > 0)
   const waiting = reqs.filter(r => !r.answered)
   const notNow = requestBook.settle(reqs.map(r => r.id), settleAs, +t.toFixed(1))
   const settled = waiting.filter(r => r.answered).map(r => ({ t: r.t, name: r.name, as: r.answered.kind }))
