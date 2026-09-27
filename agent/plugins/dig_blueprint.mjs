@@ -34,13 +34,14 @@
 // Results: ok (+n dug[, v ore mined][, k drops][, j liquid][, t needs_tool][, d over a drop][, turned right], segment i/n[, complete]) |
 // hit_liquid (x, y, z: <liquid>, +n dug) | needs_tool (<block>) | no_path (<n> cells) | unreachable (<n> cells over a
 // drop) | failed (no blueprint).
+// Started more than 12 m from the nearest cell still to work on, the call first walks toward it (blueprint_exec.approach).
 import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import { diff } from '../blueprints.js'
 import { FACES, REACH, at, isLiquid, key, standable } from '../reach.js'
 import { turnSegment } from '../templates.js'
 import { MINE } from '../recipes.js'
-import { FINAL_MS, MARGIN_MS, loadBlueprint } from '../blueprint_exec.js'
+import { FINAL_MS, MARGIN_MS, approach, loadBlueprint } from '../blueprint_exec.js'
 
 const { goals } = pathfinderPkg
 
@@ -177,6 +178,7 @@ const plugin = {
       }
     }
 
+    { const w0 = digWork(bp, blockAt); await approach(motor, [...w0.work, ...w0.unloaded], `dig ${arg}`) }   // far away: walk there first
     for (;;) {
       motor.check()
       if (!budget()) break

@@ -9,6 +9,7 @@
 //   (f) a 9-high pillar: the top cells need a scaffold column, which is dug away afterwards
 //   (g) the same, interrupted right after its first scaffold block: the book keeps it unfinished until a later call
 //       digs the scaffold
+//   (h) a 5x2 wall with the bot starting 30 m away: the first call walks there and builds
 // Usage: node tests/integration/plugins/build_check.mjs [--port 25576] [--seed plugins-build] [--only a,b,...]
 // PASS/FAIL; exit 0 on PASS.
 import { Vec3 } from 'vec3'
@@ -252,6 +253,25 @@ if (run('g')) {
   const c = complete(id)
   const dirt = dirtAround()
   check(r.finished && c.ok && scaffoldGone(id) && dirt.length === 0, `(g) resumed: complete and the scaffold removed in ${r.calls} calls (${c.text}; last ${r.last?.result} ${r.last?.detail ?? ''}; dirt ${dirt.join(' ') || 'none'})`)
+}
+
+// (h) started 30 m away (a stone corridor east of the arena): the first call walks to the blueprint and places blocks
+// there instead of answering unreachable (Task 7 fix round 1: the smoke's hut from a pit), then the wall completes
+if (run('h')) {
+  log('--- (h) a 5x2 wall started 30 m away')
+  await arena()
+  await cmd(`/fill ${X + 12} ${Y - 1} ${Z - 1} ${X + 32} ${Y - 1} ${Z + 1} stone`)
+  await cmd(`/fill ${X + 12} ${Y} ${Z - 1} ${X + 32} ${Y + 3} ${Z + 1} air`)
+  await cmd(`/give ${USER} cobblestone 20`)
+  const id = book.add(makeBlueprint('wall', { len: 5, h: 2 }, 'cobblestone', { anchor: anchorHere(), facing: 'north' }))
+  await cmd(`/tp ${USER} ${X + 30.5} ${Y} ${Z + 0.5}`); await bot.waitForTicks(30)
+  currentId = id
+  const first = await A.step(`build_blueprint(${id})`)
+  const d0 = diff(book.get(id), blockAt)
+  check(first.result === 'ok' && d0.done > 0, `(h) the first call from 30 m walks there and builds (${first.result} ${first.detail ?? ''}; ${d0.done}/${d0.total})`)
+  const r = await buildLoop(id)
+  const c = complete(id)
+  check(r.finished && c.ok, `(h) wall complete in ${r.calls} more calls (${c.text})`)
 }
 
 await A.finish()

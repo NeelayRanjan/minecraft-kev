@@ -23,10 +23,11 @@
 // Results: ok (+n placed[, m dug][, s scaffold][, r scaffold removed][, k unreachable][, j blocked][, complete]) |
 // no_materials (<item>) | unreachable (<n> cells; a dig cell motor.digCell refuses as 'underfoot' counts) | no_path | failed (no
 // blueprint).
+// Started more than 12 m from the nearest cell still to work on, the call first walks toward it (blueprint_exec.approach).
 import { Vec3 } from 'vec3'
 import { cells, diff, foundation, itemForBlock, liquidBlocked } from '../blueprints.js'
 import { buildOrder, faces, key, scaffoldMaterial } from '../reach.js'
-import { FINAL_MS, MARGIN_MS, inventoryOf, loadBlueprint } from '../blueprint_exec.js'
+import { FINAL_MS, MARGIN_MS, approach, inventoryOf, loadBlueprint } from '../blueprint_exec.js'
 
 export const MAX_PLACEMENTS = 30   // blueprint and scaffold blocks together
 // Time budget (agent/blueprint_exec.js): the loop keeps MARGIN_MS free before the deadline; the final tidy and
@@ -91,6 +92,7 @@ const plugin = {
       removed += await motor.removeScaffold(scaffold, { avoid: new Set(w.work.map(c => key(c.pos))), keep: needed, bad })
     }
     let w = buildWork(bp, blockAt)
+    if (await approach(motor, [...w.work, ...w.blocked], `build ${arg}`)) w = buildWork(bp, blockAt)   // far away: walk there first
     await motor.stepClear(new Set(w.work.map(c => key(c.pos))))
     await tidy(w)
 

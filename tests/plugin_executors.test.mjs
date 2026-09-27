@@ -468,3 +468,37 @@ test('build_blueprint run: a dig cell motor.digCell refuses as underfoot is unre
   }
   assert.deepEqual(await build.run(m, id), { result: 'unreachable', detail: '1 cells' })
 })
+
+// Task 7 fix round 1: an executor started far from its blueprint walks there first (the smoke's hut: unreachable (80
+// cells) from a pit 10+ m away), then works; approachTarget is the pure part.
+import { approachTarget, APPROACH_M } from '../agent/blueprint_exec.js'
+test('approachTarget: the nearest work cell when it is more than APPROACH_M away, else null', () => {
+  assert.equal(APPROACH_M, 12)
+  const cellsAt = ps => ps.map(p => ({ pos: p }))
+  assert.equal(approachTarget(cellsAt([{ x: 0, y: 64, z: -5 }]), { x: 0.5, y: 64, z: 0.5 }), null)
+  assert.deepEqual(approachTarget(cellsAt([{ x: 30, y: 64, z: 0 }, { x: 20, y: 70, z: 5 }]), { x: 0.5, y: 64, z: 0.5 }), { x: 20, y: 70, z: 5 })
+  assert.equal(approachTarget([], { x: 0, y: 0, z: 0 }), null)
+})
+
+test('build_blueprint and dig_blueprint run: from 30 m away they walk toward the blueprint before working', async () => {
+  const w = buildWorld(), book = new BlueprintBook(), id = book.add(hutAt())
+  const walks = []
+  const bot = { blockAt: v => w.blockAt({ x: v.x, y: v.y, z: v.z }), inventory: { items: () => [] }, entity: { position: new Vec3(30.5, 64, 0.5) } }
+  const m = {
+    bot, blueprints: bookAccessor(book, { blockAt: w.blockAt }), current: null, reserveMs: 0,
+    check () {}, timeLeft: () => 60_000, log () {}, count: () => 0, occupied: () => new Set(),
+    settleInventory: async () => {}, stepClear: async () => {}, removeScaffold: async () => 0,
+    walkWithin: async (goal) => { walks.push(goal); bot.entity.position = new Vec3(goal.x + 0.5, goal.y, goal.z + 0.5) },
+    digCell: async () => ({ ok: false, why: 'unreachable' }), placeCell: async () => ({ ok: false, why: 'unreachable' }),
+  }
+  await build.run(m, id)
+  assert.equal(walks.length, 1)
+  assert.ok(Math.hypot(walks[0].x - 0, walks[0].z + 2) <= 5, `walked toward the hut: ${walks[0].x},${walks[0].z}`)
+  const dw = digWorld(), dbook = new BlueprintBook(), did = dbook.add(roomAt())
+  const dm = fakeMotor(dbook, dw)
+  dm.bot.entity.position = new Vec3(0.5, 64, 40.5)
+  const dwalks = []
+  dm.walkWithin = async (goal) => { dwalks.push(goal); dm.bot.entity.position = new Vec3(goal.x + 0.5, goal.y, goal.z + 0.5) }
+  const r = await dig.run(dm, did)
+  assert.equal(dwalks.length, 1); assert.equal(r.result, 'ok')
+})
