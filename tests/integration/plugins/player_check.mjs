@@ -1,7 +1,7 @@
 // go_to_player(<name>) and receive(<item>) arena check, with a second Mineflayer bot `player_1` as the player:
 // player_1 12 m away -> go_to_player(player_1) ok (within 3 m); player_1 8 m away with 4 redstone, tossing them a few
 // seconds into the run -> receive(redstone) with obs.goalTop { from: player_1, count: 4 } walks to it and ends ok (+4);
-// player_1 in spectator mode -> go_to_player player_gone; player_1 quits -> go_to_player player_gone and receive
+// player_1 in spectator mode -> go_to_player ok at the /data-reported position (within 3 m); player_1 quits -> go_to_player player_gone and receive
 // player_gone. Also: go_to(player:player_1) and receive(redstone) goals offer the options through the registry.
 // Usage: node tests/integration/plugins/player_check.mjs [--port 25575] [--seed plugins-player]. PASS/FAIL; exit 0 on PASS.
 import { createBot } from 'mineflayer'
@@ -53,7 +53,9 @@ await cmd(`/gamemode spectator ${P}`)
 await cmd(`/tp ${P} ${X + 10.5} ${Y} ${Z + 0.5}`)
 await bot.waitForTicks(20)
 r = await step(`go_to_player(${P})`)
-check(r.result === 'player_gone', `a spectator is player_gone (${r.result} ${r.detail})`)
+// live retry session (2026-09-27): a spectator has no entity, but /data reports where it is; within 3 m of that is arrived
+const toSpec = bot.entity.position.distanceTo({ x: X + 10.5, y: Y, z: Z + 0.5 })
+check(r.result === 'ok' && /reported position/.test(r.detail ?? '') && toSpec <= 3.5, `a spectator is reached at its reported position (${r.result} ${r.detail}, ${toSpec.toFixed(1)} m)`)
 
 // (d) player_1 quits: go_to_player and receive (no giver, nothing dropped) -> player_gone.
 player.quit()
