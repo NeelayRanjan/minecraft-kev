@@ -133,3 +133,20 @@ test('bookAccessor: get, progress with the surface flag, advance', () => {
   assert.equal(acc.advance(id), null)
   assert.equal(bookAccessor(b, { blockAt: w.blockAt }).progress(id, {}).surface, false)
 })
+
+test('build progress: a liquid in an air cell, or in a block cell with nothing to place against, is blocked, not work', () => {
+  const b = new BlueprintBook(), w = world()
+  const id = b.add(makeBlueprint('floor', { w: 1, d: 1 }, 'cobblestone', { anchor, facing: 'north' }))
+  const [cell] = cells(b.get(id))
+  w.set(cell.pos, 'water')   // the ground below is a face: the water is displaced by placing
+  let p = b.progress(id, w.blockAt)
+  assert.deepEqual([p.missing, p.blocked, p.finished], [1, 0, false])
+  w.set({ ...cell.pos, y: cell.pos.y - 1 }, 'water')   // nothing solid around it now
+  p = b.progress(id, w.blockAt)
+  assert.deepEqual([p.missing, p.blocked, p.finished], [0, 1, true])
+  const hid = b.add(hut())
+  const inside = cells(b.get(hid)).find(c => c.want === 'air' && c.layer === 0)
+  w.set(inside.pos, 'water')
+  p = b.progress(hid, w.blockAt)
+  assert.equal(p.blocked, 1); assert.equal(p.missing, 71)
+})

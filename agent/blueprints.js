@@ -129,6 +129,18 @@ export function diff (bp, blockAt) {
   return out
 }
 
+// A build cell holding a liquid the executor leaves alone: a liquid in a cell the build wants as air, or in a cell it
+// wants as a block with no solid neighbour to place against (placing the block into the liquid displaces it; with
+// nothing to place against there is nothing to do). Such cells are blocked, never remaining work, and never keep a
+// build unfinished (agent/blueprint_book.js progress, agent/plugins/build_blueprint.mjs).
+const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+export function liquidBlocked (c, blockAt) {
+  const b = blockAt(c.pos)
+  if (!b || !LIQUID.has(b.name)) return false
+  if (c.want === 'air') return true
+  return !FACE_DIRS.some(([dx, dy, dz]) => blockAt({ x: c.pos.x + dx, y: c.pos.y + dy, z: c.pos.z + dz })?.boundingBox === 'block')
+}
+
 // Layer-0 build cells (array index 0 of a blueprint with baseLayer 0) whose block below is air, a liquid or another
 // non-solid block: one foundation block under each, of the cell's own material. Returns [{ x, y, z, want }].
 export function foundation (bp, blockAt) {

@@ -4,12 +4,13 @@ import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import { parseOption, FOOD, TABLE_ITEMS, counts } from './subtasks.js'
 import { portalLayout } from './stages.js'
+import { reachSpots, faces, bestFace, scaffoldPlan, occupiedCells, clearSpots, lineOfSight, isSolid, key as cellKey, at as cellAt, REACH, EYE } from './reach.js'
 
 const { Movements, goals } = pathfinderPkg
 export const TIMEOUTS = { gather_wood: 60, mine_stone: 45, mine_coal: 60, mine_iron: 90, craft: 20, smelt: 90, explore_toward: 40,
   return_to_base: 60, eat: 10, build_shelter: 20, fight: 25, flee: 20, pillar_up: 10, wait: 3,
   mine_diamond: 120, mine_gravel: 60, mine_obsidian: 150, fill_bucket: 40, cast_obsidian: 60, build_portal: 90, light_portal: 20 }
-export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'no_fuel', 'needs_tool', 'player_gone', 'failed', 'died']
+export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'no_fuel', 'needs_tool', 'player_gone', 'unreachable', 'failed', 'died']
 const INTERRUPT_RESULT = { threat: 'interrupted', took_damage: 'took_damage', died: 'died', drowning: 'interrupted' }
 const WAIT_IN_WATER_S = 12   // a wait that starts in water swims to shore (or floats) for this long instead of 3 s
 const IRON_Y = 16
@@ -1428,5 +1429,209 @@ export class Motor {
       this.check()
       await this.goto(new goals.GoalBlock(ahead.x, ahead.y - 1, ahead.z))
     }
+  }
+
+  // ---- building: reach spots, placement, scaffolding (the geometry is agent/reach.js; agent/plugins/build_blueprint.mjs
+  // drives these). Positions are plain { x, y, z } block coordinates. Walks use walkMovements (no digging, no towers,
+  // no scaffolding by the pathfinder: it would break or bury the build).
+  blockAtP(p) { return this.bot.blockAt(new Vec3(p.x, p.y, p.z)) }
+  feetP() { const f = this.bot.entity.position.floored(); return { x: f.x, y: f.y, z: f.z } }
+  eyeP() { const p = this.bot.entity.position; return { x: p.x, y: p.y + EYE, z: p.z } }
+
+  // The cells the bot's body and every other player's body overlap (keys): never placed into.
+  occupied() {
+    const b = this.bot
+    const others = Object.values(b.players || {}).filter(p => p.username !== b.username && p.entity).map(p => p.entity.position)
+    return occupiedCells([b.entity.position, ...others])
+  }
+
+  // Walk to the best standing cell for placing into (mode 'place') or digging (mode 'dig') `pos`, trying the `tries`
+  // best ranked spots (reach.js reachSpots; `avoid` = the cells the build still has to fill). Returns the spot, or null
+  // with this.lastReach = 'unreachable' (no spot at all) | 'no_path' (spots, none walkable).
+  // `bad` (a Set of feet keys the caller keeps for its run) collects the spots no path reached, so they are not tried
+  // again for the next cell.
+  async reachSpot(pos, { avoid = new Set(), mode = 'place', tries = 3, bad = new Set() } = {}) {
+    const from = this.feetP()
+    const spots = reachSpots(pos, p => this.blockAtP(p), { from, avoid, mode })
+    this.lastReach = spots.length ? 'no_path' : 'unreachable'
+    // up to `tries` spots with a seen face, then up to `tries` hidden ones (a region no path reaches, the ground under
+    // a staircase built from the top, holds many seen spots that all fail alike)
+    const open = spots.filter(s => !bad.has(cellKey(s.feet)))
+    for (const s of [...open.filter(s => s.seen).slice(0, tries), ...open.filter(s => !s.seen).slice(0, tries)]) {
+      if (cellKey(s.feet) === cellKey(this.feetP())) return s
+      try { await this.walkWithin(new goals.GoalBlock(s.feet.x, s.feet.y, s.feet.z)) } catch (e) {
+        if (e instanceof Abort) throw e
+        this.check()
+        bad.add(cellKey(s.feet))
+        this.log(`reach ${cellKey(pos)}: cannot stand at ${cellKey(s.feet)} (${e?.name ?? e})`)
+        continue
+      }
+      this.check()
+      if (cellKey(this.feetP()) === cellKey(s.feet)) return s
+      bad.add(cellKey(s.feet))
+    }
+    return null
+  }
+
+  // walkTo with a time cap (a GoalBlock the bot cannot settle in, a step edge it slides off, replans forever): past
+  // `ms` the goal is dropped and a Timeout is thrown (the caller treats it like NoPath).
+  async walkWithin(goal, ms = 15_000) {
+    let timer
+    try {
+      await Promise.race([
+        this.walkTo(goal),
+        new Promise((_, rej) => { timer = setTimeout(() => { try { this.bot.pathfinder.setGoal(null) } catch {} const e = new Error(`no arrival in ${ms / 1000} s`); e.name = 'Timeout'; rej(e) }, ms) }),
+      ])
+    } finally { clearTimeout(timer) }
+  }
+
+  // Shuffle to the centre of the cell the bot stands in (sneaking: never off an edge), so its 0.6 m body leaves the
+  // neighbouring cells free.
+  async centre() {
+    const b = this.bot, c = b.entity.position.floored().offset(0.5, 0, 0.5)
+    try {
+      b.setControlState('sneak', true)
+      for (let i = 0; i < 12 && Math.hypot(b.entity.position.x - c.x, b.entity.position.z - c.z) > 0.15; i++) {
+        await b.lookAt(new Vec3(c.x, b.entity.position.y + EYE, c.z), true)
+        b.setControlState('forward', true); await b.waitForTicks(1); b.setControlState('forward', false)
+      }
+    } finally { b.setControlState('forward', false); b.setControlState('sneak', false) }
+    await b.waitForTicks(2)
+  }
+
+  // Place `itemName` so that block `blockName` fills `pos`: from where the bot stands when a face is within reach, else
+  // from the best reach spot. Clears a non-solid block (grass, a flower) first; places into a liquid (displacing it).
+  // Never into a cell a body occupies. { ok } | { ok: false, why: 'solid'|'occupied'|'no_materials'|'no_face'|
+  // 'unreachable'|'no_path'|'rejected'|'unloaded' }.
+  async placeCell(pos, itemName, blockName = itemName, { avoid = new Set(), bad } = {}) {
+    const blockAt = p => this.blockAtP(p)
+    const cur = blockAt(pos)
+    if (cur?.name === blockName) return { ok: true }
+    if (!cur) return { ok: false, why: 'unloaded' }
+    if (isSolid(cur)) return { ok: false, why: 'solid' }
+    if (!this.item(itemName)) return { ok: false, why: 'no_materials' }
+    if (!faces(pos, blockAt).length) return { ok: false, why: 'no_face' }
+    if (this.occupied().has(cellKey(pos))) return { ok: false, why: 'occupied' }
+    let best = bestFace(blockAt, this.eyeP(), pos)
+    if (!best || !best.seen) {
+      const spot = await this.reachSpot(pos, { avoid, bad })
+      if (!spot && !best) return { ok: false, why: this.lastReach }
+      best = bestFace(blockAt, this.eyeP(), pos)
+      if (!best) return { ok: false, why: 'unreachable' }
+    }
+    if (this.occupied().has(cellKey(pos))) {
+      await this.centre(); this.check()
+      if (this.occupied().has(cellKey(pos))) return { ok: false, why: 'occupied' }
+      best = bestFace(blockAt, this.eyeP(), pos)
+      if (!best) return { ok: false, why: 'unreachable' }
+    }
+    const here = blockAt(pos)
+    if (here && !isSolid(here) && !['air', 'cave_air', 'water', 'lava'].includes(here.name)) {
+      try { await this.digSafe(here); await this.bot.waitForTicks(2) } catch (e) { this.log(`place ${itemName} at ${cellKey(pos)}: clearing ${here.name}: ${e.message}`) }
+      this.check()
+    }
+    const it = this.item(itemName)
+    if (!it) return { ok: false, why: 'no_materials' }
+    try {
+      if (this.bot.heldItem?.name !== itemName) await this.bot.equip(it, 'hand')
+      await this.bot.placeBlock(this.blockAtP(best.face.ref), new Vec3(...best.face.dir))
+    } catch (e) { this.log(`place ${itemName} at ${cellKey(pos)}${best.seen ? '' : ' (hidden face)'}: ${e.message}`) }
+    await this.bot.waitForTicks(1)
+    this.check()
+    return blockAt(pos)?.name === blockName ? { ok: true, seen: best.seen } : { ok: false, why: 'rejected' }
+  }
+
+  // Dig the solid block at `pos` from a reach spot. { ok } | { ok: false, why: 'unbreakable'|'unreachable'|'no_path'|'rejected' }.
+  async digCell(pos, { avoid = new Set(), bad } = {}) {
+    let blk = this.blockAtP(pos)
+    if (!isSolid(blk)) return { ok: true }
+    if (blk.hardness == null || blk.hardness < 0 || blk.name === 'bedrock') return { ok: false, why: 'unbreakable' }
+    const e = this.eyeP(), c = { x: pos.x + 0.5, y: pos.y + 0.5, z: pos.z + 0.5 }
+    const near = Math.hypot(e.x - c.x, e.y - c.y, e.z - c.z) <= REACH && lineOfSight(p => this.blockAtP(p), e, c, new Set([cellKey(pos)]))
+    if (!near && !(await this.reachSpot(pos, { avoid, mode: 'dig', bad }))) return { ok: false, why: this.lastReach }
+    blk = this.blockAtP(pos)
+    try { await this.digSafe(blk) } catch (err) { if (err instanceof Abort) throw err; this.log(`dig ${blk.name} at ${cellKey(pos)}: ${err.message}`) }
+    await this.bot.waitForTicks(2)
+    this.check()
+    return isSolid(this.blockAtP(pos)) ? { ok: false, why: 'rejected' } : { ok: true }
+  }
+
+  // Pillar up on a scaffold column (reach.js scaffoldPlan: outside every cell in `avoid`) until `pos` is in reach; every
+  // block placed is recorded in mem.scaffold[bpId] ({ x, y, z, item, layer, segment }). The plan, or null.
+  async scaffoldTo(pos, { bpId, avoid = new Set(), material, layer = null, segment = 0 } = {}) {
+    const b = this.bot
+    const plan = scaffoldPlan(pos, p => this.blockAtP(p), { from: this.feetP(), avoid })
+    if (!plan) { this.log(`scaffold for ${cellKey(pos)}: no column`); return null }
+    if (this.count(material) < plan.height) { this.log(`scaffold for ${cellKey(pos)}: ${plan.height} ${material} needed`); return null }
+    if (cellKey(this.feetP()) !== cellKey(plan.base)) {
+      try { await this.walkWithin(new goals.GoalBlock(plan.base.x, plan.base.y, plan.base.z)) } catch (e) {
+        if (e instanceof Abort) throw e
+        this.check(); this.log(`scaffold for ${cellKey(pos)}: cannot reach ${cellKey(plan.base)} (${e?.name ?? e})`); return null
+      }
+      this.check()
+      if (cellKey(this.feetP()) !== cellKey(plan.base)) return null
+    }
+    await this.centre(); this.check()
+    const list = ((this.mem.scaffold ??= {})[bpId] ??= [])
+    for (let i = 0; i < plan.height; i++) {
+      this.check()
+      const feet = this.feetP()
+      const below = this.blockAtP(cellAt(feet, 0, -1, 0))
+      const it = this.item(material)
+      if (!isSolid(below) || !it) break
+      await b.equip(it, 'hand')
+      await b.lookAt(new Vec3(feet.x + 0.5, feet.y - 1, feet.z + 0.5), true)
+      b.setControlState('jump', true)
+      const y0 = b.entity.position.y, tj = Date.now()
+      while (b.entity.position.y < y0 + 1.0 && Date.now() - tj < 500) await sleep(20)   // the jump apex (~1.25 blocks)
+      try { await b.placeBlock(below, new Vec3(0, 1, 0)) } catch (e) { this.log(`scaffold at ${cellKey(feet)}: ${e.message}`) }
+      b.setControlState('jump', false)
+      if (this.blockAtP(feet)?.name === material) {
+        list.push({ ...feet, item: material, layer, segment })
+        this.log(`scaffold: placed ${material} at ${cellKey(feet)} for ${bpId}`)
+      } else break
+      await sleep(400)
+    }
+    this.check()
+    return cellKey(this.feetP()) === cellKey(plan.feet) ? plan : null
+  }
+
+  // Dig the scaffold of `bpId` top down (standing on it: dig the block underfoot and drop; else from a reach spot).
+  // Entries whose block is gone or changed are dropped. Returns the number dug; mem.scaffold[bpId] is deleted once empty.
+  async removeScaffold(bpId, { avoid = new Set(), keep = () => false } = {}) {
+    const list = this.mem.scaffold?.[bpId]
+    if (!list?.length) return 0
+    let removed = 0
+    list.sort((a, b) => b.y - a.y)
+    for (let i = 0; i < list.length;) {
+      this.check()
+      const p = list[i]
+      if (keep(p)) { i++; continue }
+      const blk = this.blockAtP(p)
+      if (!blk || blk.name !== p.item) { list.splice(i, 1); continue }
+      const f = this.feetP()
+      const onTop = f.x === p.x && f.z === p.z && f.y === p.y + 1
+      const r = onTop ? await this.digSafe(blk).then(() => ({ ok: !isSolid(this.blockAtP(p)) }), err => { if (err instanceof Abort) throw err; return { ok: false, why: err.message } })
+        : await this.digCell(p, { avoid })
+      if (onTop) await this.bot.waitForTicks(8)   // fall onto the next one
+      if (r.ok && !isSolid(this.blockAtP(p))) { list.splice(i, 1); removed++; this.log(`scaffold: removed ${p.item} at ${cellKey(p)}`) }
+      else { this.log(`scaffold: cannot remove ${cellKey(p)} (${r.why ?? 'still there'})`); i++ }
+    }
+    if (!list.length) delete this.mem.scaffold[bpId]
+    return removed
+  }
+
+  // Step out of the cells in `avoid` (a build's cells still to fill) when the bot's feet or head is in one.
+  async stepClear(avoid) {
+    const f = this.feetP()
+    if (!avoid.has(cellKey(f)) && !avoid.has(cellKey(cellAt(f, 0, 1, 0)))) return true
+    for (const s of clearSpots(f, p => this.blockAtP(p), { avoid }).slice(0, 3)) {
+      try { await this.walkWithin(new goals.GoalBlock(s.x, s.y, s.z)); this.check(); return true } catch (e) {
+        if (e instanceof Abort) throw e
+        this.check()
+      }
+    }
+    this.log(`step clear: no spot outside the build near ${cellKey(f)}`)
+    return false
   }
 }

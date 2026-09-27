@@ -11,6 +11,10 @@ import craft, { heldRecipe } from '../agent/plugins/craft_item.mjs'
 import hunt, { huntDrop, huntable, isSheared, MOBS } from '../agent/plugins/hunt.mjs'
 import goToPlayer, { playerEntity } from '../agent/plugins/go_to_player.mjs'
 import receive, { droppedName, giverName } from '../agent/plugins/receive.mjs'
+import build, { buildWork, MAX_PLACEMENTS } from '../agent/plugins/build_blueprint.mjs'
+import { BlueprintBook, bookAccessor } from '../agent/blueprint_book.js'
+import { makeBlueprint } from '../agent/templates.js'
+import { registerBlueprintAccessor } from '../agent/goals.js'
 import { PluginRegistry } from '../agent/plugins.js'
 import { GOAL_KINDS, registerOptionProvider } from '../agent/goals.js'
 import { options } from '../agent/subtasks.js'
@@ -100,4 +104,68 @@ test('the registry offers the shipped plugins\' options to the goal filters and 
     const rg = { kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }
     assert.ok(GOAL_KINDS.receive.filter(baseObs(), 'redstone', options(baseObs()), 4, rg).some(o => o.id === 'receive(redstone)'))
   } finally { registerOptionProvider(null) }
+})
+
+// A fake world for the build tests: ground below y 64 (stone), air above, explicit blocks by position.
+const wk = p => `${p.x},${p.y},${p.z}`
+function buildWorld () {
+  const m = new Map()
+  const blockAt = p => {
+    const n = m.has(wk(p)) ? m.get(wk(p)) : (p.y < 64 ? 'stone' : 'air')
+    return n == null ? null : { name: n, boundingBox: ['air', 'water', 'lava'].includes(n) ? 'empty' : 'block' }
+  }
+  return { blockAt, set: (p, n) => m.set(wk(p), n) }
+}
+const hutAt = () => makeBlueprint('hut', {}, 'cobblestone', { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' })
+
+test('build_blueprint options: its blueprint under a build(bp<n>) goal only; 30 placements per call', () => {
+  assert.deepEqual(build.options(baseObs(), { kind: 'build', arg: 'bp3', count: 1 }).map(o => o.arg), ['bp3'])
+  assert.deepEqual(build.options(baseObs(), { kind: 'build', arg: 'portal_frame' }), [])
+  assert.deepEqual(build.options(baseObs(), { kind: 'dig', arg: 'bp3' }), [])
+  assert.deepEqual(build.options(baseObs(), null), [])
+  assert.equal(build.preconditions(baseObs(), 'bp3'), true)
+  assert.equal(MAX_PLACEMENTS, 30)
+})
+
+test('buildWork: missing cells to place, solid cells to dig, foundation under a hole, liquids blocked unless displaceable', () => {
+  const w = buildWorld(), bp = hutAt()
+  let r = buildWork(bp, w.blockAt)
+  assert.equal(r.work.length, 71); assert.ok(r.work.every(c => c.op === 'place')); assert.equal(r.blocked.length, 0)
+  assert.deepEqual(r.needs, { cobblestone: 71 })
+  assert.ok(r.allKeys.size >= 100)
+  const wall = r.work.find(c => c.layer === 0 && c.row === 0 && c.col === 0).pos
+  const inside = { x: 0, y: 64, z: -4 }   // col 2, row 2, layer 0: interior air
+  w.set(inside, 'stone'); w.set(wall, 'dirt')
+  r = buildWork(bp, w.blockAt)
+  assert.equal(r.work.find(c => wk(c.pos) === wk(inside)).op, 'dig')
+  assert.equal(r.work.find(c => wk(c.pos) === wk(wall)).op, 'dig')
+  // water in an interior air cell: blocked, not work
+  w.set(inside, 'water')
+  r = buildWork(bp, w.blockAt)
+  assert.ok(!r.work.some(c => wk(c.pos) === wk(inside))); assert.ok(r.blocked.some(c => wk(c.pos) === wk(inside)))
+  // water in a wall cell with the ground below it: displaced by placing (work); with nothing around: blocked
+  w.set(wall, 'water')
+  assert.equal(buildWork(bp, w.blockAt).work.find(c => wk(c.pos) === wk(wall)).op, 'place')
+  const pillar = makeBlueprint('pillar', { h: 3 }, 'cobblestone', { anchor: { x: 0, y: 70, z: 0 }, facing: 'north', })
+  const w2 = buildWorld()
+  const cell = buildWork(pillar, w2.blockAt).work.find(c => c.op === 'place' && c.layer === 1).pos
+  w2.set(cell, 'water')
+  // the pillar floats at y 70 (baseLayer 0 -> a foundation cell at 69 over air); its layer-1 cell has no solid neighbour
+  r = buildWork(pillar, w2.blockAt)
+  assert.ok(r.blocked.some(c => wk(c.pos) === wk(cell)))
+  assert.ok(r.work.some(c => c.op === 'foundation' && c.pos.y === 69))
+})
+
+test('build(bp<n>) offers build_blueprint(bp<n>) through the registry and the accessor', async () => {
+  const reg = new PluginRegistry({ dir: DIR })
+  await reg.load()
+  const book = new BlueprintBook(), w = buildWorld()
+  const id = book.add(hutAt())
+  registerOptionProvider((obs, goal) => reg.optionsFor(obs, goal))
+  registerBlueprintAccessor(bookAccessor(book, { blockAt: w.blockAt }))
+  try {
+    const obs = baseObs({ inventory: { cobblestone: 80 } })
+    assert.ok(GOAL_KINDS.build.filter(obs, id, options(obs), 1).some(o => o.id === `build_blueprint(${id})`))
+    assert.equal(GOAL_KINDS.build.teacher(obs, id, 1), `build_blueprint(${id})`)
+  } finally { registerOptionProvider(null); registerBlueprintAccessor(null) }
 })

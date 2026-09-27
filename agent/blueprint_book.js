@@ -6,9 +6,10 @@
 // progress(id, blockAt) summarises the current segment:
 //   { kind, name, done, total, missing, blocked, layer, layers, segment, segments, finished,
 //     blocksDone, blocksTotal, needs, layerNeeds }
-//   missing   the cells still to work on: a build's missing + wrong cells; a dig's solid cells (liquid cells excluded:
+//   missing   the cells still to work on: a build's missing + wrong cells (liquidBlocked cells excluded: a liquid in an
+//             air cell, or in a block cell with nothing to place against); a dig's solid cells (liquid cells excluded:
 //             they are never dug, so never remaining work)
-//   blocked   unloaded cells, plus a dig's cells holding a liquid
+//   blocked   unloaded cells, plus a dig's cells holding a liquid and a build's liquidBlocked cells
 //   layer     1-based: a build's lowest layer with work left, a dig's highest (digs work top down); `layers` when none
 //   segment   1-based; segments 1 for a blueprint that is not streamed
 //   finished  nothing left in this segment (missing 0, nothing unloaded) and no next segment
@@ -16,7 +17,7 @@
 //   needs     { item: n } the materials the remaining block cells (unloaded ones included) and their foundation
 //             blocks take (build only)
 //   layerNeeds the same restricted to the working layer
-import { diff, foundation, itemForBlock } from './blueprints.js'
+import { diff, foundation, itemForBlock, liquidBlocked } from './blueprints.js'
 import { nextSegment } from './templates.js'
 
 const LIQUID = new Set(['water', 'lava', 'bubble_column'])
@@ -55,9 +56,9 @@ export class BlueprintBook {
     if (!bp) return null
     const d = diff(bp, blockAt)
     const build = bp.kind === 'build'
-    const liquid = build ? [] : d.wrong.filter(c => LIQUID.has(blockAt(c.pos)?.name))
+    const liquid = build ? [...d.missing, ...d.wrong].filter(c => liquidBlocked(c, blockAt)) : d.wrong.filter(c => LIQUID.has(blockAt(c.pos)?.name))
     const liquidSet = new Set(liquid)
-    const work = build ? [...d.missing, ...d.wrong] : d.wrong.filter(c => !liquidSet.has(c))
+    const work = (build ? [...d.missing, ...d.wrong] : d.wrong).filter(c => !liquidSet.has(c))
     const layers = bp.layers.length
     const workLayers = work.map(c => c.layer)
     const layerIdx = workLayers.length ? (build ? Math.min(...workLayers) : Math.max(...workLayers)) : layers - 1
