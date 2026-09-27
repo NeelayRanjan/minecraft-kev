@@ -29,7 +29,7 @@ import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
-  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback } from './leader.js'
+  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
 import { PlanBook, planTitle, stepText, guardPlanAnswer } from './plans.js'
@@ -441,6 +441,12 @@ function leaderAnswered(snap, a, err) {
   }
   // Goal answers act on the stack here. The requests the call was shown are answered only by a goal-level answer.
   const reqs = snap.requests || []
+  // The cannot backstop: the leader's own cannot to a request that names a minecraft-data item runs the expander
+  // instead (it plans the item or says what is missing); the request text is the player's, never the model's.
+  if (res.kind === 'cannot' && lastObs) {
+    const b = cannotBackstop(res, reqs, lastObs.inventory, { placed: placedStations(lastObs) })
+    if (b) { elog.event({ t, kind: 'leader_cannot_replanned', item: b.item, count: b.count, why: a?.why ?? null }); log(`leader: cannot replaced by plan_item ${b.item} x${b.count}`); res = b }
+  }
   // The plan guards (plans.guardPlanAnswer): a duplicate title adds nothing; a plan blocked within 10 minutes is not
   // planned again unless a request that arrived after the block asks (settled as cannot, "still blocked: <reason>").
   res = guardPlanAnswer(res, planBook, t, reqs)

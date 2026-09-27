@@ -13,7 +13,7 @@
 //
 // Pure: the runner (agent/run_episode.mjs) owns the transport (planner.js askLeader), the timing and the motor.
 import { GOAL_KINDS, validateGoal, RECIPES, PRODUCERS, FINDABLE_NOW, PLACES, STRUCTURES } from './goals.js'
-import { isItem } from './recipes.js'
+import { isItem, expandItem } from './recipes.js'
 import { stepText } from './plans.js'
 import { TEMPLATES, checkParams, describeTemplates } from './templates.js'
 import { validate, cells } from './blueprints.js'
@@ -156,6 +156,39 @@ export function applyAnswer({ answer, currentId, askedCurrentId, offered, threat
   if (threatNear && THREAT_RESPONSES.has(currentId) && !THREAT_RESPONSES.has(action)) return { kind: 'blocked', id: action, reason: 'threat' }
   if (recentFailure(action, recentResults)) return { kind: 'blocked', id: action, reason: 'recent_failure' }
   return { kind: 'override', id: action }
+}
+
+// The cannot backstop (live stress session: the leader refused "white bed", "5 leather" and "ender pearl" as outside its
+// lists). itemInRequest parses the PLAYER's request text (never the model's): scanning left to right, at each word the
+// two-word underscore join first, then the word alone, each as written, without a trailing 's', then without 'es';
+// the first minecraft-data item wins, with the integer right before it as the count (else 1). Common English words
+// that happen to be items are skipped.
+const NOT_ITEM_WORDS = new Set(['air', 'light', 'target', 'chain', 'lead', 'barrier', 'structure_void', 'jigsaw'])
+export function itemInRequest(text) {
+  const w = String(text ?? '').toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean)
+  const forms = x => [x, x.replace(/s$/, ''), x.replace(/es$/, '')]
+  const hit = x => forms(x).find(f => !NOT_ITEM_WORDS.has(f) && isItem(f)) ?? null
+  const countAt = i => (i > 0 && /^\d+$/.test(w[i - 1]) ? Math.max(1, Math.min(64, Number(w[i - 1]))) : 1)
+  for (let i = 0; i < w.length; i++) {
+    if (/^\d+$/.test(w[i])) continue
+    const two = i + 1 < w.length ? hit(`${w[i]}_${w[i + 1]}`) : null
+    const item = two ?? hit(w[i])
+    if (item) return { item, count: countAt(i) }
+  }
+  return null
+}
+// The leader's own cannot (not the code's night or blocked-plan refusal) to shown requests: the first request naming an
+// item whose expansion has steps or a missing leaf becomes plan_item (the code plans it or says what is missing);
+// otherwise null and the cannot stands.
+export function cannotBackstop(res, requests = [], inventory = {}, { placed } = {}) {
+  if (res?.kind !== 'cannot' || res.night || res.guard || !requests?.length) return null
+  for (const r of requests.slice(0, MAX_REQUESTS)) {
+    const m = itemInRequest(r?.text)
+    if (!m) continue
+    const ex = expandItem(m.item, m.count, inventory || {}, placed ? { placed } : {})
+    if (ex.steps.length || ex.missing.length) return { kind: 'plan_item', id: null, item: m.item, count: m.count, why: res.why ?? '', via: 'cannot' }
+  }
+  return null
 }
 
 // The say guards (live stress session: say used to acknowledge instead of acting, 7 identical lines, and to refuse with
@@ -423,15 +456,15 @@ Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and 
 - push_goal with a typed goal: {"action": "push_goal", "goal": {"kind": ..., "arg": ..., "count": ...}, "why": ...};
 - pop_goal: drop the top pushed goal when it is pointless now (its materials are lost, night has fallen on the surface, it keeps failing);
 - cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.
-Goal kinds and their arguments (nothing else is accepted):
-- craft_item, arg one of: ${list(Object.keys(RECIPES))};
-- gather, arg one of: ${list(Object.keys(PRODUCERS))}; count an integer from 1 to 64;
+push_goal goal kinds and their arguments (these lists are for push_goal only; plan_item is not limited to them):
+- craft_item (push_goal only), arg one of: ${list(Object.keys(RECIPES))};
+- gather (push_goal only), arg one of: ${list(Object.keys(PRODUCERS))}; count an integer from 1 to 64;
 - find, arg one of: ${list(FINDABLE_NOW)};
 - go_to, arg one of: ${list(PLACES)}, or player:<name>, or y:<height>;
 - build, arg one of: ${list(Object.keys(STRUCTURES).filter(k => STRUCTURES[k].executor))};
 - receive, arg an item, count, from the name of the player giving it (the bot waits for the item);
 - survive_night, return_to_base: no arg.
-For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse: act with a goal or a plan, or answer cannot. cannot only for things outside every list.
+For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse: act with a goal or a plan, or answer cannot. cannot only for things that are neither an item nor a goal above.
 The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; Steve says "come here" -> push_goal go_to, arg player:Steve; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.
 ${blueprints ? BLUEPRINT_RULES : ''}Answer every audience request with exactly one of plan_item, plan_steps${bpActions}, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
 Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.

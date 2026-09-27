@@ -702,7 +702,7 @@ test('LEADER_SYSTEM_GOALS: the plan rules', () => {
   assert.ok(s.includes('plan_steps only for requests that are not an item (a trip, a sequence of goals).'))
   assert.ok(s.includes("edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything')."))
   assert.ok(s.includes('say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse'))
-  assert.ok(s.includes('cannot only for things outside every list.'))
+  assert.ok(s.includes('cannot only for things that are neither an item nor a goal above.'))
   assert.match(s, /receive/)
   assert.match(s, /"plan_item" \| "plan_steps" \| "edit" \| "say"/)
 })
@@ -932,6 +932,11 @@ import { leaderSystemGoals } from '../agent/leader.js'
 export const LIVE_EDITS = [
   ['- say with a line the audience reads: {', '- say with a line the audience reads, only to answer a question: {'],
   ['say answers a question or acknowledges; it is not an action.', 'say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse: act with a goal or a plan, or answer cannot.'],
+  ['Goal kinds and their arguments (nothing else is accepted):', 'push_goal goal kinds and their arguments (these lists are for push_goal only; plan_item is not limited to them):'],
+  ['- craft_item, arg one of: ', '- craft_item (push_goal only), arg one of: '],
+  ['- gather, arg one of: ', '- gather (push_goal only), arg one of: '],
+  ['so never list the steps yourself.', 'so never list the steps yourself. plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first.'],
+  ['cannot only for things outside every list.', 'cannot only for things that are neither an item nor a goal above.'],
 ]
 function liveEdits(text) {
   for (const [a, b] of LIVE_EDITS) { assert.equal(text.split(a).length, 2, `edit anchor once: ${a}`); text = text.replace(a, b) }
@@ -999,4 +1004,39 @@ test('recentSayTexts: the last 5 leader_say texts', () => {
   const ev = [...Array(7)].map((_, i) => ({ t: i, kind: i % 2 ? 'leader_say' : 'subtask_done', text: `s${i}` }))
   assert.deepEqual(recentSayTexts(ev), ['s1', 's3', 's5'])
   assert.deepEqual(recentSayTexts([...Array(8)].map((_, i) => ({ kind: 'leader_say', text: `x${i}` }))), ['x3', 'x4', 'x5', 'x6', 'x7'])
+})
+
+// Live stress session: the leader refused "white bed" ("not on my craftable list"), "5 leather" and "ender pearl": the
+// prompt read the legacy craft/gather lists as the whole vocabulary. plan_item takes any item; and a cannot to a
+// request naming a minecraft-data item runs the expander instead (itemInRequest parses the player's chat, not the model).
+import { itemInRequest, cannotBackstop } from '../agent/leader.js'
+test('itemInRequest: two-word joins before single words, plural s/es stripped, a count right before it', () => {
+  assert.deepEqual(itemInRequest('can you make me a white bed'), { item: 'white_bed', count: 1 })
+  assert.deepEqual(itemInRequest('can you get me 5 leather for a leather helmet'), { item: 'leather', count: 5 })
+  assert.deepEqual(itemInRequest('i want an ender pearl'), { item: 'ender_pearl', count: 1 })
+  assert.deepEqual(itemInRequest('I have 2 Redstone Blocks for you!'), { item: 'redstone_block', count: 2 })
+  assert.deepEqual(itemInRequest('make me some torches'), { item: 'torch', count: 1 })
+  assert.deepEqual(itemInRequest('can you make me a compass pleaseeeeeeeee'), { item: 'compass', count: 1 })
+  assert.equal(itemInRequest('come here kev'), null)
+  assert.equal(itemInRequest('go into the light, the air is fine'), null, 'common words that are items are ignored')
+  assert.equal(itemInRequest(''), null)
+})
+test('cannotBackstop: a cannot to a request naming an item becomes plan_item when the expander has steps or a missing leaf', () => {
+  const reqs = [{ t: 1, name: 'Spacers_Choice', text: 'can you make me a white bed' }]
+  const b = cannotBackstop({ kind: 'cannot', id: null, why: 'A bed is not on my list' }, reqs, {})
+  assert.deepEqual(b, { kind: 'plan_item', id: null, item: 'white_bed', count: 1, why: 'A bed is not on my list', via: 'cannot' })
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'i want an ender pearl' }], {}).item, 'ender_pearl', 'a missing leaf: the code replies')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'give me a bed' }], { white_bed: 1 }), null, 'no item named')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'a torch please' }], { torch: 4 }), null, 'already held: the cannot stands')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'dance for me' }], {}), null)
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [], {}), null, 'no request shown')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x', night: true }, reqs, {}), null, "the code's own night refusal stands")
+  assert.equal(cannotBackstop({ kind: 'push_goal', id: null }, reqs, {}), null)
+})
+test('goals prompt: plan_item takes any item; the legacy lists are the push_goal argument lists', () => {
+  const s = leaderSystemGoals()
+  assert.ok(s.includes('plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first.'))
+  assert.match(s, /push_goal goal kinds and their arguments/)
+  assert.match(s, /- craft_item \(push_goal only\), arg one of: /)
+  assert.match(s, /- gather \(push_goal only\), arg one of: /)
 })
