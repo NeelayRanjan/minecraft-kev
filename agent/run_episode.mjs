@@ -34,7 +34,7 @@ import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStac
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
   requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect, replyFor, holdsPlans } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
-import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep, registerBlueprintAccessor, isBlueprintId } from './goals.js'
+import { GoalStack, interruptOnRemoval, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep, registerBlueprintAccessor, isBlueprintId } from './goals.js'
 import { PlanBook, planTitle, itemPlanTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase, planAnnouncement, stepStartText, BLOCKED_WINDOW_S } from './plans.js'
 import { expandItem, expandMaterials, expandBlueprint } from './recipes.js'
 import { Vec3 } from 'vec3'
@@ -513,6 +513,7 @@ function leaderAnswered(snap, a, err) {
     goalStack.pop('new_request')
     elog.event({ t, kind: 'goal_popped', goal: popped, reason: 'new_request' })
     closeGoal(popped.id, t, 'popped')
+    stopGoalExecutor(g, t, 'new_request')
   }
   let pushed = null
   if (res.kind === 'push_goal') {
@@ -581,6 +582,7 @@ function leaderAnswered(snap, a, err) {
     goalStack.pop('leader')
     elog.event({ t, kind: 'goal_popped', goal: popped, why: a.why ?? null })
     closeGoal(popped.id, t, 'popped')
+    stopGoalExecutor(g, t, 'pop_goal')
     say(`Dropping that${reply ? '.' : whyTail(a.why) || '.'}`)
   } else if (res.kind === 'cannot') {
     const why = res.night || res.guard ? res.why : a.why ?? null
@@ -631,12 +633,24 @@ function leaderAnswered(snap, a, err) {
 // A pushed goal finished (goal_done) or popped by the stuck rule (goal_failed): logged, told to the leader and the chat.
 function onGoalEvent(e, t) {
   elog.event({ t, kind: e.kind, goal: e.goal, ...(e.reason ? { reason: e.reason } : {}) })
+  stopGoalExecutor(e.goal, t, e.kind)   // a protect whose time is up, a build given up as stuck: its executor stops too
   leaderNote(e.kind)
   closeGoal(e.goal.id, t, e.kind === 'goal_done' ? 'done' : `failed${e.reason ? ` (${e.reason})` : ''}`)
   log(`goal #${e.goal.id} ${goalPhrase(e.goal)}: ${e.kind}${e.reason ? ` (${e.reason})` : ''}`)
   // a plan step: the plan announces its next step, its end or where it is stuck (a stale step's event says nothing)
   if (e.goal.plan_id != null) { for (const ev of planBook.advance(e, t)) onPlanEvent(ev, t); return }
   say(e.kind === 'goal_done' ? `Done: ${goalPhrase(e.goal)}.` : `Gave up on ${goalPhrase(e.goal)}: ${e.reason ?? 'stuck'}`)
+}
+
+// A goal left the stack (popped, its plan step dropped/skipped/cleared, a stay or protect ended, done or stuck): the
+// running subtask stops with it when it belongs to that goal (goals.interruptOnRemoval; final review, Important 5).
+// Detail 'leader': the byLeader path keeps the cut attempt out of the livelock breaker.
+function stopGoalExecutor(goal, t, why) {
+  const id = motor.current?.id ?? null
+  if (!motor.busy || !interruptOnRemoval(id, goal)) return
+  elog.event({ t, kind: 'executor_stopped', subtask: id, goal: goal ? { id: goal.id ?? null, kind: goal.kind, arg: goal.arg ?? null } : null, why })
+  log(`stopping ${id}: its goal ${goal.kind}${goal.arg ? `(${goal.arg})` : ''} ended (${why})`)
+  motor.interrupt('leader')
 }
 
 // ---- plans ------------------------------------------------------------------------------------------------------------
@@ -676,6 +690,7 @@ function syncPlans(obs, t) {
     goalStack.pop('plan_changed')
     elog.event({ t, kind: 'goal_popped', goal: pubGoal(top), reason: 'plan_changed' })
     closeGoal(top.id, t, 'popped')
+    stopGoalExecutor(top, t, 'plan_changed')
   }
   if (!want) return
   // the step's need recomputed from the inventory now (goals.refreshPlanStep); a step no longer needed is passed over
@@ -776,6 +791,7 @@ function raisePlan(res, reqs, t, why) {
     goalStack.pop('plan_changed')
     elog.event({ t, kind: 'goal_popped', goal: pubGoal(top), reason: 'plan_changed' })
     closeGoal(top.id, t, 'popped')
+    stopGoalExecutor(top, t, 'plan_changed')
   }
   say(`Updated plan #${p.id}: ${p.materials_only ? 'materials for ' : ''}${res.count} ${humanItem(res.item)}.`)
   return true

@@ -117,6 +117,21 @@ function holdFilter(obs, kind, arg, opts, count, g) {
   const own = kind === 'stay' ? `stay(${stayKey(arg)})` : `${kind}(${playerOf(arg)})`
   return [...opts.filter(o => HOLD_KEEP.has(o.id)), ...pluginOptions(obs, goalOf(kind, arg, count, g)).filter(o => o.id === own && !stuck.has(o.id))]
 }
+// A goal leaves the stack (popped by the leader or a new request, its plan step dropped, skipped or cleared, done or
+// stuck): its own executor must stop with it (final review, Important 5: "stop" left build_blueprint running up to
+// 150 s). True when the running subtask belongs to the goal: build/dig(<bp>) -> build_blueprint/dig_blueprint(<bp>),
+// go_to(player:<name>) -> go_to_player/linger(<name>), receive(<item>) -> receive(<item>); for a stay or protect any
+// subtask (only its hold options run under it) except a threat response or eat, which finish on their own (never cut
+// a flight from a creeper short). The runner interrupts with detail 'leader' (kept out of the livelock breaker).
+export function interruptOnRemoval(runningId, goal) {
+  if (!runningId || !goal) return false
+  if (goal.kind === 'stay' || goal.kind === 'protect') return !THREAT.has(runningId) && runningId !== 'eat'
+  if (goal.kind === 'build') return runningId === `build_blueprint(${goal.arg})`
+  if (goal.kind === 'dig') return runningId === `dig_blueprint(${goal.arg})`
+  if (goal.kind === 'receive') return runningId === `receive(${goal.arg})`
+  const who = goal.kind === 'go_to' ? playerOf(goal.arg) : null
+  return !!who && (runningId === `go_to_player(${who})` || runningId === `linger(${who})`)
+}
 const firstPlugin = (obs, goal, relevant) => pluginOptions(obs, goal).map(o => o.id).find(relevant) ?? null
 const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
 
