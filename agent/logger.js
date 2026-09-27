@@ -118,3 +118,15 @@ export class EpisodeLog {
       events: this.events, timeline: this.timeline, leader: this.leader, steer: this.steer }
   }
 }
+
+// A per-key rate limit: ok(key, nowMs) is true the first time for a key and then once per windowMs (the live view's
+// swallowed entity errors log once per entity id per minute). Pure given nowMs.
+export function onceEvery(windowMs) {
+  const last = new Map()
+  return (key, nowMs) => {
+    const t = last.get(key)
+    if (t != null && nowMs - t < windowMs) return false
+    last.set(key, nowMs)
+    return true
+  }
+}

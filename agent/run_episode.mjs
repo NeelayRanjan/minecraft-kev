@@ -24,15 +24,15 @@ import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
 import { stageOf, describeChain, needs } from './stages.js'
 import { counts, REPEAT_WINDOW } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
-import { EpisodeLog, oneHot, fromKev } from './logger.js'
+import { EpisodeLog, oneHot, fromKev, onceEvery } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind } from './leader.js'
-import { options as optionsFor, tableNear, furnaceNear } from './subtasks.js'
-import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal } from './goals.js'
-import { PlanBook, planTitle, stepText } from './plans.js'
+import { options as optionsFor } from './subtasks.js'
+import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
+import { PlanBook, planTitle, stepText, guardPlanAnswer } from './plans.js'
 import { expandItem } from './recipes.js'
 import { PluginRegistry, appendRequestLog } from './plugins.js'
 import { startStatusServer } from './status_page.js'
@@ -148,9 +148,13 @@ if (liveViewPort) {
     // bot.emit and ending the episode (uncaughtException -> shutdown).
     const origEmit = bot.emit.bind(bot)
     const GUARDED_ENTITY_EVENTS = new Set(['entitySpawn', 'entityMoved', 'entityGone'])
+    const logOnce = onceEvery(60_000)   // entityMoved fires ~20 times a second: one line per entity id per minute
     bot.emit = (event, ...args) => {
       if (!GUARDED_ENTITY_EVENTS.has(event)) return origEmit(event, ...args)
-      try { return origEmit(event, ...args) } catch (e) { log(`live view: entity update failed (${e.message}), skipped`); return false }
+      try { return origEmit(event, ...args) } catch (e) {
+        if (logOnce(args[0]?.id ?? 'unknown', Date.now())) log(`live view: entity update failed (${e.message}) for entity ${args[0]?.id ?? '?'}, skipped (logged once a minute)`)
+        return false
+      }
     }
     mineflayerViewer(bot, { port: Number(liveViewPort), firstPerson: true, viewDistance: 4 })
     log(`live view: http://127.0.0.1:${liveViewPort}`)
@@ -399,7 +403,7 @@ function leaderTick(obs, t) {
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
-      ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), plans: planBook.render(), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
+      ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
     }
     requestBook.shown(shownReqs.map(r => r.id))
   } catch (e) {
@@ -424,8 +428,17 @@ function leaderAnswered(snap, a, err) {
     goalsEnabled: goalsOn, obs: lastObs })
   // The night rule: gather, find and go_to(surface) at dusk/night on the surface wait for the morning (answered as cannot).
   if (res.kind === 'push_goal' && nightBlocksGoal(res.goal, lastObs)) res = { kind: 'cannot', id: null, why: `${goalPhrase(res.goal)} has to wait until morning`, night: true, goal: res.goal }
+  // A pushed goal gets the plan steps' treatment (goals.routePush): counted kinds read the count as n more (held + n);
+  // a gather/craft_item outside the legacy tables whose prerequisites are missing becomes a plan through the expander.
+  if (res.kind === 'push_goal' && lastObs) {
+    const r = routePush(res.goal, lastObs)
+    res = r.route === 'plan' ? { kind: 'plan_item', id: null, item: r.item, count: r.count, why: res.why, via: 'push_goal', more: true } : { ...res, goal: r.goal }
+  }
   // Goal answers act on the stack here. The requests the call was shown are answered only by a goal-level answer.
   const reqs = snap.requests || []
+  // The plan guards (plans.guardPlanAnswer): a duplicate title adds nothing; a plan blocked within 10 minutes is not
+  // planned again unless a request that arrived after the block asks (settled as cannot, "still blocked: <reason>").
+  res = guardPlanAnswer(res, planBook, t, reqs)
   const src = reqs.length ? `audience:${reqs[0].name}` : 'leader'
   let pushed = null
   if (res.kind === 'push_goal') {
@@ -462,12 +475,17 @@ function leaderAnswered(snap, a, err) {
     closeGoal(popped.id, t, 'popped')
     say(`Dropping that${whyTail(a.why) || '.'}`)
   } else if (res.kind === 'cannot') {
-    const why = res.night ? res.why : a.why ?? null
-    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why, ...(res.night ? { reason: 'night', goal: res.goal } : {}) })
-    say(res.night ? `Not until morning: ${goalPhrase(res.goal)} would mean working on the surface at night.` : `Can't do that yet${whyTail(a.why) || '.'}`)
+    const why = res.night || res.guard ? res.why : a.why ?? null
+    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why, ...(res.night ? { reason: 'night', goal: res.goal } : {}),
+      ...(res.guard ? { reason: res.guard, plan_id: res.plan_id, title: res.title } : {}) })
+    say(res.night ? `Not until morning: ${goalPhrase(res.goal)} would mean working on the surface at night.`
+      : res.guard ? `Can't do ${res.title} again yet (plan #${res.plan_id}), ${res.why}.` : `Can't do that yet${whyTail(a.why) || '.'}`)
     logRequests(reqs, t, { kind: 'cannot', why, missing: null })
   } else if (res.kind === 'plan_item') {
     planItem(res, reqs, src, t, a.why ?? null)
+  } else if (res.kind === 'plan_steps' && res.duplicate != null) {
+    elog.event({ t, kind: 'plan_duplicate', plan_id: res.duplicate, title: res.title, why: a.why ?? null })
+    say(`Already on it: plan #${res.duplicate}.`)
   } else if (res.kind === 'plan_steps') {
     addPlan({ title: res.title, steps: res.steps, source: src }, t, a.why ?? null)
   } else if (res.kind === 'edit') {
@@ -565,12 +583,25 @@ function addPlan({ title, steps, source }, t, why = null) {
 
 // plan_item: the expander turns the item into net steps (the leader never does the arithmetic). A leaf nothing can
 // produce is a reply and a motor-backlog line; an item already held is a reply and no plan.
+// A duplicate of an active plan (guardPlanAnswer) replies "Already on it". res.more (a push_goal routed here) plans n
+// MORE of the item (the held ones are not counted). The stations count as placed within 32 m (goals.placedStations). A
+// plan a stage gate would refuse at one of its steps (goals.checkPlanGates) is refused now, with that reason.
 function planItem(res, reqs, source, t, why) {
   const o = lastObs
-  const placed = { crafting_table: !!o?.base?.crafting_table || (o ? tableNear(o) : false), furnace: !!o?.base?.furnace || (o ? furnaceNear(o) : false) }
-  const ex = expandItem(res.item, res.count, o?.inventory || {}, { placed })
   const title = planTitle(res.item, res.count)
-  if (ex.missing.length) {
+  if (res.duplicate != null) {
+    elog.event({ t, kind: 'plan_duplicate', plan_id: res.duplicate, title, why })
+    say(`Already on it: plan #${res.duplicate}.`)
+    return
+  }
+  const inv = { ...(o?.inventory || {}), ...(res.more ? { [res.item]: 0 } : {}) }
+  const ex = expandItem(res.item, res.count, inv, { placed: placedStations(o) })
+  const gate = !ex.missing.length && ex.steps.length && o ? checkPlanGates(ex.steps, o) : null
+  if (gate) {
+    elog.event({ t, kind: 'plan_refused', item: res.item, count: res.count, step_index: gate.step_index, step: stepOf(gate.step), reason: gate.reason, why })
+    say(`Can't make ${humanItem(title)} yet: ${gate.reason}.`)
+    logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, refused: gate.reason, missing: null, why })
+  } else if (ex.missing.length) {
     elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: ex.missing, why })
     say(`Can't make ${humanItem(title)} yet: needs ${ex.missing.map(humanItem).join(', ')} (no way to get it)`)
     logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, missing: ex.missing, why })

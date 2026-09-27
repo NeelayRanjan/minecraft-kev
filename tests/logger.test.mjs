@@ -122,3 +122,13 @@ test('steering decisions do not affect toRecords (the 1 Hz stream)', () => {
 
   assert.equal(JSON.stringify(withSteer.toRecords()), JSON.stringify(plain.toRecords()))
 })
+
+// Final review minor: the live view's swallowed entity errors log once per entity id per 60 s.
+import { onceEvery } from '../agent/logger.js'
+test('onceEvery: true the first time per key, then false until the window has passed', () => {
+  const ok = onceEvery(60_000)
+  assert.equal(ok(7, 0), true)
+  assert.equal(ok(7, 30_000), false)
+  assert.equal(ok(8, 30_000), true)
+  assert.equal(ok(7, 60_001), true)
+})
