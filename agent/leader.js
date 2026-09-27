@@ -647,6 +647,14 @@ export function splitChat(text, max = 200) {
   return out
 }
 
+// Mineflayer sends a chat line that starts with '/' as a command, and the bot is an op (final review, Critical 2: a
+// prompt-injected "/stop" or "/op <viewer>" would run). Every outgoing line loses its leading whitespace and slashes.
+export const chatSafeLine = line => String(line ?? '').replace(/^[\s/]+/, '')
+// The bot's chat text as the lines it sends: sanitized, split at word boundaries, each stripped by chatSafeLine and
+// dropped when nothing is left. The runner's say() is the only way text reaches the chat; commands go through the
+// runner's serverCommand().
+export const outgoingChatLines = (text, max = 200) => splitChat(sanitizeChat(text, 2000), max).map(l => chatSafeLine(sanitizeChat(l, 256))).filter(Boolean)
+
 // A player's chat line from mineflayer's 'message' event (jsonMsg: a prismarine-chat ChatMessage, or its JSON), or
 // null. Only position 'chat' (signed player chat; system messages arrive as 'system'/'game_info') whose chat type is
 // the plain player one: translate 'chat.type.text' with [sender, text]. Console `say` (chat.type.announcement), emotes

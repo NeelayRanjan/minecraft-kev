@@ -30,7 +30,7 @@ import { EpisodeLog, oneHot, fromKev, onceEvery } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
-import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS, blueprintsRelevant,
+import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS, blueprintsRelevant, outgoingChatLines, chatSafeLine,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
   requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
@@ -121,7 +121,10 @@ await new Promise(r => bot.once('spawn', r))
 for (let i = 0; i < 10; i++) { try { await bot.waitForChunksToLoad(); break } catch { log('chunks not ready, retrying') } }
 const me = bot.username
 // Server commands go to the console when we own the server (works for any bot name); chat needs the bot to be an op.
-const command = c => { if (server) server.proc.stdin.write(c + '\n'); else bot.chat('/' + c) }
+// serverCommand is the only chat path that may start with '/': the runner's own commands (the op at start, the /data
+// position query), never text from a player or the leader (those go through say() -> outgoingChatLines, which strips slashes).
+const serverCommand = c => bot.chat('/' + String(c).replace(/^\/+/, ''))
+const command = c => { if (server) server.proc.stdin.write(c + '\n'); else serverCommand(c) }
 for (const c of ['time set 0', `difficulty ${difficulty}`, 'gamerule doDaylightCycle true', 'gamerule keepInventory false', 'gamerule doImmediateRespawn true', 'weather clear']) command(c)
 // Ops are exempt from the chat spam kick (a burst of replies would otherwise end the episode); the console accepts it.
 command(`op ${me}`)
@@ -208,13 +211,15 @@ const goalLog = []   // pushed goals: {id, kind, arg, count, source, t, why, end
 // and more than one "not now" per 10 s dropped.
 const chatQueue = new ChatQueue()
 // A long text (a plan announcement, the leader's say) goes out as several lines split at word boundaries.
-const say = (msg, kind = null) => { for (const line of splitChat(sanitizeChat(msg, 2000), 200)) chatQueue.enqueue(sanitizeChat(line, 256), now(), kind) }
+// Every line is stripped of leading slashes (outgoingChatLines): a line starting with '/' would run as an op command.
+const say = (msg, kind = null) => { for (const line of outgoingChatLines(msg)) chatQueue.enqueue(line, now(), kind) }
 const chatLines = []   // the status page's chat: the players' lines and the bot's, {t, name, text}
 const noteChat = (who, text) => { chatLines.push({ t: +now().toFixed(1), name: who, text }); if (chatLines.length > 50) chatLines.shift() }
 const chatTimer = setInterval(() => {
   if (finished) return
   const line = chatQueue.drain(now())
-  if (line) { try { bot.chat(line); noteChat(me, line) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
+  const safe = line ? chatSafeLine(line) : ''   // again at the sender: nothing queued may run as a command
+  if (safe) { try { bot.chat(safe); noteChat(me, safe) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
 }, 250)
 // The plan book (agent/plans.js): the front plan's current step is pushed on the goal stack (syncPlans, every tick);
 // its goal_done / goal_failed move the plan on. Requests the bot cannot serve go to the motor backlog (request log).
@@ -788,7 +793,7 @@ function queryPlayerPos(name, ms = 3000) {
     }
     const timer = setTimeout(() => finish(null), ms)
     bot.on('message', onMsg)
-    try { bot.chat(`/data get entity ${name} Pos`) } catch { finish(null) }
+    try { serverCommand(`data get entity ${name} Pos`) } catch { finish(null) }
   })
 }
 const PENDING_BP = 'bp0'   // the blueprint step's id while pricing (the book's ids start at bp1)
