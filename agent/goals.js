@@ -65,6 +65,7 @@ function arrivedFor(obs, who, g) {
   return t - g.arrivedT >= LINGER_S
 }
 const lingering = g => g?.arrivedT != null
+export const PROTECT_S = 120   // protect(player:<name>) lasts this long
 export const CLOSING_M = 4   // go_to(player): a distance decrease this large is progress for the stuck clock
 
 const humanize = s => s.replace(/_/g, ' ')
@@ -106,13 +107,15 @@ function surfaceWork(id) {
 }
 // stay: the option arg is the player's name or 'here'
 const stayKey = arg => playerOf(arg) ?? 'here'
-const STAY_KEEP = new Set([...THREAT, 'eat', 'wait'])
-function stayFilter(obs, arg, opts, count, g) {
+// stay and protect: the threat responses, eat and wait, plus the kind's own plugin option (stay(<name|here>),
+// protect(<name>)); no night refuges (staying with the player is the point), under low air only the way out.
+const HOLD_KEEP = new Set([...THREAT, 'eat', 'wait'])
+function holdFilter(obs, kind, arg, opts, count, g) {
   if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
   const stuck = stuckOn(obs)
   for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)
-  const hold = `stay(${stayKey(arg)})`
-  return [...opts.filter(o => STAY_KEEP.has(o.id)), ...pluginOptions(obs, goalOf('stay', arg, count, g)).filter(o => o.id === hold && !stuck.has(o.id))]
+  const own = kind === 'stay' ? `stay(${stayKey(arg)})` : `${kind}(${playerOf(arg)})`
+  return [...opts.filter(o => HOLD_KEEP.has(o.id)), ...pluginOptions(obs, goalOf(kind, arg, count, g)).filter(o => o.id === own && !stuck.has(o.id))]
 }
 const firstPlugin = (obs, goal, relevant) => pluginOptions(obs, goal).map(o => o.id).find(relevant) ?? null
 const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
@@ -501,10 +504,21 @@ export const GOAL_KINDS = {
   // choice); only the hold, eat, wait and the threat responses are offered.
   stay: {
     done: () => false,
-    filter: (obs, arg, opts, count, g) => stayFilter(obs, arg, opts, count, g),
+    filter: (obs, arg, opts, count, g) => holdFilter(obs, 'stay', arg, opts, count, g),
     step: (obs, arg) => ({ index: 1, of: 1, text: GOAL_KINDS.stay.describe(obs, arg) }),
     teacher: (obs, arg) => `stay(${stayKey(arg)})`,
     describe: (obs, arg) => `${playerOf(arg) ? `Staying with ${playerOf(arg)}` : 'Staying here'} until you say I can go`,
+    stuckS: Infinity,
+  },
+  // protect(player:<name>) (live retry session: "there is a skeleton next to me" was refused): the plugin's
+  // protect(<name>) follows the player and fights hostile mobs within 8 m of them (never a player, never a passive mob).
+  // Done PROTECT_S seconds after the push; a new request or "stop" ends it earlier (the runner, the leader's pop_goal).
+  protect: {
+    done: (obs, arg, count, g) => (obs.t ?? 0) - (g?.t ?? obs.t ?? 0) >= PROTECT_S,
+    filter: (obs, arg, opts, count, g) => holdFilter(obs, 'protect', arg, opts, count, g),
+    step: (obs, arg, count, g) => ({ index: 1, of: 1, text: `${GOAL_KINDS.protect.describe(obs, arg)} (${Math.max(0, Math.round(PROTECT_S - ((obs.t ?? 0) - (g?.t ?? obs.t ?? 0))))} s left)` }),
+    teacher: (obs, arg) => `protect(${playerOf(arg)})`,
+    describe: (obs, arg) => `protect ${playerOf(arg)}`,
     stuckS: Infinity,
   },
   // receive(<item>, n) from a player (goal.from): the plugin's receive(<item>) waits for the drop and picks it up.
@@ -578,6 +592,8 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
       return typeof from === 'string' && /^\w{1,16}$/.test(from) ? { ok: true } : { ok: false, reason: 'receive needs the name of the player giving it' }
     case 'stay':
       return arg === 'here' || playerOf(arg) ? { ok: true } : { ok: false, reason: 'stay needs player:<name> or here' }
+    case 'protect':
+      return playerOf(arg) ? { ok: true } : { ok: false, reason: 'protect needs player:<name>' }
     case 'go_to': {
       if (PLACES.includes(arg) || playerOf(arg)) return { ok: true }
       const y = goToY(arg)

@@ -32,7 +32,7 @@ import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
-  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S } from './leader.js'
+  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep } from './goals.js'
 import { PlanBook, planTitle, itemPlanTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
@@ -462,6 +462,13 @@ function leaderAnswered(snap, a, err) {
   // planned again unless a request that arrived after the block asks (settled as cannot, "still blocked: <reason>").
   res = guardPlanAnswer(res, planBook, t, reqs)
   const src = reqs.length ? `audience:${reqs[0].name}` : 'leader'
+  // a protect goal on top ends at a new request the leader acts on
+  if (endsProtect(res, goalStack.top())) {
+    const g = goalStack.top(), popped = pubGoal(g)
+    goalStack.pop('new_request')
+    elog.event({ t, kind: 'goal_popped', goal: popped, reason: 'new_request' })
+    closeGoal(popped.id, t, 'popped')
+  }
   let pushed = null
   if (res.kind === 'push_goal') {
     try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1), obs: lastObs }) }

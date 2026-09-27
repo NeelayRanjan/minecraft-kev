@@ -69,3 +69,29 @@ test('stay: offered under stay goals; here holds the bot\'s spot; a player\'s sp
   await stay.run(motor, 'here', { goalTop: { id: 10, kind: 'stay', arg: 'here' } })
   assert.equal(motor.mem.staySpot.goalId, 10)
 })
+
+import protect, { threatNear } from '../agent/plugins/protect.mjs'
+test('protect: offered under protect goals; threatNear takes the hostile nearest the player within 8 m, never a player or a passive mob', () => {
+  assert.deepEqual(protect.options({}, { kind: 'protect', arg: 'player:Steve' }).map(o => o.arg), ['Steve'])
+  assert.deepEqual(protect.options({}, { kind: 'stay', arg: 'player:Steve' }), [])
+  const P = new Vec3(0, 64, 0)
+  const ent = (id, name, type, x) => ({ id, name, type, isValid: true, position: new Vec3(x, 64, 0) })
+  const entities = { 1: ent(1, 'player', 'player', 1), 2: ent(2, 'cow', 'animal', 2), 3: ent(3, 'skeleton', 'hostile', 6), 4: ent(4, 'zombie', 'hostile', 4), 5: ent(5, 'creeper', 'hostile', 12) }
+  assert.equal(threatNear(entities, P).id, 4, 'the zombie 4 m away')
+  delete entities[4]
+  assert.equal(threatNear(entities, P).id, 3)
+  delete entities[3]
+  assert.equal(threatNear(entities, P), null, 'the creeper is 12 m away; the player and the cow never count')
+})
+test('protect: a run attacks the hostile next to the player and ends ok with the fight count', async () => {
+  const { bot, motor } = stubWorld({ me: new Vec3(0, 64, 0), players: { Steve: { gamemode: 0, entity: { isValid: true, position: new Vec3(2, 64, 0) } } } })
+  const zombie = { id: 50, name: 'zombie', type: 'hostile', isValid: true, position: new Vec3(5, 64, 0) }
+  bot.entities[50] = zombie
+  const attacked = []
+  bot.pvp = { attack: e => { attacked.push(e.id); setTimeout(() => { e.isValid = false; delete bot.entities[50] }, 100) }, stop() {} }
+  bot.pathfinder = { setGoal() {} }
+  motor.deadline = Date.now() + 2500
+  const r = await protect.run(motor, 'Steve')
+  assert.deepEqual(attacked, [50])
+  assert.equal(r.result, 'ok'); assert.equal(r.detail, 'fought 1 mob near Steve')
+})

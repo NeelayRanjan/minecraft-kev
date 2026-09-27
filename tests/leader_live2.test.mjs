@@ -210,3 +210,20 @@ test('item 15: statements answered with continue are thanked, not "not now"; req
   assert.equal(s1.answered.kind, 'thanks')
   assert.equal(requestStillWaiting('continue', shown), true, 'the real request still waits')
 })
+
+// 16: protect(player:<name>) through the leader; a new request (a goal or a plan) ends a protect goal on top.
+import { endsProtect } from '../agent/leader.js'
+test('item 16: protect in the prompt, pushed through the leader; a new goal or plan ends it', () => {
+  const sys = leaderSystemGoals()
+  assert.match(sys, /- protect, arg player:<name>: follow that player and fight hostile mobs near them for 2 minutes;/)
+  assert.match(sys, /"help, there's a skeleton next to me" -> push_goal protect, arg player:Steve/)
+  const r = applyAnswer({ answer: { action: 'push_goal', goal: { kind: 'protect', arg: 'player:Steve' } }, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true })
+  assert.deepEqual(r.goal, { kind: 'protect', arg: 'player:Steve', count: null })
+  const top = { kind: 'protect', arg: 'player:Steve' }
+  assert.equal(endsProtect({ kind: 'push_goal', goal: { kind: 'gather', arg: 'log', count: 8 } }, top), true)
+  assert.equal(endsProtect({ kind: 'plan_item', item: 'torch', count: 8 }, top), true)
+  assert.equal(endsProtect({ kind: 'push_goal', goal: { kind: 'protect', arg: 'player:Alex' } }, top), true)
+  assert.equal(endsProtect({ kind: 'say', text: 'hi' }, top), false)
+  assert.equal(goalPhrase({ kind: 'protect', arg: 'player:Steve' }, 'Steve'), 'protect you')
+  assert.equal(endsProtect({ kind: 'push_goal', goal: { kind: 'gather', arg: 'log', count: 8 } }, { kind: 'chain' }), false)
+})

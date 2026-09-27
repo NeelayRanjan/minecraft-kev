@@ -228,6 +228,10 @@ export function goalPhrase(g, requester = null) {
       return m ? `come to ${you(m[1])}` : `go to ${h(g.arg)}`
     }
     case 'receive': return `take the ${g.count != null ? `${g.count} ` : ''}${h(g.arg)} from ${g.from ? you(g.from) : 'you'}`
+    case 'protect': {
+      const m = /^player:(\w{1,16})$/.exec(g.arg ?? '')
+      return `protect ${m ? you(m[1]) : 'you'}`
+    }
     case 'stay': {
       const m = /^player:(\w{1,16})$/.exec(g.arg ?? '')
       return m ? `wait here with ${you(m[1])}` : 'wait here'

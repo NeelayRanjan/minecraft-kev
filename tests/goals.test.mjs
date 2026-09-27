@@ -914,3 +914,23 @@ test('validateGoal: unpacking crafts from storage blocks validate; every expande
   const compass = expandItem2('compass', 1, { redstone_block: 2, iron_ingot: 4, crafting_table: 1 })
   assert.equal(checkPlanGates(compass.steps, chain({ inventory: { redstone_block: 2, iron_ingot: 4, crafting_table: 1 } })), null)
 })
+
+// Item 16: "Im so scared, there is a skeleton next to me" got a refusal. protect(player:<name>) follows the player and
+// fights hostiles within 8 m of them for PROTECT_S (120 s); only the protect option, eat, wait and the threat responses.
+import { PROTECT_S } from '../agent/goals.js'
+test('protect: validate, done after 120 s, filter keeps the protect option and the threat responses, teacher', () => {
+  assert.equal(PROTECT_S, 120)
+  assert.deepEqual(validateGoal({ kind: 'protect', arg: 'player:Steve' }), { ok: true })
+  assert.equal(validateGoal({ kind: 'protect', arg: 'here' }).ok, false)
+  const s = new GoalStack({ goal: 'nether' })
+  const o = t => chain({ t, inventory: { iron_sword: 1, cobblestone: 5 }, blocks: [...stone, ...logs], players: { Steve: { dist: 3 } } })
+  s.push({ kind: 'protect', arg: 'player:Steve', source: 'audience:Steve', t: 10, obs: o(10) })
+  withProvider(['protect(Steve)', 'go_to_player(Steve)', 'stay(Steve)'], () => {
+    assert.deepEqual(s.filter(o(11), options(o(11))).map(x => x.id).sort(), ['protect(Steve)', 'wait'])
+    assert.equal(s.teacher(o(11)), 'protect(Steve)')
+  })
+  assert.match(s.step(o(40)).text, /^protect Steve \(90 s left\)/)
+  assert.deepEqual(s.update(o(100), 100), [])
+  const e = s.update(o(131), 131)
+  assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_done')
+})

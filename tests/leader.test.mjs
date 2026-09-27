@@ -947,8 +947,8 @@ export const LIVE2_EDITS = [
   ['- say with a line the audience reads, only to answer a question: {', '- say with a line the audience reads, only for conversation (a question with nothing to do); when a request can be acted on, act and answer in reply: {'],
   ['- cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.',
     '- cannot: decline an audience request; write one short friendly sentence saying why in reply (or in "why").\nEvery answer may also carry "reply": one short line the player reads in chat. Add a short reply for the player whenever you act on a request ("on my way!", "sure, making it now").'],
-  ['- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);', '- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);\n- stay, arg player:<name> or here: wait at that spot (picks up drops, eats, fights back) until you pop it;'],
-  ['Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.', 'Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve; Steve says "wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I\'ll wait here"; "you\'re free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply.'],
+  ['- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);', '- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);\n- stay, arg player:<name> or here: wait at that spot (picks up drops, eats, fights back) until you pop it;\n- protect, arg player:<name>: follow that player and fight hostile mobs near them for 2 minutes;'],
+  ['Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.', 'Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve; Steve says "wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I\'ll wait here"; "you\'re free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply; Steve says "help, there\'s a skeleton next to me" -> push_goal protect, arg player:Steve, reply "Coming to help!"; "stop" -> pop_goal.'],
   ['- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};', '- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...}; add "materials_only": true to the item to gather its materials without crafting it;'],
   ['Examples: "make me a compass" -> plan_item compass count 1;', 'Examples: "make me a compass" -> plan_item compass count 1; "enough leather for a leather helmet, don\'t craft it" -> plan_item leather_helmet count 1 materials_only true;'],
   ['"item": {"name": "<item>", "count": <integer>} (plan_item only)', '"item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only)'],
@@ -965,7 +965,7 @@ function edits(text, list) {
 }
 function liveEdits(text) { return edits(edits(text, LIVE_EDITS), LIVE2_EDITS) }
 // the goals schema: a reply before why; the new goal kinds (stay) before receive
-const NEW_KINDS = ['stay']
+const NEW_KINDS = ['stay', 'protect']
 function schema2(json) {
   const o = JSON.parse(json), props = {}
   const kinds = e => e.flatMap(k => k === 'receive' ? [...NEW_KINDS, k] : [k])
