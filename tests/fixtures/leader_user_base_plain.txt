@@ -1,0 +1,37 @@
+STATE
+Minecraft survival, day 1. you: health 16/20, food 13/20.
+
+GOAL CHAIN
+Goal chain: iron pickaxe. step 5 of 47: get 3 raw iron (have 1).
+Still needed for this stage (net of what is held): 3 iron ingots, 2 sticks.
+Items still to craft this stage: iron pickaxe.
+
+CURRENT SUBTASK
+mine_iron, running for 12 s, 40% done
+last result: mine_stone -> ok
+
+RECENT EVENTS (oldest first)
+t=100s mine_stone -> ok
+t=110s interrupted: threat (mine_iron)
+t=120s plan #2 compass added (1 step) for Steve
+t=130s you said: On it
+
+SUBTASK STATS THIS EPISODE
+mine_iron: 3 attempts, 1 ok, most common failure no_path (2)
+
+KEV FORECASTS
+step done in 60 s: 0.41 (was 0.60 → 0.50 → 0.41, falling)
+kev's last pick (t=99s): mine_iron 0.80, wait 0.10
+
+YOUR PREVIOUS DECISIONS
+t=130s say: acknowledge
+
+TIME
+12.5 minutes left in the episode; deaths so far: 0
+
+SUBTASKS OFFERED NOW
+- mine_iron: mine the nearest known iron ore
+- explore_toward(down): dig a staircase down (failed recently: no_path, do not pick)
+- wait: stand still
+
+Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}

@@ -6,13 +6,17 @@
 // Goal mode (trigger `subgoals`, goals enabled): the leader also answers push_goal (a typed goal from agent/goals.js,
 // validated by validateGoal), pop_goal or cannot (a reason the audience reads), the plan answers plan_item (an item the
 // code expands into steps), plan_steps (1..8 typed goal steps), edit (skip | drop | move_front | clear on the plan book)
-// and say (a chat line), and sees the goal stack, the plans and the unanswered audience requests (chat text appears only
-// in that section of its prompt, never in kev's state).
+// and say (a chat line), and the shape answers plan_build / plan_dig (a template from agent/templates.js) and
+// plan_blueprint (a free-form shape); it sees the goal stack, the plans, the unanswered audience requests (chat text
+// appears only in that section of its prompt, never in kev's state) and, when the runner passes them, the active
+// blueprint's 9x9 cut and the feedback on a refused free-form blueprint.
 //
 // Pure: the runner (agent/run_episode.mjs) owns the transport (planner.js askLeader), the timing and the motor.
 import { GOAL_KINDS, validateGoal, RECIPES, PRODUCERS, FINDABLE_NOW, PLACES, STRUCTURES } from './goals.js'
 import { isItem } from './recipes.js'
 import { stepText } from './plans.js'
+import { TEMPLATES, checkParams, describeTemplates } from './templates.js'
+import { validate, cells } from './blueprints.js'
 
 export const TRIGGERS = ['periodic15', 'events', 'periodic30_interrupts', 'subgoals']
 const PERIOD = { periodic15: 15, periodic30_interrupts: 30, subgoals: 120 }
@@ -84,13 +88,26 @@ export function recentFailure(id, recentResults) {
 // - plan_item {item: {name, count}}: a minecraft-data item name (else invalid 'unknown item <name>'), count default 1;
 // - plan_steps {title, steps}: 1..MAX_PLAN_STEPS steps, each validated by validateGoal (invalid names the step);
 // - edit {edit: {op, plan_id}}: op in EDIT_OPS; drop and move_front need an integer plan_id, skip and clear drop it;
-// - say {text}: sanitized, not truncated below 200 (the runner splits long lines); empty is invalid.
-export const PLAN_ACTIONS = ['plan_item', 'plan_steps', 'edit', 'say']
+// - say {text}: sanitized, not truncated below 200 (the runner splits long lines); empty is invalid;
+// - plan_build {build: {template, params, material}}: a build template (TEMPLATES), only its params passed to
+//   checkParams (defaults, clamps; no anchor here, the runner re-checks stairs targets against it), material default
+//   cobblestone and placeable -> {template, params (checked, material included), material};
+// - plan_dig {dig: {template, params, at_y}}: a dig template, checkParams without an anchor; at_y (optional) an integer
+//   in AT_Y (the runner walks there first) -> {template, params, at_y (or null)};
+// - plan_blueprint {blueprint: {title, kind, legend, layers}}: a free-form shape validated with the free-form caps and
+//   no anchor (connectivity does not depend on it) -> {blueprint: {title, kind, legend, layers, source: 'leader'}};
+//   invalid carries the title too, for the runner's BLUEPRINT FEEDBACK.
+export const PLAN_ACTIONS = ['plan_item', 'plan_steps', 'edit', 'say', 'plan_build', 'plan_dig', 'plan_blueprint']
 export const GOAL_ACTIONS = [...PLAN_ACTIONS, 'push_goal', 'pop_goal', 'cannot']
 export const EDIT_OPS = ['skip', 'drop', 'move_front', 'clear']
 const EDIT_NEEDS_PLAN = new Set(['drop', 'move_front'])
 export const MAX_PLAN_STEPS = 8
 const SAY_MAX = 1000
+export const BUILD_TEMPLATES = Object.keys(TEMPLATES).filter(n => TEMPLATES[n].kind === 'build')
+export const DIG_TEMPLATES = Object.keys(TEMPLATES).filter(n => TEMPLATES[n].kind === 'dig')
+export const AT_Y = { min: -58, max: 319 }
+const FREE_FORM = { maxSize: 9, maxBlocks: 150 }
+const DEFAULT_MATERIAL = 'cobblestone'
 const goalText = ({ kind, arg, count } = {}) => `${kind}${arg != null || count != null ? `(${[arg, count].filter(x => x != null).join(', ')})` : ''}`
 // A goal object as the model sent it -> {kind, arg, count} plus from only when given (a receive goal's giver).
 const goalOf = raw => {
@@ -169,14 +186,66 @@ function applyPlanAnswer(action, answer, why, obs) {
     if (!Number.isInteger(e.plan_id)) return bad(`edit ${e.op} needs a plan_id`)
     return { kind: 'edit', id: null, op: e.op, plan_id: e.plan_id, why }
   }
+  if (action === 'plan_build' || action === 'plan_dig') return applyTemplateAnswer(action, answer, why)
+  if (action === 'plan_blueprint') return applyBlueprintAnswer(answer, why)
   const text = sanitizeChat(answer.text, SAY_MAX).trim()
   if (!text) return bad('say without text')
   return { kind: 'say', id: null, text }
 }
 
+function applyTemplateAnswer(action, answer, why) {
+  const bad = reason => ({ kind: 'invalid', id: action, reason })
+  const isBuild = action === 'plan_build'
+  const key = isBuild ? 'build' : 'dig'
+  const a = answer[key]
+  if (!a || typeof a !== 'object') return bad(`${action} without a ${key}`)
+  if (!(isBuild ? BUILD_TEMPLATES : DIG_TEMPLATES).includes(a.template)) return bad(`unknown ${key} template ${a.template}`)
+  const given = a.params && typeof a.params === 'object' ? a.params : {}
+  const params = {}
+  for (const k of Object.keys(TEMPLATES[a.template].params)) if (Object.hasOwn(given, k)) params[k] = given[k]
+  if (isBuild) params.material = typeof a.material === 'string' && a.material ? a.material : DEFAULT_MATERIAL
+  const chk = checkParams(a.template, params)
+  if (!chk.ok) return bad(chk.reason)
+  if (isBuild) return { kind: action, id: null, template: a.template, params: chk.params, material: chk.params.material, why }
+  let atY = null
+  if (a.at_y != null) {
+    if (!Number.isInteger(a.at_y)) return bad('at_y must be an integer')
+    if (a.at_y < AT_Y.min || a.at_y > AT_Y.max) return bad(`at_y ${a.at_y} is outside ${AT_Y.min}..${AT_Y.max}`)
+    atY = a.at_y
+  }
+  return { kind: action, id: null, template: a.template, params: chk.params, at_y: atY, why }
+}
+
+function applyBlueprintAnswer(answer, why) {
+  const b = answer.blueprint
+  if (!b || typeof b !== 'object') return { kind: 'invalid', id: 'plan_blueprint', reason: 'plan_blueprint without a blueprint' }
+  const title = sanitizeChat(b.title, 60).trim() || 'blueprint'
+  const bad = reason => ({ kind: 'invalid', id: 'plan_blueprint', reason, title })
+  const legend = b.legend && typeof b.legend === 'object' && !Array.isArray(b.legend) ? b.legend : {}
+  const bp = { title, kind: b.kind, legend, layers: b.layers, source: 'leader' }
+  const v = validate(bp, FREE_FORM)
+  if (!v.ok) return bad(v.reason)
+  if (!cells(bp).length) return bad('empty blueprint')
+  return { kind: 'plan_blueprint', id: null, blueprint: bp, why }
+}
+
 // dig(<bp id>) arrives through the blueprint plans only (the leader never names a blueprint id), so the schema is unchanged
 export const PUSHABLE_KINDS = Object.keys(GOAL_KINDS).filter(k => k !== 'chain' && k !== 'iron_pickaxe' && k !== 'dig')
 const STEP_SCHEMA = { type: 'object', properties: { kind: { type: 'string', enum: PUSHABLE_KINDS }, arg: { type: 'string' }, count: { type: 'integer' }, from: { type: 'string' } }, required: ['kind'] }
+// params: every param name of that kind's templates as an optional integer (applyAnswer keeps the chosen template's)
+const paramsSchema = names => ({ type: 'object', properties: Object.fromEntries([...new Set(names.flatMap(n => Object.keys(TEMPLATES[n].params)))].map(k => [k, { type: 'integer' }])) })
+const BUILD_SCHEMA = { type: 'object', properties: { template: { type: 'string', enum: BUILD_TEMPLATES }, params: paramsSchema(BUILD_TEMPLATES), material: { type: 'string' } }, required: ['template'] }
+const DIG_SCHEMA = { type: 'object', properties: { template: { type: 'string', enum: DIG_TEMPLATES }, params: paramsSchema(DIG_TEMPLATES), at_y: { type: 'integer' } }, required: ['template'] }
+const BLUEPRINT_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    kind: { type: 'string', enum: ['build', 'dig'] },
+    legend: { type: 'object', propertyNames: { minLength: 1, maxLength: 1 }, additionalProperties: { type: 'string' } },
+    layers: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+  },
+  required: ['title', 'kind', 'layers'],
+}
 
 export const leaderSchema = (options, { goals = false } = {}) => goals ? {
   type: 'object',
@@ -188,6 +257,9 @@ export const leaderSchema = (options, { goals = false } = {}) => goals ? {
     steps: { type: 'array', items: STEP_SCHEMA, minItems: 1, maxItems: MAX_PLAN_STEPS },
     edit: { type: 'object', properties: { op: { type: 'string', enum: EDIT_OPS }, plan_id: { type: 'integer' } }, required: ['op'] },
     text: { type: 'string' },
+    build: BUILD_SCHEMA,
+    dig: DIG_SCHEMA,
+    blueprint: BLUEPRINT_SCHEMA,
     why: { type: 'string' },
   },
   required: ['action'],
@@ -221,6 +293,11 @@ export function parseLeaderAnswer(text, options, { goals = false } = {}) {
   if (a === 'plan_steps') { out.title = typeof obj.title === 'string' ? obj.title : ''; out.steps = Array.isArray(obj.steps) ? obj.steps.map(s => o(s) ? parsedGoal(s) : null) : null }
   if (a === 'edit') out.edit = o(obj.edit) && { op: typeof obj.edit.op === 'string' ? obj.edit.op : null, plan_id: Number.isInteger(obj.edit.plan_id) ? obj.edit.plan_id : null }
   if (a === 'say') out.text = typeof obj.text === 'string' ? obj.text : ''
+  // template and blueprint payloads pass through as sent (applyAnswer checks them)
+  const tpl = (x, extra) => o(x) && { template: typeof x.template === 'string' ? x.template : null, params: o(x.params) ?? {}, [extra]: x[extra] ?? null }
+  if (a === 'plan_build') out.build = tpl(obj.build, 'material')
+  if (a === 'plan_dig') out.dig = tpl(obj.dig, 'at_y')
+  if (a === 'plan_blueprint') out.blueprint = o(obj.blueprint)
   return out
 }
 const parsedGoal = gl => {
@@ -290,12 +367,19 @@ Goal kinds and their arguments (nothing else is accepted):
 - survive_night, return_to_base: no arg.
 For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say answers a question or acknowledges; it is not an action. cannot only for things outside every list.
 The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; Steve says "come here" -> push_goal go_to, arg player:Steve; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.
-Answer every audience request with exactly one of plan_item, plan_steps, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
+BUILDING AND DIGGING. A shape is built or dug from the requesting player's feet, facing where they look. Templates, name(param min-max [default], ...) kind: what it is:
+${describeTemplates()}
+- plan_build: {"action": "plan_build", "build": {"template": "hut", "params": {"w": 5, "d": 5, "h": 3}, "material": "cobblestone"}, "why": ...}; material a full block (default cobblestone);
+- plan_dig: {"action": "plan_dig", "dig": {"template": "strip_mine", "params": {}, "at_y": -58}, "why": ...}; at_y (optional) walks down or up to that level first;
+- plan_blueprint: {"action": "plan_blueprint", "blueprint": {"title": "arch", "kind": "build", "legend": {"#": "stone_bricks"}, "layers": [["#.#"], ["###"]]}, "why": ...}; layers bottom first, rows nearest first, one legend character per block, '.' air, ' ' any.
+Use a template whenever one fits; write your own blueprint (plan_blueprint) only for a shape no template covers, full blocks only, at most 9x9x9.
+Examples: "build me a small stone hut" -> plan_build hut w 5 d 5 h 3 material cobblestone; "stairs up 6 blocks" -> plan_build staircase_up height 6; "dig a 3x3x2 cave here" -> plan_dig room w 3 d 3 h 2; "mine down to y 12" -> plan_dig stairs_down_to y 12; "strip mine for diamonds" -> plan_dig strip_mine at_y -58.
+Answer every audience request with exactly one of plan_item, plan_steps, plan_build, plan_dig, plan_blueprint, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
 Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
 Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot.
 "continue" remains the default when there is no request and the goals make progress.
 
-Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say" | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only), "why": "<one sentence>"}`
+Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say" | "plan_build" | "plan_dig" | "plan_blueprint" | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only), "build" (plan_build only), "dig" (plan_dig only), "blueprint" (plan_blueprint only), "why": "<one sentence>"}`
 
 const humanize = s => String(s).replace(/_/g, ' ')
 const STAGE_NAMES = ['iron pickaxe', 'iron tools', 'iron armor', 'diamond tools', 'lit nether portal']
@@ -532,8 +616,22 @@ function renderStats(stats = {}) {
   })
 }
 
+// The active or blocked blueprint's cut (the runner passes { title, layer, of, lines } with layerCut's lines, layer
+// 1-based) and the feedback on a refused free-form blueprint ({ title, reason }); nothing at all without them.
+function renderBlueprint(cut, feedback) {
+  const out = []
+  if (cut) {
+    out.push(`BLUEPRINT ${sanitizeChat(cut.title, 80)}: layer ${cut.layer} of ${cut.of}`,
+      "('#' placed, 'o' still to place, 'x' wrong or blocked, '.' still to dig, '@' the bot; the farthest row on top)",
+      ...(cut.lines || []).map(l => sanitizeChat(l, 20)), '')
+  }
+  if (feedback) out.push(`BLUEPRINT FEEDBACK: your blueprint "${sanitizeChat(feedback.title, 60)}" was refused: ${sanitizeChat(feedback.reason, 160)}. Fix it or answer cannot.`, '')
+  return out
+}
+
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
-  subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null }) {
+  subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null,
+  blueprintCut = null, blueprintFeedback = null }) {
   const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
@@ -542,6 +640,7 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
     'STATE', stateText, '',
     'GOAL CHAIN', chainText, ...renderNeeds(need), '',
     ...(goals ? ['GOAL STACK', ...renderGoalStack(goalStack), '', 'PLANS', ...renderPlans(plans), ''] : []),
+    ...renderBlueprint(blueprintCut, blueprintFeedback),
     'CURRENT SUBTASK', ...renderCurrent(current), '',
     'RECENT EVENTS (oldest first)', none(events), '',
     'SUBTASK STATS THIS EPISODE', none(renderStats(stats)), '',

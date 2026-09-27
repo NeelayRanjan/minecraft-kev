@@ -321,7 +321,7 @@ test('events mode also fires on subtask_failed (the runner maps a failed subtask
 
 test('leaderSchema with goals: push_goal, pop_goal, cannot; goal.kind excludes the defaults', () => {
   const s = leaderSchema(offered, { goals: true })
-  assert.deepEqual(s.properties.action.enum, ['continue', 'plan_item', 'plan_steps', 'edit', 'say', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
+  assert.deepEqual(s.properties.action.enum, ['continue', 'plan_item', 'plan_steps', 'edit', 'say', 'plan_build', 'plan_dig', 'plan_blueprint', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
   const kinds = s.properties.goal.properties.kind.enum
   for (const k of ['craft_item', 'gather', 'find', 'go_to', 'build', 'survive_night', 'return_to_base']) assert.ok(kinds.includes(k), k)
   assert.ok(!kinds.includes('chain')); assert.ok(!kinds.includes('iron_pickaxe'))
@@ -583,7 +583,7 @@ test('leaderSchema with goals: the four plan answers and their payloads', () => 
   assert.equal(s.properties.edit.properties.plan_id.type, 'integer')
   assert.equal(s.properties.text.type, 'string')
   assert.equal(s.properties.goal.properties.from.type, 'string', 'push_goal can carry from (receive)')
-  assert.deepEqual(GOAL_ACTIONS, ['plan_item', 'plan_steps', 'edit', 'say', 'push_goal', 'pop_goal', 'cannot'])
+  assert.deepEqual(GOAL_ACTIONS, ['plan_item', 'plan_steps', 'edit', 'say', 'plan_build', 'plan_dig', 'plan_blueprint', 'push_goal', 'pop_goal', 'cannot'])
 })
 
 test('applyAnswer plan_item: a minecraft-data item and a count (default 1)', () => {
@@ -763,4 +763,135 @@ test('settleKind: an invalid push or plan answer settles the shown requests as c
   assert.equal(settleKind({ kind: 'invalid', id: null }, true), 'invalid')
   assert.equal(settleKind({ kind: 'continue', id: null }, true), 'continue')
   assert.equal(settleKind({ kind: 'plan_item', id: null }, true), 'plan_item')
+})
+
+// ---- blueprint answers: plan_build, plan_dig, plan_blueprint ---------------------------------------------------
+import { readFileSync } from 'node:fs'
+import { TEMPLATES, describeTemplates } from '../agent/templates.js'
+import { baseCtx as bpBaseCtx, goalCtx as bpGoalCtx } from './fixtures/leader_prompt_ctx.mjs'
+import { PLAN_ACTIONS } from '../agent/leader.js'
+
+const BUILD_T = Object.keys(TEMPLATES).filter(n => TEMPLATES[n].kind === 'build')
+const DIG_T = Object.keys(TEMPLATES).filter(n => TEMPLATES[n].kind === 'dig')
+const ga = answer => applyAnswer({ answer, currentId: 'mine_iron', askedCurrentId: 'other', offered: [], goalsEnabled: true })
+
+test('blueprint answers: plan actions, schema enums split by template kind, integer params, the blueprint shape', () => {
+  for (const a of ['plan_build', 'plan_dig', 'plan_blueprint']) {
+    assert.ok(PLAN_ACTIONS.includes(a) && GOAL_ACTIONS.includes(a) && RA4.has(a), a)
+  }
+  const s = leaderSchema([{ id: 'wait' }], { goals: true })
+  for (const a of ['plan_build', 'plan_dig', 'plan_blueprint']) assert.ok(s.properties.action.enum.includes(a), a)
+  assert.deepEqual(s.properties.build.properties.template.enum, BUILD_T)
+  assert.deepEqual(s.properties.dig.properties.template.enum, DIG_T)
+  assert.ok(BUILD_T.includes('hut') && DIG_T.includes('strip_mine') && !BUILD_T.includes('room'))
+  for (const k of ['w', 'd', 'h', 'height', 'len']) assert.deepEqual(s.properties.build.properties.params.properties[k], { type: 'integer' }, k)
+  for (const k of ['y', 'branch_every', 'depth']) assert.deepEqual(s.properties.dig.properties.params.properties[k], { type: 'integer' }, k)
+  assert.equal(s.properties.build.properties.material.type, 'string')
+  assert.equal(s.properties.dig.properties.at_y.type, 'integer')
+  assert.deepEqual(s.properties.build.required, ['template'])
+  assert.deepEqual(s.properties.dig.required, ['template'])
+  const b = s.properties.blueprint
+  assert.deepEqual(b.properties.kind.enum, ['build', 'dig'])
+  assert.deepEqual(b.properties.legend.additionalProperties, { type: 'string' })
+  assert.deepEqual(b.properties.layers, { type: 'array', items: { type: 'array', items: { type: 'string' } } })
+  assert.deepEqual(b.required, ['title', 'kind', 'layers'])
+  const plain = leaderSchema([{ id: 'wait' }])
+  assert.deepEqual(plain.properties.action.enum, ['continue', 'wait'], 'chain-mode schema unchanged')
+})
+
+test('parseLeaderAnswer carries the build, dig and blueprint payloads', () => {
+  const p = parseLeaderAnswer(JSON.stringify({ action: 'plan_build', build: { template: 'hut', params: { w: 7 }, material: 'oak_planks' }, why: 'w' }), [], { goals: true })
+  assert.deepEqual(p.build, { template: 'hut', params: { w: 7 }, material: 'oak_planks' })
+  const d = parseLeaderAnswer(JSON.stringify({ action: 'plan_dig', dig: { template: 'strip_mine', at_y: -58 } }), [], { goals: true })
+  assert.deepEqual(d.dig, { template: 'strip_mine', params: {}, at_y: -58 })
+  const bp = { title: 'arch', kind: 'build', legend: { '#': 'stone' }, layers: [['#.#'], ['###']] }
+  assert.deepEqual(parseLeaderAnswer(JSON.stringify({ action: 'plan_blueprint', blueprint: bp }), [], { goals: true }).blueprint, bp)
+  assert.equal(parseLeaderAnswer(JSON.stringify({ action: 'plan_build', build: 'hut' }), [], { goals: true }).build, null)
+})
+
+test('applyAnswer plan_build: checkParams defaults and clamps, cobblestone by default, never stale', () => {
+  const r = ga({ action: 'plan_build', build: { template: 'hut', params: { w: 20, h: 3, len: 4 } }, why: 'a hut' })
+  assert.deepEqual(r, { kind: 'plan_build', id: null, template: 'hut', params: { w: 9, d: 5, h: 3, material: 'cobblestone' }, material: 'cobblestone', why: 'a hut' })
+  const s = ga({ action: 'plan_build', build: { template: 'staircase_up', params: { height: 6 }, material: 'oak_planks' } })
+  assert.deepEqual(s.params, { height: 6, width: 1, material: 'oak_planks' })
+  assert.equal(s.material, 'oak_planks')
+})
+
+test('applyAnswer plan_build: unknown or dig template, a non-placeable material, a non-number param, no payload are invalid', () => {
+  assert.deepEqual(ga({ action: 'plan_build', build: { template: 'castle' } }), { kind: 'invalid', id: 'plan_build', reason: 'unknown build template castle' })
+  assert.equal(ga({ action: 'plan_build', build: { template: 'room' } }).reason, 'unknown build template room')
+  assert.deepEqual(ga({ action: 'plan_build', build: { template: 'hut', material: 'oak_door' } }), { kind: 'invalid', id: 'plan_build', reason: 'oak_door is not a placeable block' })
+  assert.equal(ga({ action: 'plan_build', build: { template: 'wall', params: { len: 'long' } } }).reason, 'len must be a number')
+  assert.equal(ga({ action: 'plan_build' }).reason, 'plan_build without a build')
+})
+
+test('applyAnswer plan_dig: params checked without an anchor, at_y within -58..319, dig templates only', () => {
+  assert.deepEqual(ga({ action: 'plan_dig', dig: { template: 'room', params: { w: 3, d: 3, h: 2 } }, why: 'cave' }),
+    { kind: 'plan_dig', id: null, template: 'room', params: { w: 3, d: 3, h: 2 }, at_y: null, why: 'cave' })
+  assert.deepEqual(ga({ action: 'plan_dig', dig: { template: 'stairs_down_to', params: { y: 12 } } }).params, { y: 12 })
+  assert.equal(ga({ action: 'plan_dig', dig: { template: 'stairs_down_to', params: { y: 400 } } }).params.y, 319, 'clamped as checkParams does')
+  assert.equal(ga({ action: 'plan_dig', dig: { template: 'stairs_down_to' } }).reason, 'stairs_down_to needs y')
+  const sm = ga({ action: 'plan_dig', dig: { template: 'strip_mine', at_y: -58 } })
+  assert.equal(sm.kind, 'plan_dig'); assert.equal(sm.at_y, -58); assert.deepEqual(sm.params, { len: 32, branch_every: 3, branch_len: 8 })
+  assert.equal(ga({ action: 'plan_dig', dig: { template: 'strip_mine', at_y: -70 } }).reason, 'at_y -70 is outside -58..319')
+  assert.equal(ga({ action: 'plan_dig', dig: { template: 'strip_mine', at_y: 320 } }).reason, 'at_y 320 is outside -58..319')
+  assert.equal(ga({ action: 'plan_dig', dig: { template: 'strip_mine', at_y: 'deep' } }).reason, 'at_y must be an integer')
+  assert.equal(ga({ action: 'plan_dig', dig: { template: 'hut' } }).reason, 'unknown dig template hut')
+  assert.equal(ga({ action: 'plan_dig' }).reason, 'plan_dig without a dig')
+})
+
+test('applyAnswer plan_blueprint: validated with the free-form caps, no anchor; floating and too-big shapes refused with the title', () => {
+  const ok = { title: 'arch', kind: 'build', legend: { '#': 'stone' }, layers: [['#.#'], ['###']] }
+  assert.deepEqual(ga({ action: 'plan_blueprint', blueprint: ok, why: 'no template' }),
+    { kind: 'plan_blueprint', id: null, blueprint: { title: 'arch', kind: 'build', legend: { '#': 'stone' }, layers: [['#.#'], ['###']], source: 'leader' }, why: 'no template' })
+  const floating = { title: 'cloud', kind: 'build', legend: { '#': 'stone' }, layers: [['#'], ['.'], ['#']] }
+  const f = ga({ action: 'plan_blueprint', blueprint: floating })
+  assert.equal(f.kind, 'invalid'); assert.equal(f.id, 'plan_blueprint'); assert.equal(f.title, 'cloud')
+  assert.match(f.reason, /^floating block at layer 2/)
+  const wide = ga({ action: 'plan_blueprint', blueprint: { title: 'long wall', kind: 'build', legend: { '#': 'stone' }, layers: [['##########']] } })
+  assert.equal(wide.reason, 'too big: 10x1x1 (max 9)'); assert.equal(wide.title, 'long wall')
+  const many = ga({ action: 'plan_blueprint', blueprint: { title: 'block', kind: 'build', legend: { '#': 'stone' }, layers: Array(2).fill(Array(9).fill('#########')) } })
+  assert.equal(many.reason, 'too many blocks: 162 (max 150)')
+  assert.equal(ga({ action: 'plan_blueprint', blueprint: { ...ok, legend: { '#': 'oak_door' } } }).reason, 'oak_door is not a placeable block')
+  assert.equal(ga({ action: 'plan_blueprint', blueprint: { ...ok, kind: 'paint' } }).reason, 'unknown kind paint')
+  assert.equal(ga({ action: 'plan_blueprint', blueprint: { ...ok, layers: [['   ']] } }).reason, 'empty blueprint')
+  assert.equal(ga({ action: 'plan_blueprint' }).reason, 'plan_blueprint without a blueprint')
+  const dig = ga({ action: 'plan_blueprint', blueprint: { title: 'nook', kind: 'dig', layers: [['..'], ['..']] } })
+  assert.equal(dig.kind, 'plan_blueprint'); assert.deepEqual(dig.blueprint.legend, {})
+})
+
+test('blueprint answers settle audience requests; an invalid one settles them as cannot', () => {
+  for (const a of ['plan_build', 'plan_dig', 'plan_blueprint']) {
+    assert.equal(settleKind({ kind: 'invalid', id: a, reason: 'x' }, true), 'cannot', a)
+    assert.equal(settleKind({ kind: a, id: null }, true), a)
+  }
+})
+
+test('LEADER_SYSTEM_GOALS: the templates block, the free-form rule and the examples', () => {
+  const s = LEADER_SYSTEM_GOALS
+  assert.ok(s.includes(describeTemplates()))
+  assert.ok(s.includes('Use a template whenever one fits; write your own blueprint (plan_blueprint) only for a shape no template covers, full blocks only, at most 9x9x9'))
+  for (const ex of ['"build me a small stone hut" -> plan_build hut w 5 d 5 h 3 material cobblestone', '"stairs up 6 blocks" -> plan_build staircase_up height 6',
+    '"dig a 3x3x2 cave here" -> plan_dig room w 3 d 3 h 2', '"mine down to y 12" -> plan_dig stairs_down_to y 12', '"strip mine for diamonds" -> plan_dig strip_mine at_y -58']) assert.ok(s.includes(ex), ex)
+  assert.ok(s.length < 7529 + 3200, `system prompt ${s.length} chars`)
+})
+
+test('buildLeaderMessages: without a blueprint cut or feedback the user prompt is byte-identical to the base branch', () => {
+  assert.equal(buildLeaderMessages(bpBaseCtx)[1].content, readFileSync(new URL('./fixtures/leader_user_base_plain.txt', import.meta.url), 'utf8'))
+  assert.equal(buildLeaderMessages(bpGoalCtx)[1].content, readFileSync(new URL('./fixtures/leader_user_base_goals.txt', import.meta.url), 'utf8'))
+  assert.equal(buildLeaderMessages(bpBaseCtx)[0].content, LEADER_SYSTEM)
+})
+
+test('buildLeaderMessages: the blueprint cut after PLANS and the feedback line, only when given', () => {
+  const blueprintCut = { title: 'hut w 5 d 5 h 3 of cobblestone', layer: 2, of: 4, lines: ['    o    ', '   #@#   '] }
+  const u = buildLeaderMessages({ ...bpGoalCtx, blueprintCut })[1].content
+  const lines = u.split('\n')
+  const at = lines.indexOf('BLUEPRINT hut w 5 d 5 h 3 of cobblestone: layer 2 of 4')
+  assert.ok(at > lines.indexOf('PLANS') && at < lines.indexOf('CURRENT SUBTASK'))
+  assert.equal(lines[at + 1], "('#' placed, 'o' still to place, 'x' wrong or blocked, '.' still to dig, '@' the bot; the farthest row on top)")
+  assert.deepEqual(lines.slice(at + 2, at + 5), ['    o    ', '   #@#   ', ''])
+  const fb = buildLeaderMessages({ ...bpGoalCtx, blueprintFeedback: { title: 'cloud', reason: 'floating block at layer 2 row 0 col 0' } })[1].content
+  assert.ok(fb.split('\n').includes('BLUEPRINT FEEDBACK: your blueprint "cloud" was refused: floating block at layer 2 row 0 col 0. Fix it or answer cannot.'))
+  assert.doesNotMatch(fb, /^BLUEPRINT cloud/m)
+  assert.doesNotMatch(u, /BLUEPRINT FEEDBACK/)
 })
