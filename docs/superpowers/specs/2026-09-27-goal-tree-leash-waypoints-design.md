@@ -69,6 +69,8 @@ Kevin never ate in 24 minutes; starvation took him to exactly 1/20 health twice 
 
 12. Far blueprint walk: at 232 m from the site the far-site walk returned in 0.3 s (pathfinder searchRadius 64 -> immediate NoPath) and the call reported `ok (+0 placed)` six times until the ok-result breaker withheld it. Walk in 48 m hops toward the anchor (as go_to_player's out-of-sight approach does), and a call that made no progress reports `no_path`, never ok. The leash (section 2) is what keeps Kevin from being 232 m away in the first place.
 
+13. Leader unreachable: the desktop dropped off the tailnet mid-session; every chat request failed silently ("fetch failed"). On two consecutive leader errors, Kevin says once in chat "My brain is offline right now, I can't take requests" (rate-limited to once per 5 minutes) and, when a call succeeds again, "I'm back, what did I miss?"; pending requests are re-shown on the first successful call.
+
 ## 5b. Larger blueprints (added 2026-09-27, the user)
 
 Templates accept up to 15x15 footprints (hut, wall, floor, room, pit); free-form blueprints up to 12x12x8 and 400 placed blocks. The leader's cut shows only the current layer within 9 cells of Kevin (15x15 would triple the prompt). build_check gains a 13x13x4 hut case.
