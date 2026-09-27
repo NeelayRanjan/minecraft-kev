@@ -1,10 +1,13 @@
 // Per-run report for a chain-mode LLM leader episode (agent/run_episode.mjs --leader ...): header, leader call
-// statistics, override outcomes, agreement with kev, the full decision log, and a thinking-text appendix.
-// Pure: reads only the parsed episode-log JSON object; scripts/leader_report.mjs is the thin file-I/O CLI.
+// statistics, override outcomes, agreement with kev, a Plans section, a Motor backlog section, the full decision
+// log, and a thinking-text appendix.
+// Pure: reads only the parsed episode-log JSON object (plus, for the Motor backlog, the parsed lines of the
+// sibling out/<run>.requests.jsonl file); scripts/leader_report.mjs is the thin file-I/O CLI.
+import { GOAL_ACTIONS } from './leader.js'   // plan_item, plan_steps, edit, say, push_goal, pop_goal, cannot
+import { stepText } from './plans.js'
 
 const STAGE_NAMES = ['iron pickaxe', 'iron tools', 'iron armor', 'diamond tools', 'lit nether portal']
 const ACTIONS = ['continue', 'override', 'stale', 'invalid', 'error', 'blocked', 'dropped']
-const GOAL_ACTIONS = ['push_goal', 'pop_goal', 'cannot']   // the subgoals leader's goal-level answers
 
 const isNum = x => typeof x === 'number' && Number.isFinite(x)
 const nums = arr => arr.filter(isNum)
@@ -148,6 +151,66 @@ export function goalsSummary(events, calls, endedT = null) {
   return { pushed, requests }
 }
 
+// One plan's row: steps with their outcome (done, skipped, blocked, running, pending) and how the plan ended (done,
+// blocked, dropped or still open). Prefers meta.plans (the plan book's own saved state, written by run_episode.mjs's
+// finish() whenever a plan ever existed): its `cursor`/`status`/`reason` are authoritative, so a step's outcome does
+// not have to be inferred from event timing. A crash end (agent/run_episode.mjs's shutdown()) calls elog.finish()
+// without `plans` (the same gap as `deaths`), so meta.plans can be missing even though the plan_* events are all
+// there; planRowsFromEvents rebuilds the same shape from plan_added/plan_step/plan_done/plan_blocked/plan_edit for
+// that case.
+function planRowFromMeta(p) {
+  const steps = p.steps.map((s, i) => {
+    let outcome
+    if (i < p.cursor) outcome = s.skipped ? 'skipped' : 'done'
+    else if (i === p.cursor && p.status === 'blocked') outcome = `blocked${p.reason ? ` (${p.reason})` : ''}`
+    else if (i === p.cursor && p.status === 'running') outcome = 'running'
+    else outcome = 'pending'
+    return { index: i, text: stepText(s), outcome }
+  })
+  const end = p.status === 'done' ? `done at ${fmtSecs(p.end_t)}`
+    : p.status === 'blocked' ? `blocked at ${fmtSecs(p.end_t)} (step ${p.cursor + 1})${p.reason ? `: ${p.reason}` : ''}`
+    : p.status === 'dropped' ? `dropped at ${fmtSecs(p.end_t)}`
+    : 'open'
+  return { id: p.id, title: p.title, source: p.source, t: p.t, steps, end }
+}
+
+// The fallback (no meta.plans): a step's outcome is inferred from the next plan_step (or plan_done, on the last
+// step) after it, and a plan_edit "skip" between the two turns "done" into "skipped" (skip carries no plan_id, so
+// this can misattribute a skip to the wrong plan when more than one plan was ever active; meta.plans has no such
+// ambiguity, which is why it is preferred).
+function planRowsFromEvents(events) {
+  const added = events.filter(e => e.kind === 'plan_added')
+  const skips = events.filter(e => e.kind === 'plan_edit' && e.op === 'skip')
+  return added.map(e => {
+    const p = e.plan
+    const stepsBy = new Map(events.filter(se => se.kind === 'plan_step' && se.plan_id === p.id).map(se => [se.step_index, se]))
+    const doneEv = events.find(se => se.kind === 'plan_done' && se.plan_id === p.id)
+    const blockedEv = events.find(se => se.kind === 'plan_blocked' && se.plan_id === p.id)
+    const droppedEv = events.find(se => se.kind === 'plan_edit' && se.op === 'drop' && se.plan_id === p.id)
+    const steps = p.steps.map((s, i) => {
+      const cur = stepsBy.get(i)
+      const nextT = stepsBy.get(i + 1)?.t ?? (i === p.steps.length - 1 ? doneEv?.t : null)
+      let outcome
+      if (blockedEv && blockedEv.step_index === i) outcome = `blocked${blockedEv.reason ? ` (${blockedEv.reason})` : ''}`
+      else if (cur && nextT != null) outcome = skips.some(sk => sk.t > cur.t && sk.t <= nextT) ? 'skipped' : 'done'
+      else if (cur) outcome = 'running'
+      else outcome = 'pending'
+      return { index: i, text: stepText(s), outcome }
+    })
+    const end = doneEv ? `done at ${fmtSecs(doneEv.t)}`
+      : blockedEv ? `blocked at ${fmtSecs(blockedEv.t)} (step ${blockedEv.step_index + 1})${blockedEv.reason ? `: ${blockedEv.reason}` : ''}`
+      : droppedEv ? `dropped at ${fmtSecs(droppedEv.t)}`
+      : 'open'
+    return { id: p.id, title: p.title, source: p.source, t: e.t, steps, end }
+  })
+}
+
+export function plansSummary(json) {
+  const metaPlans = json.meta?.plans
+  if (metaPlans && metaPlans.length) return metaPlans.map(planRowFromMeta)
+  return planRowsFromEvents(json.events || [])
+}
+
 export function summarizeLeaderLog(json) {
   const meta = json.meta || {}
   const leaderMeta = meta.leader || {}
@@ -163,7 +226,9 @@ export function summarizeLeaderLog(json) {
     minutes: meta.minutes ?? null,
     stageReached: meta.stage_reached ?? null,
     stageTimes: meta.stage_times || {},
-    deaths: meta.deaths ?? 0,
+    // Counted from the events, not meta.deaths: a crash end (agent/run_episode.mjs's shutdown()) calls elog.finish()
+    // without a `deaths` field, so meta.deaths is silently absent even when death events were logged before the crash.
+    deaths: events.filter(e => e.kind === 'death').length,
     endReason: meta.end_reason ?? null,
     endedT: meta.ended_t ?? null,
   }
@@ -196,7 +261,8 @@ export function summarizeLeaderLog(json) {
     .map(l => ({ t: l.t_asked, text: String(l.thinking).slice(0, 1500) }))
 
   const goals = goalsSummary(events, calls, meta.ended_t ?? null)
-  return { header, stats, overrides, overrideOkCount, agreement, continueThen, continueThenCounts, rows, thinkingAppendix, milestone2: milestone2(json), goals }
+  const plans = plansSummary(json)
+  return { header, stats, overrides, overrideOkCount, agreement, continueThen, continueThenCounts, rows, thinkingAppendix, milestone2: milestone2(json), goals, plans }
 }
 
 // ---- rendering -------------------------------------------------------------------------------------------------
@@ -309,6 +375,37 @@ export function renderGoalsSection(summary) {
   return lines.join('\n')
 }
 
+// Always rendered (unlike Goals, which stays hidden for a run with no goal activity): "(none)" is itself the
+// informative answer for a run that never had a plan.
+export function renderPlansSection(plans) {
+  const lines = ['## Plans', '']
+  if (!plans || !plans.length) { lines.push('(none)', ''); return lines.join('\n') }
+  for (const p of plans) {
+    lines.push(`#${p.id} ${esc(p.title)} (source: ${esc(p.source ?? '-')}, added ${fmtSecs(p.t)})`, '')
+    lines.push('| step | outcome |', '|---|---|')
+    for (const s of p.steps) lines.push(`| ${s.index + 1}. ${esc(s.text)} | ${esc(s.outcome)} |`)
+    lines.push('', `end state: ${esc(p.end)}`, '')
+  }
+  return lines.join('\n')
+}
+
+// The motor backlog (out/<run>.requests.jsonl, read by scripts/leader_report.mjs and passed in as requestLines: it
+// may not exist, hence "(none)"): one row per request the bot could not serve (a leader "cannot", or a plan_item
+// the expander could not turn into steps), whoever asked and what stood in the way.
+export function renderMotorBacklogSection(requestLines) {
+  const lines = ['## Motor backlog', '']
+  if (!requestLines || !requestLines.length) { lines.push('(none)', ''); return lines.join('\n') }
+  lines.push('| t | from | request | why |', '|---|---|---|---|')
+  for (const e of requestLines) {
+    const from = e.name ?? '(none)'
+    const request = e.text ?? (e.item ? `${e.kind}: ${[e.count, e.item].filter(x => x != null).join(' ')}` : e.kind ?? '-')
+    const why = e.missing?.length ? `missing: ${e.missing.map(String).join(', ')}` : e.reason ?? e.why ?? '-'
+    lines.push(`| ${fmtSecs(e.t)} | ${esc(from)} | ${esc(request)} | ${esc(why)} |`)
+  }
+  lines.push('')
+  return lines.join('\n')
+}
+
 function renderAgreementSection(summary) {
   const a = summary.agreement
   const lines = [
@@ -350,12 +447,14 @@ function renderThinkingAppendix(summary) {
   return lines.join('\n')
 }
 
-export function renderReport(summary, name) {
+export function renderReport(summary, name, { requestLines = [] } = {}) {
   return [
     renderHeaderTable(summary, name),
     renderStatsSection(summary),
     renderMilestone2Section(summary.milestone2),
     renderGoalsSection(summary),
+    renderPlansSection(summary.plans),
+    renderMotorBacklogSection(requestLines),
     renderOverridesSection(summary),
     renderAgreementSection(summary),
     renderDecisionLog(summary),

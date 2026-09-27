@@ -23,6 +23,10 @@ calls: 14
 | error | 0 |
 | blocked | 0 |
 | dropped | 0 |
+| plan_item | 1 |
+| plan_steps | 0 |
+| edit | 1 |
+| say | 1 |
 | push_goal | 1 |
 | pop_goal | 1 |
 | cannot | 0 |
@@ -57,6 +61,29 @@ requests from the chat:
 | 87.8s | Steve | skip that | 90.9s | edit |
 | 117.8s | Steve | what can you craft | 122.1s | say |
 | 152.8s | Steve | come here | 156.5s | push_goal go_to(player:Steve) |
+
+## Plans
+
+#1 compass (source: audience:Steve, added 26.3s)
+
+| step | outcome |
+|---|---|
+| 1. smelt 7 iron | skipped |
+| 2. craft 7 planks | done |
+| 3. craft 6 stick | done |
+| 4. craft crafting table | done |
+| 5. craft wooden pickaxe | running |
+| 6. mine 3 cobblestone | pending |
+| 7. craft stone pickaxe | pending |
+| 8. craft iron pickaxe | pending |
+| 9. mine 1 redstone | pending |
+| 10. craft compass | pending |
+
+end state: open
+
+## Motor backlog
+
+(none)
 
 ## Override outcomes
 

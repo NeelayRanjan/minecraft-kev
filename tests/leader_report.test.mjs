@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { summarizeLeaderLog, renderReport, milestone2, milestone2Line, renderComparisonLine, renderHeaderTable } from '../agent/leader_report.js'
+import { summarizeLeaderLog, renderReport, milestone2, milestone2Line, renderComparisonLine, renderHeaderTable, plansSummary, renderPlansSection, renderMotorBacklogSection } from '../agent/leader_report.js'
 
 // A tiny synthetic chain-mode log: 3 leader calls (1 override whose replacement ends ok, 1 continue, 1 stale),
 // one stage_done, and enough decisions to check agreement and the continue -> kev's-next-pick tracking.
@@ -23,6 +23,7 @@ function syntheticLog() {
       { t: 12.5, kind: 'subtask_start', id: 'mine_iron', source: 'leader' },
       { t: 20, kind: 'subtask_done', id: 'mine_iron', result: 'ok' },
       { t: 25, kind: 'leader_continue', action: 'continue', current: 'mine_iron', why: 'fine' },
+      { t: 28, kind: 'death', pos: { x: 1, y: 2, z: 3 } },
       { t: 30, kind: 'stage_done', stage: 1 },
     ],
     decisions: [
@@ -242,4 +243,130 @@ test('goals: with settled records a request is credited to the call that settled
   ]
   const s = summarizeLeaderLog(j)
   assert.deepEqual(s.goals.requests.map(r => [r.name, r.answeredT, r.answer]), [['alice', 53, 'not now (after continue)'], ['bob', 72, 'cannot: no dancing']])
+})
+
+// ---- deaths (counted from events, not meta.deaths) -------------------------------------------------------------
+
+test('summarizeLeaderLog: deaths counts death events, matching meta.deaths on a normal end', () => {
+  const s = summarizeLeaderLog(syntheticLog())
+  assert.equal(s.header.deaths, 1)   // one death event added to syntheticLog, matching its meta.deaths: 1
+})
+
+test('summarizeLeaderLog: a crash end never sets meta.deaths, so deaths is counted from the death events instead', () => {
+  const json = milestone2Log({ deathTimes: [100, 200], meta: { end_reason: 'crash: uncaught: x' } })
+  assert.equal(json.meta.deaths, undefined)   // agent/run_episode.mjs's shutdown() never passes deaths to elog.finish()
+  const s = summarizeLeaderLog(json)
+  assert.equal(s.header.deaths, 2)
+  assert.match(renderHeaderTable(s, 'crash_run'), /\| deaths \| 2 \|/)
+})
+
+// ---- action mix includes the plan answers (GOAL_ACTIONS imported from agent/leader.js) --------------------------
+
+test('summarizeLeaderLog: the action mix counts plan_item, plan_steps, edit and say alongside the goal actions', () => {
+  const log = goalsLog()
+  log.leader.push({ t_asked: 500, t_answered: 502, kind: 'plan_item', action: 'plan_item', goal_id: null, requests: [], why: 'a compass' })
+  log.leader.push({ t_asked: 510, t_answered: 512, kind: 'say', action: 'say', goal_id: null, requests: [], why: 'hi' })
+  const s = summarizeLeaderLog(log)
+  assert.equal(s.stats.actionMix.plan_item, 1)
+  assert.equal(s.stats.actionMix.say, 1)
+  assert.equal(s.stats.actionMix.plan_steps, 0)
+  assert.equal(s.stats.actionMix.edit, 0)
+  assert.match(renderReport(s, 'gs2'), /\| plan_item \| 1 \|/)
+})
+
+// ---- Plans section ------------------------------------------------------------------------------------------------
+
+// One plan of 3 steps read from meta.plans (the plan book's own saved state, the normal case): the first two steps
+// are behind the cursor (done), the third is where the plan is stuck (blocked, with a reason).
+function plansLog() {
+  return {
+    meta: {
+      minutes: 10, end_reason: 'time', ended_t: 100,
+      plans: [{
+        id: 1, title: 'iron pickaxe parts', source: 'audience:alice',
+        steps: [
+          { kind: 'gather', arg: 'log', count: 4 },
+          { kind: 'craft_item', arg: 'wooden_pickaxe', count: 1 },
+          { kind: 'gather', arg: 'raw_iron', count: 3 },
+        ],
+        cursor: 2, status: 'blocked', t: 5, end_t: 60, reason: 'stuck',
+      }],
+    },
+    events: [], decisions: [], leader: [],
+  }
+}
+
+test('plansSummary: one plan of 3 steps, one blocked, read from meta.plans', () => {
+  const s = summarizeLeaderLog(plansLog())
+  assert.equal(s.plans.length, 1)
+  assert.equal(s.plans[0].id, 1)
+  assert.equal(s.plans[0].title, 'iron pickaxe parts')
+  assert.equal(s.plans[0].source, 'audience:alice')
+  assert.deepEqual(s.plans[0].steps.map(x => x.outcome), ['done', 'done', 'blocked (stuck)'])
+  assert.equal(s.plans[0].end, 'blocked at 60.0s (step 3): stuck')
+})
+
+test('renderReport: the Plans section lists the plan, its step outcomes and end state', () => {
+  const md = renderReport(summarizeLeaderLog(plansLog()), 'plansrun')
+  assert.match(md, /## Plans/)
+  assert.match(md, /#1 iron pickaxe parts \(source: audience:alice, added 5\.0s\)/)
+  assert.match(md, /\| 1\. gather 4 log \| done \|/)
+  assert.match(md, /\| 3\. mine 3 raw iron \| blocked \(stuck\) \|/)
+  assert.match(md, /end state: blocked at 60\.0s \(step 3\): stuck/)
+})
+
+test('plansSummary: falls back to the plan_* events when meta.plans is missing (a crash before finish() wrote it)', () => {
+  const json = {
+    meta: { minutes: 10, end_reason: 'crash: x', ended_t: 100 },
+    events: [
+      { t: 5, kind: 'plan_added', plan: { id: 1, title: 'wooden pickaxe', source: 'leader', steps: [
+        { kind: 'gather', arg: 'log', count: 2 }, { kind: 'craft_item', arg: 'wooden_pickaxe', count: 1 } ] }, why: null },
+      { t: 10, kind: 'plan_step', plan_id: 1, step_index: 0, of: 2, step: { kind: 'gather', arg: 'log', count: 2 }, goal_id: 1, target: 2 },
+      { t: 20, kind: 'plan_step', plan_id: 1, step_index: 1, of: 2, step: { kind: 'craft_item', arg: 'wooden_pickaxe', count: 1 }, goal_id: 2, target: 1 },
+    ],
+    decisions: [], leader: [],
+  }
+  const s = summarizeLeaderLog(json)
+  assert.equal(s.plans.length, 1)
+  assert.deepEqual(s.plans[0].steps.map(x => x.outcome), ['done', 'running'])
+  assert.equal(s.plans[0].end, 'open')
+})
+
+test('plansSummary: a run with no plans gives an empty list, and the report says (none)', () => {
+  const s = summarizeLeaderLog(syntheticLog())
+  assert.deepEqual(s.plans, [])
+  const md = renderReport(s, 'x')
+  assert.match(md, /## Plans\n\n\(none\)/)
+})
+
+test('renderPlansSection: (none) for an empty or missing list', () => {
+  assert.match(renderPlansSection([]), /\(none\)/)
+  assert.match(renderPlansSection(), /\(none\)/)
+})
+
+// ---- Motor backlog section -----------------------------------------------------------------------------------
+
+test('renderMotorBacklogSection: (none) with no entries', () => {
+  assert.match(renderMotorBacklogSection([]), /\(none\)/)
+  assert.match(renderMotorBacklogSection(), /\(none\)/)
+})
+
+test('renderMotorBacklogSection: renders one row per unserved request', () => {
+  const entries = [
+    { t: 12.3, kind: 'cannot', why: 'no village detector yet', name: 'bob', text: 'find a village' },
+    { t: 40, kind: 'plan_item', item: 'diamond_pickaxe', count: 1, missing: ['diamond'], name: 'alice', text: 'make a diamond pickaxe', why: null },
+  ]
+  const md = renderMotorBacklogSection(entries)
+  assert.match(md, /## Motor backlog/)
+  assert.match(md, /\| 12\.3s \| bob \| find a village \| no village detector yet \|/)
+  assert.match(md, /\| 40\.0s \| alice \| make a diamond pickaxe \| missing: diamond \|/)
+})
+
+test('renderReport: wires the requestLines option into the Motor backlog section', () => {
+  const s = summarizeLeaderLog(syntheticLog())
+  const withNone = renderReport(s, 'x')
+  assert.match(withNone, /## Motor backlog\n\n\(none\)/)
+  const withEntries = renderReport(s, 'x', { requestLines: [{ t: 1, kind: 'cannot', why: 'no', name: 'a', text: 'b' }] })
+  assert.match(withEntries, /## Motor backlog/)
+  assert.match(withEntries, /\| a \| b \| no \|/)
 })
