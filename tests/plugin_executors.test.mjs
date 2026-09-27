@@ -12,6 +12,10 @@ import hunt, { huntDrop, huntable, isSheared, MOBS } from '../agent/plugins/hunt
 import goToPlayer, { playerEntity } from '../agent/plugins/go_to_player.mjs'
 import receive, { droppedName, giverName } from '../agent/plugins/receive.mjs'
 import build, { buildWork, MAX_PLACEMENTS } from '../agent/plugins/build_blueprint.mjs'
+import dig, { digWork, digOrder, liquidExposure, harvestable, veinTargets, isOre, MAX_DIGS, TURNABLE } from '../agent/plugins/dig_blueprint.mjs'
+import { loadBlueprint, inventoryOf } from '../agent/blueprint_exec.js'
+import { turnSegment } from '../agent/templates.js'
+import { Vec3 } from 'vec3'
 import { BlueprintBook, bookAccessor } from '../agent/blueprint_book.js'
 import { makeBlueprint } from '../agent/templates.js'
 import { registerBlueprintAccessor } from '../agent/goals.js'
@@ -192,4 +196,211 @@ test('a build goal whose blocks are all placed stays active while its scaffold s
     assert.equal(GOAL_KINDS.build.done(obs, id, 1), false)
     assert.equal(GOAL_KINDS.build.teacher(obs, id, 1), `build_blueprint(${id})`)
   } finally { registerOptionProvider(null); registerBlueprintAccessor(null) }
+})
+
+// ---- dig_blueprint
+
+test('dig_blueprint options: its blueprint under a dig(bp<n>) goal only; 40 digs per call', () => {
+  assert.deepEqual(dig.options(baseObs(), { kind: 'dig', arg: 'bp5', count: 1 }).map(o => o.arg), ['bp5'])
+  assert.deepEqual(dig.options(baseObs(), { kind: 'build', arg: 'bp5' }), [])
+  assert.deepEqual(dig.options(baseObs(), { kind: 'dig', arg: 'cave' }), [])
+  assert.deepEqual(dig.options(baseObs(), null), [])
+  assert.equal(dig.preconditions(baseObs(), 'bp5'), true)
+  assert.equal(MAX_DIGS, 40)
+  assert.deepEqual([...TURNABLE].sort(), ['shaft_down', 'stairs_down_to', 'stairs_up_to', 'strip_mine', 'tunnel'])
+})
+
+test('loadBlueprint: the accessor, the id and the kind are checked', () => {
+  const book = new BlueprintBook()
+  const b = book.add(hutAt())
+  const d = book.add(makeBlueprint('room', {}, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' }))
+  assert.equal(loadBlueprint({}, d, 'dig').error.detail, 'no blueprint book')
+  assert.equal(loadBlueprint({ blueprints: book }, 'bp9', 'dig').error.detail, 'no blueprint bp9')
+  assert.equal(loadBlueprint({ blueprints: book }, b, 'dig').error.detail, `${b} is not a dig blueprint`)
+  assert.equal(loadBlueprint({ blueprints: book }, d, 'dig').bp.template, 'room')
+  assert.deepEqual(inventoryOf({ inventory: { items: () => [{ name: 'dirt', count: 3 }, { name: 'dirt', count: 2 }] } }), { dirt: 5 })
+})
+
+// A dig world: stone below y 70, air above; cells set by name.
+function digWorld () {
+  const m = new Map()
+  const blockAt = p => {
+    const n = m.has(wk(p)) ? m.get(wk(p)) : (p.y < 70 ? 'stone' : 'air')
+    if (n == null) return null
+    return { name: n, boundingBox: ['air', 'cave_air', 'water', 'lava'].includes(n) ? 'empty' : 'block' }
+  }
+  return { blockAt, set: (p, n) => m.set(wk(p), n) }
+}
+const roomAt = (anchor = { x: 0, y: 64, z: 0 }, params = { w: 3, d: 3, h: 2 }) => makeBlueprint('room', params, null, { anchor, facing: 'north' })
+
+test('digWork: solid cells are work, liquid cells are left out, unloaded cells kept apart', () => {
+  const w = digWorld(), bp = roomAt()
+  let r = digWork(bp, w.blockAt)
+  assert.equal(r.work.length, 18); assert.equal(r.liquid.length, 0); assert.equal(r.unloaded.length, 0)
+  w.set({ x: 0, y: 64, z: 0 }, 'air'); w.set({ x: 1, y: 65, z: -1 }, 'water'); w.set({ x: -1, y: 64, z: -2 }, null)
+  r = digWork(bp, w.blockAt)
+  assert.equal(r.work.length, 15); assert.equal(r.liquid.length, 1); assert.equal(r.unloaded.length, 1)
+})
+
+test('digOrder: near rows first; in a row the centre column, then each side outward; top layer first in a column', () => {
+  const w = digWorld(), bp = roomAt()
+  const order = digOrder(digWork(bp, w.blockAt).work, bp)
+  // row 0 (z 0): centre x 0 top then bottom, then x -1, then x 1; then row 1 (z -1) ...
+  assert.deepEqual(order.slice(0, 6).map(c => wk(c.pos)), ['0,65,0', '0,64,0', '-1,65,0', '-1,64,0', '1,65,0', '1,64,0'])
+  assert.deepEqual(order.slice(6, 8).map(c => wk(c.pos)), ['0,65,-1', '0,64,-1'])
+  assert.equal(order.length, 18)
+  // a dug staircase down: step k's three cells top down, step by step
+  const st = makeBlueprint('stairs_down_to', { y: 60 }, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' })
+  const so = digOrder(digWork(st, w.blockAt).work, st)
+  assert.deepEqual(so.slice(0, 6).map(c => wk(c.pos)), ['0,65,-1', '0,64,-1', '0,63,-1', '0,64,-2', '0,63,-2', '0,62,-2'])
+  // a strip mine's branch is dug from the main tunnel outward, left side first
+  const sm = makeBlueprint('strip_mine', { len: 8, branch_every: 3, branch_len: 2 }, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' })
+  const branch = digOrder(digWork(sm, w.blockAt).work, sm).filter(c => c.row === 3).map(c => `${c.pos.x},${c.pos.y}`)
+  assert.deepEqual(branch, ['0,65', '0,64', '-1,65', '-1,64', '-2,65', '-2,64', '1,65', '1,64', '2,65', '2,64'])
+})
+
+test('liquidExposure: the cell itself, a face neighbour (source or flowing), or a liquid over a falling-block column', () => {
+  const w = digWorld(), c = { x: 0, y: 64, z: 0 }
+  assert.equal(liquidExposure(c, w.blockAt), null)
+  w.set({ x: 1, y: 65, z: 0 }, 'lava')   // diagonal: never flows into the cell
+  assert.equal(liquidExposure(c, w.blockAt), null)
+  w.set({ x: 1, y: 64, z: 0 }, 'lava')
+  assert.deepEqual(liquidExposure(c, w.blockAt), { x: 1, y: 64, z: 0 })
+  const w2 = digWorld()
+  w2.set({ x: 0, y: 63, z: 0 }, 'water')   // below
+  assert.deepEqual(liquidExposure(c, w2.blockAt), { x: 0, y: 63, z: 0 })
+  const w3 = digWorld()
+  w3.set(c, 'water')
+  assert.deepEqual(liquidExposure(c, w3.blockAt), c)
+  const w4 = digWorld()   // gravel then sand over the cell, water on top: digging the cell brings the water down
+  w4.set({ x: 0, y: 65, z: 0 }, 'gravel'); w4.set({ x: 0, y: 66, z: 0 }, 'sand'); w4.set({ x: 0, y: 67, z: 0 }, 'water')
+  assert.deepEqual(liquidExposure(c, w4.blockAt), { x: 0, y: 67, z: 0 })
+  w4.set({ x: 0, y: 66, z: 0 }, 'stone')   // a solid block in between holds it
+  assert.equal(liquidExposure(c, w4.blockAt), null)
+})
+
+test('harvestable: no tool needed, the right tier held, never bedrock or unbreakable blocks', () => {
+  const items = [{ name: 'stone_pickaxe', type: 7 }]
+  assert.equal(harvestable({ name: 'dirt', hardness: 0.5 }, items), true)
+  assert.equal(harvestable({ name: 'stone', hardness: 1.5, harvestTools: { 7: true } }, items), true)
+  assert.equal(harvestable({ name: 'stone', hardness: 1.5, harvestTools: { 7: true } }, []), false)
+  assert.equal(harvestable({ name: 'obsidian', hardness: 50, harvestTools: { 9: true } }, items), false)
+  assert.equal(harvestable({ name: 'bedrock', hardness: null }, items), false)
+  assert.equal(harvestable(null, items), false)
+})
+
+test('veinTargets and isOre: face-adjacent ores outside the plan, skipping ores next to a liquid', () => {
+  for (const n of ['iron_ore', 'deepslate_iron_ore', 'coal_ore', 'diamond_ore', 'redstone_ore', 'deepslate_lapis_ore', 'copper_ore', 'emerald_ore', 'gold_ore']) assert.equal(isOre(n), true, n)
+  for (const n of ['stone', 'iron_block', 'raw_iron_block', 'ancient_debris']) assert.equal(isOre(n), false, n)
+  const w = digWorld(), c = { x: 0, y: 64, z: 0 }
+  w.set(c, 'air')
+  w.set({ x: -1, y: 64, z: 0 }, 'iron_ore')     // wall
+  w.set({ x: 0, y: 65, z: 0 }, 'coal_ore')      // ceiling, but a plan cell
+  w.set({ x: 1, y: 64, z: 0 }, 'diamond_ore')   // next to water
+  w.set({ x: 2, y: 64, z: 0 }, 'water')
+  w.set({ x: 0, y: 64, z: 1 }, 'gold_ore')
+  const plan = new Set(['0,65,0'])
+  const t = veinTargets(c, w.blockAt, { plan }).map(wk).sort()
+  assert.deepEqual(t, ['-1,64,0', '0,64,1'])
+})
+
+test('turnSegment on a tunnel segment: the turned copy digs to the right of the old facing from the same anchor', () => {
+  const bp = makeBlueprint('tunnel', { len: 12 }, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' })
+  const t = turnSegment(bp, 'right')
+  const w = digWorld()
+  const cells = digOrder(digWork(t, w.blockAt).work, t)
+  assert.equal(t.facing, 'east')
+  assert.ok(cells.every(c => c.pos.z === 0 && c.pos.x >= 0))
+})
+
+test('dig(bp<n>) offers dig_blueprint(bp<n>) through the registry and the accessor; the accessor can replace a segment', async () => {
+  const reg = new PluginRegistry({ dir: DIR })
+  await reg.load()
+  const book = new BlueprintBook(), w = digWorld()
+  const id = book.add(roomAt())
+  const acc = bookAccessor(book, { blockAt: w.blockAt })
+  registerOptionProvider((obs, goal) => reg.optionsFor(obs, goal))
+  registerBlueprintAccessor(acc)
+  try {
+    const obs = baseObs({ inventory: { stone_pickaxe: 1 }, underground: true, skyLight: 0 })
+    assert.ok(GOAL_KINDS.dig.filter(obs, id, options(obs), 1).some(o => o.id === `dig_blueprint(${id})`))
+    assert.equal(GOAL_KINDS.dig.teacher(obs, id, 1), `dig_blueprint(${id})`)
+  } finally { registerOptionProvider(null); registerBlueprintAccessor(null) }
+  acc.update(id, { ...book.get(id), facing: 'east' })
+  assert.equal(book.get(id).facing, 'east')
+})
+
+// A motor stand-in over a fake world: digCell turns the cell to air (no walking), everything else is a no-op.
+function fakeMotor (book, w, items = [{ name: 'stone_pickaxe', type: 1 }]) {
+  const withProps = b => b && { ...b, hardness: b.name === 'bedrock' ? -1 : 1.5, harvestTools: { obsidian: { 99: true }, stone: { 1: true } }[b.name] }
+  const bot = { blockAt: v => withProps(w.blockAt({ x: v.x, y: v.y, z: v.z })), inventory: { items: () => items }, entity: { position: new Vec3(0.5, 64, 1.5) }, waitForTicks: async () => {}, entities: {} }
+  const dug = []
+  return {
+    bot, blueprints: book, current: null, reserveMs: 0, dug,
+    count: () => 0, check () {}, timeLeft: () => 60_000, log () {}, digOut: async () => {}, walkWithin: async () => {},
+    async digCell (pos) { w.set(pos, 'air'); dug.push(wk(pos)); return { ok: true } },
+  }
+}
+const tunnelBook = () => {
+  const book = new BlueprintBook()
+  const id = book.add(makeBlueprint('tunnel', { len: 8, w: 1, h: 2 }, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' }))
+  return { book, id }
+}
+
+test('dig_blueprint run: water beside a tunnel cell turns the segment right once and digs on; that cell is never dug', async () => {
+  const w = digWorld(), { book, id } = tunnelBook()
+  w.set({ x: 1, y: 64, z: -3 }, 'water')
+  const m = fakeMotor(book, w)
+  const r = await dig.run(m, id)
+  assert.equal(r.result, 'ok'); assert.match(r.detail, /turned right/); assert.match(r.detail, /complete/)
+  assert.equal(book.get(id).facing, 'east'); assert.equal(book.get(id).turned, 0)
+  assert.ok(!m.dug.includes('0,64,-3'))
+  assert.ok(m.dug.includes('0,65,-3'))   // the head-level cell of that row had no liquid beside it
+  assert.ok(m.dug.includes('7,64,0') && m.dug.includes('7,65,0'))
+})
+
+test('dig_blueprint run: a turned segment that is wet too, or a room, stops with hit_liquid naming the liquid', async () => {
+  const w = digWorld(), { book, id } = tunnelBook()
+  w.set({ x: 1, y: 64, z: -3 }, 'water'); w.set({ x: 1, y: 66, z: 0 }, 'lava')   // over the turned segment's first cell
+  const r = await dig.run(fakeMotor(book, w), id)
+  assert.equal(r.result, 'hit_liquid'); assert.match(r.detail, /^1, 66, 0: lava/)
+  assert.equal(book.get(id).facing, 'north')
+  // a second liquid after the turn: no second turn
+  const w2 = digWorld(), t = tunnelBook()
+  w2.set({ x: 1, y: 64, z: -3 }, 'water'); w2.set({ x: 4, y: 64, z: 1 }, 'water')
+  const r2 = await dig.run(fakeMotor(t.book, w2), t.id)
+  assert.equal(r2.result, 'hit_liquid'); assert.match(r2.detail, /^4, 64, 1: water/)
+  assert.equal(t.book.get(t.id).facing, 'east')
+  // a room: never turned
+  const w3 = digWorld(), book3 = new BlueprintBook()
+  const rid = book3.add(roomAt())
+  w3.set({ x: 2, y: 64, z: -1 }, 'lava')
+  const m3 = fakeMotor(book3, w3)
+  const r3 = await dig.run(m3, rid)
+  assert.equal(r3.result, 'hit_liquid'); assert.match(r3.detail, /^2, 64, -1: lava/)
+  assert.ok(!m3.dug.includes('1,64,-1'))
+  assert.equal(book3.get(rid).facing, 'north')
+})
+
+test('dig_blueprint run: cells no held tool harvests are skipped (needs_tool), the rest dug; all of them -> needs_tool', async () => {
+  const w = digWorld(), book = new BlueprintBook()
+  const id = book.add(roomAt())
+  w.set({ x: 0, y: 64, z: -2 }, 'obsidian')
+  let r = await dig.run(fakeMotor(book, w), id)
+  assert.equal(r.result, 'ok'); assert.match(r.detail, /\+17 dug.*1 needs_tool/)
+  r = await dig.run(fakeMotor(book, w), id)
+  assert.deepEqual(r, { result: 'needs_tool', detail: 'obsidian' })
+  const w2 = digWorld(), book2 = new BlueprintBook()
+  const id2 = book2.add(roomAt())
+  r = await dig.run(fakeMotor(book2, w2, []), id2)   // no pickaxe: stone needs one
+  assert.deepEqual(r, { result: 'needs_tool', detail: 'stone' })
+})
+
+test('dig_blueprint run: a streamed tunnel advances segments within one call, at most 40 digs', async () => {
+  const w = digWorld(), book = new BlueprintBook()
+  const id = book.add(makeBlueprint('tunnel', { len: 32, w: 1, h: 2 }, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' }))
+  const m = fakeMotor(book, w)
+  const r = await dig.run(m, id)
+  assert.equal(r.result, 'ok'); assert.equal(m.dug.length, 40)
+  assert.match(r.detail, /^\+40 dug, segment 3\/4$/)
 })

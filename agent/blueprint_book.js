@@ -133,7 +133,8 @@ function nameOf (bp) { return pretty(bp.template ?? bp.title ?? 'blueprint') }
 
 // The goal layer's accessor (goals.registerBlueprintAccessor) over a book: progress(id, obs) reads the world through
 // blockAt and adds `surface` (isSurface(bp, obs): the runner's sky-light test of the anchor). The runner hands the same
-// accessor to the motor (motor.blueprints) for build_blueprint, which also uses scaffold(id).
+// accessor to the motor (motor.blueprints) for build_blueprint, which also uses scaffold(id), and dig_blueprint, which
+// uses update(id, bp) to replace the current segment with its turned copy (templates.turnSegment) at a liquid.
 export function bookAccessor (book, { blockAt, isSurface = () => false }) {
   return {
     get: id => book.get(id),
@@ -142,6 +143,7 @@ export function bookAccessor (book, { blockAt, isSurface = () => false }) {
       return p && { ...p, surface: !!isSurface(book.get(id), obs) }
     },
     advance: id => book.advance(id),
+    update: (id, bp) => book.update(id, bp),
     scaffold: id => book.scaffold(id),
   }
 }

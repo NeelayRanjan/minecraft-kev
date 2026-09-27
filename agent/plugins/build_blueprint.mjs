@@ -25,13 +25,12 @@
 import { Vec3 } from 'vec3'
 import { cells, diff, foundation, itemForBlock, liquidBlocked } from '../blueprints.js'
 import { buildOrder, faces, key, scaffoldMaterial } from '../reach.js'
+import { FINAL_MS, MARGIN_MS, inventoryOf, loadBlueprint } from '../blueprint_exec.js'
 
 export const MAX_PLACEMENTS = 30   // blueprint and scaffold blocks together
-// Time budget: the loop keeps MARGIN_MS free before the deadline (motor.reserveMs: every walk is capped to end before
-// it, no step starts with under 2 s of it left); the final tidy and step-clear then run with FINAL_MS reserved. The call
-// returns its own result before the run's deadline, never a timeout after productive work.
-export const MARGIN_MS = 12_000
-const FINAL_MS = 1500
+// Time budget (agent/blueprint_exec.js): the loop keeps MARGIN_MS free before the deadline; the final tidy and
+// step-clear then run with FINAL_MS reserved.
+export { MARGIN_MS }
 
 // The work of the blueprint's current segment against the world. { work: [{ pos, want, layer, col, row, op }],
 // blocked: [cells], allKeys: every blueprint and foundation cell (scaffold never goes there), needs: { item: n } }.
@@ -59,12 +58,6 @@ export function buildWork (bp, blockAt) {
   return { work, blocked, allKeys, needs }
 }
 
-const inventoryOf = bot => {
-  const m = {}
-  for (const i of bot.inventory.items()) m[i.name] = (m[i.name] || 0) + i.count
-  return m
-}
-
 const plugin = {
   id: 'build_blueprint',
   timeout: 150,
@@ -75,11 +68,10 @@ const plugin = {
   },
   preconditions () { return true },
   async run (motor, arg) {
-    const acc = motor.blueprints
-    if (!acc?.get) return { result: 'failed', detail: 'no blueprint book' }
-    let bp = acc.get(arg)
-    if (!bp) return { result: 'failed', detail: `no blueprint ${arg}` }
-    if (bp.kind !== 'build') return { result: 'failed', detail: `${arg} is not a build blueprint` }
+    const got = loadBlueprint(motor, arg, 'build')
+    if (got.error) return got.error
+    const acc = got.acc
+    let bp = got.bp
     const bot = motor.bot
     const blockAt = p => bot.blockAt(new Vec3(p.x, p.y, p.z))
     const scaffold = typeof acc.scaffold === 'function' ? acc.scaffold(arg) : null

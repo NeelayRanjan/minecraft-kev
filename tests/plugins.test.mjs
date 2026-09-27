@@ -67,13 +67,13 @@ test('a directory with only README.md loads nothing and fails nothing; a missing
   assert.deepEqual(r.loaded, [])
 })
 
-test('the shipped agent/plugins directory loads without failures: all six shipped plugins enabled', async () => {
+test('the shipped agent/plugins directory loads without failures: every shipped plugin enabled', async () => {
   const dir = path.join(path.dirname(FIXTURES), '..', '..', 'agent', 'plugins')
   const reg = new PluginRegistry({ dir })
   const r = await reg.load()
   assert.deepEqual(r.failed, [])
-  assert.deepEqual(r.loaded.sort(), ['build_blueprint', 'craft_item', 'go_to_player', 'hunt', 'mine', 'receive', 'smelt_item'])
-  for (const id of ['mine', 'smelt_item', 'craft_item', 'hunt', 'go_to_player', 'receive']) assert.equal(reg.enabled(id), true, id)
+  assert.deepEqual(r.loaded.sort(), ['build_blueprint', 'craft_item', 'dig_blueprint', 'go_to_player', 'hunt', 'mine', 'receive', 'smelt_item'])
+  for (const id of r.loaded) assert.equal(reg.enabled(id), true, id)
 })
 
 test('optionsFor offers echo(a) only when the preconditions hold', async () => {

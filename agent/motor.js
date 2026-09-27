@@ -10,7 +10,7 @@ const { Movements, goals } = pathfinderPkg
 export const TIMEOUTS = { gather_wood: 60, mine_stone: 45, mine_coal: 60, mine_iron: 90, craft: 20, smelt: 90, explore_toward: 40,
   return_to_base: 60, eat: 10, build_shelter: 20, fight: 25, flee: 20, pillar_up: 10, wait: 3,
   mine_diamond: 120, mine_gravel: 60, mine_obsidian: 150, fill_bucket: 40, cast_obsidian: 60, build_portal: 90, light_portal: 20 }
-export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'no_fuel', 'needs_tool', 'player_gone', 'unreachable', 'failed', 'died']
+export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'no_fuel', 'needs_tool', 'player_gone', 'unreachable', 'hit_liquid', 'failed', 'died']
 const INTERRUPT_RESULT = { threat: 'interrupted', took_damage: 'took_damage', died: 'died', drowning: 'interrupted' }
 const WAIT_IN_WATER_S = 12   // a wait that starts in water swims to shore (or floats) for this long instead of 3 s
 const IRON_Y = 16
