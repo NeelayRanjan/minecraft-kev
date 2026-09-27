@@ -264,7 +264,7 @@ function applyPlanAnswer(action, answer, why, obs) {
   }
   if (action === 'plan_build' || action === 'plan_dig') return applyTemplateAnswer(action, answer, why)
   if (action === 'plan_blueprint') return applyBlueprintAnswer(answer, why)
-  const text = sanitizeChat(answer.text, SAY_MAX).trim()
+  const text = sanitizeChat(typeof answer.text === 'string' && answer.text.trim() ? answer.text : answer.reply, SAY_MAX).trim()   // a say may put its line in reply
   if (!text) return bad('say without text')
   return { kind: 'say', id: null, text }
 }
@@ -359,6 +359,7 @@ export const leaderSchema = (options, { goals = false, blueprints = false, reque
     edit: { type: 'object', properties: { op: { type: 'string', enum: EDIT_OPS }, plan_id: { type: 'integer' } }, required: ['op'] },
     text: { type: 'string' },
     ...(blueprints ? { build: BUILD_SCHEMA, dig: DIG_SCHEMA, blueprint: BLUEPRINT_SCHEMA } : {}),
+    reply: { type: 'string' },   // any action: a short line the runner sends to the player (live retry: talking and acting were exclusive)
     why: { type: 'string' },
   },
   required: ['action'],
@@ -386,7 +387,7 @@ export function parseLeaderAnswer(text, options, { goals = false, blueprints = f
   const ok = a === 'continue' || options.some(o => o.id === a) || (goals && goalActionsFor({ blueprints }).includes(a))
   if (!goals) return { action: ok ? a : null, why }
   const goal = obj.goal && typeof obj.goal === 'object' ? parsedGoal(obj.goal) : null
-  const out = { action: ok ? a : null, why, goal }
+  const out = { action: ok ? a : null, why, goal, reply: typeof obj.reply === 'string' ? obj.reply : null }
   if (!ok) return out
   const o = x => x && typeof x === 'object' && !Array.isArray(x) ? x : null
   if (a === 'plan_item') out.item = o(obj.item) && { name: typeof obj.item.name === 'string' ? obj.item.name : null, count: Number.isInteger(obj.item.count) ? obj.item.count : null }
@@ -468,10 +469,11 @@ Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and 
 - plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};
 - plan_steps with a title and 1 to 8 goal steps: {"action": "plan_steps", "title": "stone from home", "steps": [{"kind": "go_to", "arg": "base"}, {"kind": "gather", "arg": "cobblestone", "count": 8}], "why": ...};
 - edit with an op (skip, drop, move_front, clear) and, for drop and move_front, the plan number from PLANS: {"action": "edit", "edit": {"op": "drop", "plan_id": 3}, "why": ...};
-- say with a line the audience reads, only to answer a question: {"action": "say", "text": "...", "why": ...};
+- say with a line the audience reads, only for conversation (a question with nothing to do); when a request can be acted on, act and answer in reply: {"action": "say", "text": "...", "why": ...};
 - push_goal with a typed goal: {"action": "push_goal", "goal": {"kind": ..., "arg": ..., "count": ...}, "why": ...};
 - pop_goal: drop the top pushed goal when it is pointless now (its materials are lost, night has fallen on the surface, it keeps failing);
-- cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.
+- cannot: decline an audience request; write one short friendly sentence saying why in reply (or in "why").
+Every answer may also carry "reply": one short line the player reads in chat. Add a short reply for the player whenever you act on a request ("on my way!", "sure, making it now").
 push_goal goal kinds and their arguments (these lists are for push_goal only; plan_item is not limited to them):
 - craft_item (push_goal only), arg one of: ${list(Object.keys(RECIPES))};
 - gather (push_goal only), arg one of: ${list(Object.keys(PRODUCERS))}; count an integer from 1 to 64;
@@ -488,7 +490,7 @@ Audience requests always come before the default goal chain; the chain resumes a
 Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot. The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.
 "continue" remains the default when there is no request and the goals make progress.
 
-Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "why": "<one sentence>"}`
+Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}`
 }
 export const LEADER_SYSTEM_GOALS = leaderSystemGoals({ blueprints: true })
 
@@ -599,13 +601,15 @@ export function parseChatMessage(jsonMsg, position, botName) {
 // cannot, plan_item, plan_steps, edit, say; the runner passes an invalid push it replied to as cannot). Any other outcome of a call that showed it
 // (continue, override, blocked, stale, invalid, error) leaves it waiting; after maxShown such calls it is settled as
 // 'not_now' and returned so the runner can reply "Not now". Ids are 1, 2, ... in arrival order.
-export const REQUEST_ANSWERS = new Set(GOAL_ACTIONS)
+export const REQUEST_ANSWERS = new Set([...GOAL_ACTIONS, 'reply'])
 // How a call's outcome settles the audience requests it showed: an invalid goal-level answer (push_goal or a plan answer
 // the validator refused: an unknown item, a bad step, an edit without its plan_id, an empty say) is replied to with the
 // reason, so it settles them as cannot; every other outcome settles as its own kind.
 // A refused say is not replied to (it settles nothing; the next prompt carries FEEDBACK, leaderFeedback).
 const REPLIED_INVALID = new Set(['push_goal', ...PLAN_ACTIONS.filter(a => a !== 'say')])
-export function settleKind(res, hasRequests) {
+// A continue or override that carries a reply (the runner sends it) answers the shown requests as 'reply'.
+export function settleKind(res, hasRequests, reply = null) {
+  if (hasRequests && (res?.kind === 'continue' || res?.kind === 'override') && typeof reply === 'string' && reply.trim()) return 'reply'
   return res?.kind === 'invalid' && hasRequests && REPLIED_INVALID.has(res.id) ? 'cannot' : res?.kind ?? null
 }
 export class RequestBook {
@@ -778,7 +782,7 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
       const bad = recentFailure(o.id, recentResults)
       return `- ${o.id}: ${o.desc}${bad ? ` (failed recently: ${bad}, do not pick)` : ''}`
     }).join('\n'), '',
-    goals ? 'Reply with JSON only: {"action": "continue" | "plan_item" | "plan_steps" | "edit" | "say" | "push_goal" | "pop_goal" | "cannot" | "<subtask id from the list>", "goal" (push_goal), "item" (plan_item), "title" and "steps" (plan_steps), "edit" (edit), "text" (say), "why": "<one sentence>"}'
+    goals ? 'Reply with JSON only: {"action": "continue" | "plan_item" | "plan_steps" | "edit" | "say" | "push_goal" | "pop_goal" | "cannot" | "<subtask id from the list>", "goal" (push_goal), "item" (plan_item), "title" and "steps" (plan_steps), "edit" (edit), "text" (say), "reply" (any action), "why": "<one sentence>"}'
       : 'Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}',
   ].join('\n')
   return [{ role: 'system', content: goals ? leaderSystemGoals({ blueprints }) : LEADER_SYSTEM }, { role: 'user', content: user }]

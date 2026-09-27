@@ -464,8 +464,12 @@ function leaderAnswered(snap, a, err) {
     try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1), obs: lastObs }) }
     catch (e) { res = { kind: 'invalid', id: 'push_goal', reason: String(e?.message || e).slice(0, 160) } }
   } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
+  // the answer's reply (goals mode; any action): sent after the code's own announcement, never for an answer that did
+  // nothing (invalid, stale, blocked, error). A continue or override with a reply answers the shown requests.
+  const reply = goalsOn && typeof a?.reply === 'string' ? sanitizeChat(a.reply, 300).trim() : ''
+  const replyOk = !!reply && !['invalid', 'stale', 'blocked', 'error'].includes(res.kind)
   // an invalid push or plan answer is replied to below ("Can't do that yet: <reason>"), so it answers the requests like cannot
-  const settleAs = settleKind(res, reqs.length > 0)
+  const settleAs = settleKind(res, reqs.length > 0, replyOk ? reply : null)
   // a refused say settles nothing and sends nothing; with requests shown, the next call is told why (FEEDBACK)
   if (goalsOn) leaderFeedbackNext = leaderFeedback(res, reqs.length > 0)
   const waiting = reqs.filter(r => !r.answered)
@@ -473,6 +477,7 @@ function leaderAnswered(snap, a, err) {
   const settled = waiting.filter(r => r.answered).map(r => ({ t: r.t, name: r.name, as: r.answered.kind }))
   elog.leader.push({ t_asked: snap.t, t_answered: +t.toFixed(1), trigger: snap.event, current_id: snap.currentId, current_id_at_answer: currentId,
     action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, reason: res.reason ?? null, threat_near: threatNear, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
+    ...(goalsOn ? { reply: reply || null } : {}),
     latency_ms: a?.latency_ms ?? null, tokens: a?.tokens ?? null, prompt_tokens: a?.prompt_tokens ?? null, tps: a?.tps != null ? +a.tps.toFixed(1) : null,
     prompt_chars: a?.prompt_chars ?? null, prompt_hash: a?.prompt_hash ?? null, offered: snap.offered.map(o => o.id), think: leaderThink,
     error: err ? String(err.message || err).slice(0, 200) : null,
@@ -485,7 +490,7 @@ function leaderAnswered(snap, a, err) {
     const g = { id: pushed.id, kind: pushed.kind, arg: pushed.arg, count: pushed.count, source: pushed.source }
     elog.event({ t, kind: 'goal_pushed', goal: g, why: a.why ?? null })
     goalLog.push({ ...g, t: +t.toFixed(1), why: a.why ?? null, end_t: null, outcome: null })
-    say(`On it: ${goalPhrase({ ...g, ...(pushed.from ? { from: pushed.from } : {}) }, reqs[0]?.name ?? null)}${res.note ? ` (${sanitizeChat(res.note, 60)})` : ''}${whyTail(a.why) || '.'}`)
+    say(`On it: ${goalPhrase({ ...g, ...(pushed.from ? { from: pushed.from } : {}) }, reqs[0]?.name ?? null)}${res.note ? ` (${sanitizeChat(res.note, 60)})` : ''}${reply ? '.' : whyTail(a.why) || '.'}`)
   } else if (res.kind === 'pop_goal' && goalStack.top().plan_id != null) {
     // a plan step: popping it would only see it pushed again next tick, so the plan skips the step instead
     editPlans({ op: 'skip', plan_id: null, why: a.why ?? null, via: 'pop_goal' }, t)
@@ -494,13 +499,13 @@ function leaderAnswered(snap, a, err) {
     goalStack.pop('leader')
     elog.event({ t, kind: 'goal_popped', goal: popped, why: a.why ?? null })
     closeGoal(popped.id, t, 'popped')
-    say(`Dropping that${whyTail(a.why) || '.'}`)
+    say(`Dropping that${reply ? '.' : whyTail(a.why) || '.'}`)
   } else if (res.kind === 'cannot') {
     const why = res.night || res.guard ? res.why : a.why ?? null
     elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why, ...(res.night ? { reason: 'night', goal: res.goal } : {}),
       ...(res.guard ? { reason: res.guard, plan_id: res.plan_id, title: res.title } : {}) })
     say(res.night ? `Not until morning: ${goalPhrase(res.goal)} would mean working on the surface at night.`
-      : res.guard ? `Can't do ${res.title} again yet (plan #${res.plan_id}), ${res.why}.` : `Can't do that yet${whyTail(a.why) || '.'}`)
+      : res.guard ? `Can't do ${res.title} again yet (plan #${res.plan_id}), ${res.why}.` : `Can't do that yet${whyTail(reply || a.why) || '.'}`)
     logRequests(reqs, t, { kind: 'cannot', why, missing: null })
   } else if (res.kind === 'plan_item') {
     planItem(res, reqs, src, t, a.why ?? null)
@@ -518,6 +523,11 @@ function leaderAnswered(snap, a, err) {
     elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
     // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
     if (res.kind === 'invalid' && settleAs === 'cannot') { say(`Can't do that yet${whyTail(res.reason) || '.'}`); logRequests(reqs, t, { kind: 'cannot', answer: res.id, reason: res.reason ?? null, missing: null }) }
+  }
+  // the reply goes out after the code's announcement (a cannot's reply is already its reason; a say's text is its reply)
+  if (replyOk && res.kind !== 'say' && !(res.kind === 'cannot' && !res.night && !res.guard)) {
+    elog.event({ t, kind: 'leader_reply', text: reply, action: a?.action ?? null })
+    say(reply)
   }
   if (notNow.length) {   // shown to two calls that did not answer them: tell the players the bot is busy
     let busy = 'the current goal'

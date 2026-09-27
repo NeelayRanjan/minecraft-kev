@@ -377,8 +377,8 @@ test('with goals on, subtask overrides keep both guards', () => {
 
 test('parseLeaderAnswer with goals keeps goal actions and the goal object', () => {
   assert.deepEqual(parseLeaderAnswer('{"action":"push_goal","goal":{"kind":"gather","arg":"cobblestone","count":8},"why":"x"}', offered, { goals: true }),
-    { action: 'push_goal', why: 'x', goal: { kind: 'gather', arg: 'cobblestone', count: 8 } })
-  assert.deepEqual(parseLeaderAnswer('{"action":"cannot","why":"no"}', offered, { goals: true }), { action: 'cannot', why: 'no', goal: null })
+    { action: 'push_goal', reply: null, why: 'x', goal: { kind: 'gather', arg: 'cobblestone', count: 8 } })
+  assert.deepEqual(parseLeaderAnswer('{"action":"cannot","why":"no"}', offered, { goals: true }), { action: 'cannot', reply: null, why: 'no', goal: null })
   assert.deepEqual(parseLeaderAnswer('{"action":"push_goal","goal":{"kind":"gather"}}', offered), { action: null, why: '' }, 'goals off: rejected')
 })
 
@@ -658,12 +658,12 @@ test('applyAnswer say: sanitized text, not cut at 200; empty is invalid', () => 
 
 test('parseLeaderAnswer with goals carries the plan payloads', () => {
   assert.deepEqual(parseLeaderAnswer('{"action":"plan_item","item":{"name":"compass","count":1},"why":"x"}', offered, { goals: true }),
-    { action: 'plan_item', why: 'x', goal: null, item: { name: 'compass', count: 1 } })
+    { action: 'plan_item', reply: null, why: 'x', goal: null, item: { name: 'compass', count: 1 } })
   assert.deepEqual(parseLeaderAnswer('{"action":"plan_steps","title":"t","steps":[{"kind":"receive","arg":"redstone","count":4,"from":"Steve"}]}', offered, { goals: true }),
-    { action: 'plan_steps', why: '', goal: null, title: 't', steps: [{ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }] })
+    { action: 'plan_steps', reply: null, why: '', goal: null, title: 't', steps: [{ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }] })
   assert.deepEqual(parseLeaderAnswer('{"action":"edit","edit":{"op":"drop","plan_id":2}}', offered, { goals: true }),
-    { action: 'edit', why: '', goal: null, edit: { op: 'drop', plan_id: 2 } })
-  assert.deepEqual(parseLeaderAnswer('{"action":"say","text":"hello"}', offered, { goals: true }), { action: 'say', why: '', goal: null, text: 'hello' })
+    { action: 'edit', reply: null, why: '', goal: null, edit: { op: 'drop', plan_id: 2 } })
+  assert.deepEqual(parseLeaderAnswer('{"action":"say","text":"hello"}', offered, { goals: true }), { action: 'say', reply: null, why: '', goal: null, text: 'hello' })
   assert.deepEqual(parseLeaderAnswer('{"action":"push_goal","goal":{"kind":"receive","arg":"redstone","count":4,"from":"Steve"}}', offered, { goals: true }).goal,
     { kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' })
 })
@@ -893,7 +893,7 @@ test('LEADER_SYSTEM_GOALS: the templates block, the free-form rule and the examp
 
 test('buildLeaderMessages: without a blueprint cut or feedback the user prompt is byte-identical to the base branch', () => {
   assert.equal(buildLeaderMessages(bpBaseCtx)[1].content, readFileSync(new URL('./fixtures/leader_user_base_plain.txt', import.meta.url), 'utf8'))
-  assert.equal(buildLeaderMessages(bpGoalCtx)[1].content, readFileSync(new URL('./fixtures/leader_user_base_goals.txt', import.meta.url), 'utf8'))
+  assert.equal(buildLeaderMessages(bpGoalCtx)[1].content, edits(readFileSync(new URL('./fixtures/leader_user_base_goals.txt', import.meta.url), 'utf8'), USER2_EDITS))
   assert.equal(buildLeaderMessages(bpBaseCtx)[0].content, LEADER_SYSTEM)
 })
 
@@ -941,9 +941,28 @@ export const LIVE_EDITS = [
   ['Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.', 'Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.\nAudience requests always come before the default goal chain; the chain resumes afterwards.'],
   ['push it in the morning or answer cannot.', 'push it in the morning or answer cannot. The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.'],
 ]
-function liveEdits(text) {
-  for (const [a, b] of LIVE_EDITS) { assert.equal(text.split(a).length, 2, `edit anchor once: ${a}`); text = text.replace(a, b) }
+// The second live round (live_retry, 2026-09-27; brief items 4, 9-16, 19): goals-prompt edits made on purpose, applied
+// after LIVE_EDITS; USER2_EDITS for the goals user prompt; schema2 for the goals schema. Nothing else changed.
+export const LIVE2_EDITS = [
+  ['- say with a line the audience reads, only to answer a question: {', '- say with a line the audience reads, only for conversation (a question with nothing to do); when a request can be acted on, act and answer in reply: {'],
+  ['- cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.',
+    '- cannot: decline an audience request; write one short friendly sentence saying why in reply (or in "why").\nEvery answer may also carry "reply": one short line the player reads in chat. Add a short reply for the player whenever you act on a request ("on my way!", "sure, making it now").'],
+  ['(edit only), "text": "<line>" (say only), "why": "<one sentence>"}', '(edit only), "text": "<line>" (say only), "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}'],
+]
+export const USER2_EDITS = [
+  ['"text" (say), "why": "<one sentence>"}', '"text" (say), "reply" (any action), "why": "<one sentence>"}'],
+]
+function edits(text, list) {
+  for (const [a, b] of list) { assert.equal(text.split(a).length, 2, `edit anchor once: ${a}`); text = text.replace(a, b) }
   return text
+}
+function liveEdits(text) { return edits(edits(text, LIVE_EDITS), LIVE2_EDITS) }
+// the goals schema: a reply before why
+function schema2(json) {
+  const o = JSON.parse(json), props = {}
+  for (const [k, v] of Object.entries(o.properties)) { if (k === 'why') props.reply = { type: 'string' }; props[k] = v }
+  o.properties = props
+  return JSON.stringify(o, null, 1) + '\n'
 }
 test('blueprints gate: off (the default) gives the 66867fc goals prompt and schema; on adds the block and the actions', () => {
   const opts = [{ id: 'mine_iron', desc: 'x' }, { id: 'explore_toward(down)', desc: 'y' }, { id: 'wait', desc: 'z' }]
@@ -952,7 +971,7 @@ test('blueprints gate: off (the default) gives the 66867fc goals prompt and sche
   assert.equal(leaderSystemGoals(), was)
   assert.equal(buildLeaderMessages(bpGoalCtx)[0].content, was)
   // (say is in the enum only when a shown request asks a question: with one, the schema is 66867fc's)
-  assert.equal(JSON.stringify(leaderSchema(opts, { goals: true, requests: [{ t: 1, name: 'A', text: 'hi?' }] }), null, 1) + '\n', fx('leader_schema_goals_66867fc.json'))
+  assert.equal(JSON.stringify(leaderSchema(opts, { goals: true, requests: [{ t: 1, name: 'A', text: 'hi?' }] }), null, 1) + '\n', schema2(fx('leader_schema_goals_66867fc.json')))
   assert.equal(buildLeaderMessages({ ...bpGoalCtx, blueprints: true })[0].content, LEADER_SYSTEM_GOALS)
   assert.match(LEADER_SYSTEM_GOALS, /BUILDING AND DIGGING/)
   const on = leaderSchema(opts, { goals: true, blueprints: true })
