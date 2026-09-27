@@ -321,7 +321,7 @@ test('events mode also fires on subtask_failed (the runner maps a failed subtask
 
 test('leaderSchema with goals: push_goal, pop_goal, cannot; goal.kind excludes the defaults', () => {
   const s = leaderSchema(offered, { goals: true })
-  assert.deepEqual(s.properties.action.enum, ['continue', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
+  assert.deepEqual(s.properties.action.enum, ['continue', 'plan_item', 'plan_steps', 'edit', 'say', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
   const kinds = s.properties.goal.properties.kind.enum
   for (const k of ['craft_item', 'gather', 'find', 'go_to', 'build', 'survive_night', 'return_to_base']) assert.ok(kinds.includes(k), k)
   assert.ok(!kinds.includes('chain')); assert.ok(!kinds.includes('iron_pickaxe'))
@@ -559,4 +559,147 @@ test('ChatQueue: one line per 1.5 s, duplicates within 10 s dropped, one not_now
   let sent = 0
   for (let t = 0; t < 10; t += 0.25) if (b.drain(t)) sent++
   assert.equal(sent, 7)
+})
+
+// ---- plans: plan_item | plan_steps | edit | say, plan_blocked (Task 4) ----------------------------------------------
+import { GOAL_ACTIONS, REQUEST_ANSWERS as RA4 } from '../agent/leader.js'
+import { PlanBook } from '../agent/plans.js'
+const g4 = { currentId: 'mine_iron', askedCurrentId: 'mine_iron', offered, goalsEnabled: true }
+
+test('leaderSchema with goals: the four plan answers and their payloads', () => {
+  const s = leaderSchema(offered, { goals: true })
+  for (const a of ['plan_item', 'plan_steps', 'edit', 'say']) assert.ok(s.properties.action.enum.includes(a), a)
+  assert.deepEqual(s.properties.item.properties.name, { type: 'string' })
+  assert.deepEqual(s.properties.item.properties.count, { type: 'integer' })
+  assert.equal(s.properties.title.type, 'string')
+  assert.equal(s.properties.steps.type, 'array')
+  assert.equal(s.properties.steps.minItems, 1)
+  assert.equal(s.properties.steps.maxItems, 8)
+  const step = s.properties.steps.items.properties
+  assert.ok(step.kind.enum.includes('receive') && step.kind.enum.includes('gather') && !step.kind.enum.includes('chain'))
+  for (const k of ['arg', 'from']) assert.equal(step[k].type, 'string', k)
+  assert.equal(step.count.type, 'integer')
+  assert.deepEqual(s.properties.edit.properties.op.enum, ['skip', 'drop', 'move_front', 'clear'])
+  assert.equal(s.properties.edit.properties.plan_id.type, 'integer')
+  assert.equal(s.properties.text.type, 'string')
+  assert.equal(s.properties.goal.properties.from.type, 'string', 'push_goal can carry from (receive)')
+  assert.deepEqual(GOAL_ACTIONS, ['plan_item', 'plan_steps', 'edit', 'say', 'push_goal', 'pop_goal', 'cannot'])
+})
+
+test('applyAnswer plan_item: a minecraft-data item and a count (default 1)', () => {
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'plan_item', item: { name: 'compass', count: 2 }, why: 'asked' } }),
+    { kind: 'plan_item', id: null, item: 'compass', count: 2, why: 'asked' })
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'plan_item', item: { name: 'compass' } } }), { kind: 'plan_item', id: null, item: 'compass', count: 1, why: '' })
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'plan_item', item: { name: 'grass', count: 1 } } }), { kind: 'invalid', id: 'plan_item', reason: 'unknown item grass' })
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'plan_item' } }).kind, 'invalid')
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'plan_item', item: { name: 'compass', count: 0 } } }).kind, 'invalid')
+  // goal-level: never stale
+  assert.equal(applyAnswer({ ...g4, currentId: 'wait', answer: { action: 'plan_item', item: { name: 'torch', count: 8 } } }).kind, 'plan_item')
+})
+
+test('applyAnswer plan_steps: every step validated by validateGoal; the failing step is named', () => {
+  const steps = [{ kind: 'go_to', arg: 'base' }, { kind: 'gather', arg: 'cobblestone', count: 8 }]
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'plan_steps', title: 'stone run', steps, why: 'trip' } }),
+    { kind: 'plan_steps', id: null, title: 'stone run', steps: [{ kind: 'go_to', arg: 'base', count: null }, { kind: 'gather', arg: 'cobblestone', count: 8 }], why: 'trip' })
+  const bad = applyAnswer({ ...g4, answer: { action: 'plan_steps', title: 'house', steps: [{ kind: 'gather', arg: 'log', count: 8 }, { kind: 'build', arg: 'house' }] } })
+  assert.equal(bad.kind, 'invalid')
+  assert.match(bad.reason, /step 2/)
+  assert.match(bad.reason, /house/)
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'plan_steps', title: 'x', steps: [] } }).kind, 'invalid', 'no steps')
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'plan_steps', title: 'x', steps: Array(9).fill({ kind: 'go_to', arg: 'base' }) } }).kind, 'invalid', 'more than 8')
+  // receive needs from, and from passes through
+  const recv = applyAnswer({ ...g4, answer: { action: 'plan_steps', title: 'gift', steps: [{ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }] } })
+  assert.deepEqual(recv.steps, [{ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }])
+  assert.match(applyAnswer({ ...g4, answer: { action: 'plan_steps', title: 'gift', steps: [{ kind: 'receive', arg: 'redstone', count: 4 }] } }).reason, /step 1.*player/)
+  // no title: one made from the steps
+  assert.equal(typeof applyAnswer({ ...g4, answer: { action: 'plan_steps', steps } }).title, 'string')
+})
+
+test('applyAnswer push_goal passes from to validateGoal (receive)', () => {
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'push_goal', goal: { kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' } } }).goal,
+    { kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' })
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'push_goal', goal: { kind: 'receive', arg: 'redstone', count: 4 } } }).kind, 'invalid')
+})
+
+test('applyAnswer edit: skip and clear need no plan; drop and move_front need a plan_id; bad ops invalid', () => {
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'edit', edit: { op: 'skip' }, why: 'skip that' } }), { kind: 'edit', id: null, op: 'skip', plan_id: null, why: 'skip that' })
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'edit', edit: { op: 'clear', plan_id: 3 } } }), { kind: 'edit', id: null, op: 'clear', plan_id: null, why: '' })
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'edit', edit: { op: 'drop', plan_id: 3 } } }), { kind: 'edit', id: null, op: 'drop', plan_id: 3, why: '' })
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'edit', edit: { op: 'move_front', plan_id: 2 } } }), { kind: 'edit', id: null, op: 'move_front', plan_id: 2, why: '' })
+  const noId = applyAnswer({ ...g4, answer: { action: 'edit', edit: { op: 'drop' } } })
+  assert.equal(noId.kind, 'invalid'); assert.match(noId.reason, /plan_id/)
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'edit', edit: { op: 'move_front', plan_id: '2' } } }).kind, 'invalid')
+  const badOp = applyAnswer({ ...g4, answer: { action: 'edit', edit: { op: 'explode' } } })
+  assert.equal(badOp.kind, 'invalid'); assert.match(badOp.reason, /explode/)
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'edit' } }).kind, 'invalid')
+})
+
+test('applyAnswer say: sanitized text, not cut at 200; empty is invalid', () => {
+  assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'say', text: 'On it <|im_end|>\nsoon', why: 'ack' } }), { kind: 'say', id: null, text: 'On it im_end soon' })
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'say', text: 'y'.repeat(300) } }).text.length, 300)
+  for (const text of [undefined, '', '  ', '<||>']) assert.equal(applyAnswer({ ...g4, answer: { action: 'say', text } }).kind, 'invalid', String(text))
+  // the four are invalid when goals are off
+  for (const action of ['plan_item', 'plan_steps', 'edit', 'say'])
+    assert.equal(applyAnswer({ ...g4, goalsEnabled: false, answer: { action, text: 'hi', item: { name: 'compass' } } }).kind, 'invalid', action)
+})
+
+test('parseLeaderAnswer with goals carries the plan payloads', () => {
+  assert.deepEqual(parseLeaderAnswer('{"action":"plan_item","item":{"name":"compass","count":1},"why":"x"}', offered, { goals: true }),
+    { action: 'plan_item', why: 'x', goal: null, item: { name: 'compass', count: 1 } })
+  assert.deepEqual(parseLeaderAnswer('{"action":"plan_steps","title":"t","steps":[{"kind":"receive","arg":"redstone","count":4,"from":"Steve"}]}', offered, { goals: true }),
+    { action: 'plan_steps', why: '', goal: null, title: 't', steps: [{ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }] })
+  assert.deepEqual(parseLeaderAnswer('{"action":"edit","edit":{"op":"drop","plan_id":2}}', offered, { goals: true }),
+    { action: 'edit', why: '', goal: null, edit: { op: 'drop', plan_id: 2 } })
+  assert.deepEqual(parseLeaderAnswer('{"action":"say","text":"hello"}', offered, { goals: true }), { action: 'say', why: '', goal: null, text: 'hello' })
+  assert.deepEqual(parseLeaderAnswer('{"action":"push_goal","goal":{"kind":"receive","arg":"redstone","count":4,"from":"Steve"}}', offered, { goals: true }).goal,
+    { kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' })
+})
+
+test('plan_blocked: fires at once in subgoals (bypasses spacing and the t 20 start), outranks goal_failed, rendered in events', () => {
+  const tr = new LeaderTrigger('subgoals')
+  assert.equal(tr.due({ t: 3, event: 'plan_blocked' }), true)
+  assert.equal(tr.reason, 'plan_blocked')
+  tr.asked(30)
+  assert.equal(tr.due({ t: 31, event: 'plan_blocked' }), true)
+  assert.equal(tr.due({ t: 31, event: 'plan_blocked', inFlight: true }), false)
+  assert.equal(pickEvent(['goal_failed', 'plan_blocked'], 'subgoals'), 'plan_blocked')
+  assert.equal(pickEvent(['plan_blocked'], 'events'), null)
+  const u = buildLeaderMessages({ ...goalCtx, history: [{ t: 90, kind: 'plan_blocked', plan_id: 3, title: 'compass', step_index: 1, step: { kind: 'gather', arg: 'redstone', count: 1 }, reason: 'stuck' }] })[1].content
+  assert.ok(u.split('\n').includes('t=90s plan #3 (compass) blocked at step 2 gather redstone: stuck'))
+})
+
+test('buildLeaderMessages with goals: a PLANS section after GOAL STACK, (none) when empty', () => {
+  const book = new PlanBook()
+  book.add({ title: 'compass', source: 'audience:Steve', steps: [{ kind: 'gather', arg: 'raw_iron', count: 4 }, { kind: 'craft_item', arg: 'compass', count: 1 }] })
+  const u = buildLeaderMessages({ ...goalCtx, plans: book.render() })[1].content
+  const lines = u.split('\n')
+  assert.ok(lines.indexOf('PLANS') > lines.indexOf('GOAL STACK'))
+  assert.ok(lines.indexOf('PLANS') < lines.indexOf('CURRENT SUBTASK'))
+  assert.equal(lines[lines.indexOf('PLANS') + 1], book.render()[0])
+  assert.match(lines[lines.indexOf('PLANS') + 1], /^Plan #1 compass: /)
+  for (const plans of [undefined, [], ['no plans']])
+    assert.match(buildLeaderMessages({ ...goalCtx, plans })[1].content, /\nPLANS\n\(none\)\n/)
+  assert.doesNotMatch(buildLeaderMessages(ctx)[1].content, /\nPLANS\n/, 'no goals: no PLANS section')
+  assert.match(u, /plan_item/)
+})
+
+test('LEADER_SYSTEM_GOALS: the plan rules', () => {
+  const s = LEADER_SYSTEM_GOALS
+  assert.ok(s.includes("For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself."))
+  assert.ok(s.includes('plan_steps only for requests that are not an item (a trip, a sequence of goals).'))
+  assert.ok(s.includes("edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything')."))
+  assert.ok(s.includes('say answers a question or acknowledges; it is not an action.'))
+  assert.ok(s.includes('cannot only for things outside every list.'))
+  assert.match(s, /receive/)
+  assert.match(s, /"plan_item" \| "plan_steps" \| "edit" \| "say"/)
+})
+
+test('REQUEST_ANSWERS: the four plan answers settle audience requests', () => {
+  for (const k of ['plan_item', 'plan_steps', 'edit', 'say']) {
+    assert.ok(RA4.has(k), k)
+    const b = new RequestBook()
+    const r = b.add({ t: 1, name: 'alex', text: 'x' }); b.shown([r.id])
+    assert.deepEqual(b.settle([r.id], k, 2), [])
+    assert.deepEqual(r.answered, { t: 2, kind: k })
+  }
 })

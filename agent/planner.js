@@ -85,7 +85,7 @@ export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen
 // (the 27B model may still be loading).
 export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'qwen38-27b-iq3xxs', think = false, numPredict = think ? 1500 : 200, numCtx = 4096,   // prompts run 1.4-2.9k tokens; 8192 cost ~5 GB of KV cache on the 27B and evicted the user's other model
   temperature = 0.2, timeoutMs = think ? 150_000 : 45_000, goals = false, ...ctx }) {
-  // goals: the subgoals leader (schema and parser accept push_goal / pop_goal / cannot and return `goal`)
+  // goals: the subgoals leader (schema and parser accept the goal and plan answers and return `goal` and the plan payload)
   const messages = buildLeaderMessages(ctx)
   const promptText = messages.map(m => m.content).join('\n')
   const t0 = Date.now()
@@ -97,9 +97,9 @@ export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'q
   if (!res.ok) throw new Error(`leader ${res.status}: ${(await res.text()).slice(0, 200)}`)
   const body = await res.json()
   const raw = body?.message?.content ?? ''
-  const { action, why, goal } = parseLeaderAnswer(raw, ctx.options, { goals })
+  const { action, why, goal, ...plan } = parseLeaderAnswer(raw, ctx.options, { goals })   // plan: item | title + steps | edit | text
   // truncated: num_predict ran out (with thinking, usually inside the thinking, so the answer is empty -> invalid)
-  return { action, why, ...(goals ? { goal } : {}), truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
+  return { action, why, ...(goals ? { goal, ...plan } : {}), truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
     tokens: body?.eval_count ?? null, prompt_tokens: body?.prompt_eval_count ?? null,
     tps: body?.eval_count && body?.eval_duration ? body.eval_count / (body.eval_duration / 1e9) : null,
     prompt_chars: promptText.length, prompt_hash: crypto.createHash('sha1').update(promptText).digest('hex').slice(0, 12) }
