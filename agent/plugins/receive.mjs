@@ -1,6 +1,7 @@
 // receive(<item>): take items a player drops for the bot. The giver's name is not in the option (args are \w+ and the
 // id is receive(<item>)): it comes from the goal, obs.goalTop.from (the runner puts the top goal's public fields on
-// obs.goalTop); without one, the nearest other player within 32 m. Walks to the giver first (followPlayer, no hold),
+// obs.goalTop); without one, the nearest other player within 32 m. Walks to the giver first (followPlayer, no hold;
+// out of sight, followPlayer asks the server where they are),
 // then for up to 60 s walks over item entities of <item> within 6 m (entity.name 'item', the dropped stack read with
 // getDroppedItem()), until the goal's count is held (obs.goalTop.count) or, after a rise, 3 s pass with no <item> left
 // in range. ok (+n <item>) when the count rose, else timeout; player_gone when there is no giver and nothing dropped
@@ -91,8 +92,9 @@ const plugin = {
     await motor.settleInventory()
     const before = motor.count(item)
     const giver = from ? playerEntity(bot, from) : null
-    if (!giver && !wantedDrops(bot, want).length) return { result: 'player_gone', detail: from ? `${from} is not in sight` : `no player within ${GIVER_M} m` }
-    if (giver && giver.position.distanceTo(bot.entity.position) > NEAR_M) {
+    if (!from && !wantedDrops(bot, want).length) return { result: 'player_gone', detail: `no player within ${GIVER_M} m` }
+    // a named giver out of sight: go_to_player's /data approach finds them (live stress session: beyond tracking range)
+    if (from && !wantedDrops(bot, want).length && (!giver || giver.position.distanceTo(bot.entity.position) > NEAR_M)) {
       const r = await followPlayer(motor, from, { holdMs: 0 })
       if (r.result !== 'ok') return r
       motor.check()

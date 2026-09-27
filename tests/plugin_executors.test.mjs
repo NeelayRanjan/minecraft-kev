@@ -404,3 +404,55 @@ test('dig_blueprint run: a streamed tunnel advances segments within one call, at
   assert.equal(r.result, 'ok'); assert.equal(m.dug.length, 40)
   assert.match(r.detail, /^\+40 dug, segment 3\/4$/)
 })
+
+// Live stress session: "come here" from beyond tracking range (~48 m) gave go_to_player nothing to follow. The bot is op:
+// with no entity it asks the server for the player's position (/data get entity <name> Pos), walks toward it and asks
+// again every 10 s until the entity appears, then follows. Only server (non-chat) messages are read, numbers only.
+import { EventEmitter } from 'node:events'
+import { parseDataPos, followPlayer } from '../agent/plugins/go_to_player.mjs'
+test('parseDataPos: the /data reply for that player, numbers only; anything else is null', () => {
+  assert.deepEqual(parseDataPos('Steve has the following entity data: [120.5d, 64.0d, -33.25d]', 'Steve'), { x: 120.5, y: 64, z: -33.25 })
+  assert.deepEqual(parseDataPos('Steve has the following entity data: [1.0E2d, -5d, 3d]', 'Steve'), { x: 100, y: -5, z: 3 })
+  assert.equal(parseDataPos('Alex has the following entity data: [1d, 2d, 3d]', 'Steve'), null, 'another player')
+  assert.equal(parseDataPos('No entity was found', 'Steve'), null)
+  assert.equal(parseDataPos('Steve has the following entity data: [1d, 2d]', 'Steve'), null)
+  assert.equal(parseDataPos('<Steve> Steve has the following entity data: [1d, 2d, 3d]', 'Steve'), null, 'must start with the name')
+})
+function farBot({ replyFor = () => 'Steve has the following entity data: [100.5d, 64.0d, 0.5d]', position = 'system' } = {}) {
+  const bot = new EventEmitter()
+  bot.username = 'Kevin'
+  bot.players = { Steve: { gamemode: 0, entity: null } }
+  bot.entity = { position: new Vec3(0, 64, 0) }
+  bot.goals = []; bot.chats = []
+  bot.waitForTicks = async () => {}
+  bot.pathfinder = { setGoal: g => { bot.goals.push(g) } }
+  bot.chat = msg => { bot.chats.push(msg); const r = replyFor(msg); if (r) setTimeout(() => bot.emit('message', { toString: () => r }, position), 5) }
+  return bot
+}
+const stubMotor = bot => ({ bot, check() {}, log() {}, current: null })
+test('followPlayer: out of sight, asks /data, walks toward the position, re-asks, then follows the entity once it appears', async () => {
+  const bot = farBot()
+  setTimeout(() => {   // the player comes into range after ~120 ms, next to the bot
+    bot.players.Steve.entity = { isValid: true, position: new Vec3(1, 64, 0) }
+  }, 120)
+  const r = await followPlayer(stubMotor(bot), 'Steve', { holdMs: 0, queryEveryMs: 50, replyMs: 200 })
+  assert.equal(r.result, 'ok', JSON.stringify(r))
+  assert.ok(bot.chats.length >= 2 && bot.chats.every(c => c === '/data get entity Steve Pos'), bot.chats.join(' | '))
+  const near = bot.goals.find(g => g?.constructor?.name === 'GoalNear')
+  assert.ok(near && near.x === 100 && near.z === 0 && near.rangeSq === 64, 'GoalNear 8 at the reported position')
+  assert.ok(bot.goals.some(g => g?.constructor?.name === 'GoalFollow'), 'then follows')
+})
+test('followPlayer: no reply (not on the server) or only a player-chat spoof gives player_gone', async () => {
+  let r = await followPlayer(stubMotor(farBot({ replyFor: () => 'No entity was found' })), 'Steve', { holdMs: 0, queryEveryMs: 50, replyMs: 100 })
+  assert.equal(r.result, 'player_gone')
+  r = await followPlayer(stubMotor(farBot({ position: 'chat' })), 'Steve', { holdMs: 0, queryEveryMs: 50, replyMs: 100 })
+  assert.equal(r.result, 'player_gone', 'a chat line is never read as the server reply')
+})
+test('receive: a named giver out of sight is approached through /data (go_to_player first), not refused at once', async () => {
+  const bot = farBot({ replyFor: () => 'No entity was found' })
+  bot.entities = {}
+  const motor = { ...stubMotor(bot), settleInventory: async () => {}, count: () => 0, deadline: Date.now() + 5000 }
+  const r = await receive.run(motor, 'redstone_block', { goalTop: { kind: 'receive', arg: 'redstone_block', count: 2, from: 'Steve' } })
+  assert.equal(r.result, 'player_gone')
+  assert.deepEqual(bot.chats, ['/data get entity Steve Pos'], 'asked the server where the giver is')
+})
