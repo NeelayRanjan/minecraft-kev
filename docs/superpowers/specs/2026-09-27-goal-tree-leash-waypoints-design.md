@@ -67,6 +67,8 @@ Kevin never ate in 24 minutes; starvation took him to exactly 1/20 health twice 
 10. **Compound requests** ("where is your table; if none, make one"): the leader may answer with an action plus a reply. The prompt gets an example for "question + instruction", showing the action with the answer in the reply.
 11. **Placed stations:** log where Kevin places a crafting table or furnace, and give the leader "crafting table: 12 m west" as a fact. The table is also a waypoint candidate ("base").
 
+12. Far blueprint walk: at 232 m from the site the far-site walk returned in 0.3 s (pathfinder searchRadius 64 -> immediate NoPath) and the call reported `ok (+0 placed)` six times until the ok-result breaker withheld it. Walk in 48 m hops toward the anchor (as go_to_player's out-of-sight approach does), and a call that made no progress reports `no_path`, never ok. The leash (section 2) is what keeps Kevin from being 232 m away in the first place.
+
 ## 5b. Larger blueprints (added 2026-09-27, the user)
 
 Templates accept up to 15x15 footprints (hut, wall, floor, room, pit); free-form blueprints up to 12x12x8 and 400 placed blocks. The leader's cut shows only the current layer within 9 cells of Kevin (15x15 would triple the prompt). build_check gains a 13x13x4 hut case.
