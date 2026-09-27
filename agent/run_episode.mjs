@@ -385,7 +385,7 @@ async function decide(obs, t) {
       // kev's pick and distribution stay in the decision log (answers), its forecasts are untouched.
       if (source === 'kev') {
         const g = goalGuard({ kevPick: chosen, teacherPick: labels.next_subtask ?? null, offered: Object.keys(qs.next_subtask.criteria), depth: goalStack.depth(),
-          plugins: new Set(registry.list().filter(p => p.enabled).map(p => p.id)) })
+          plugins: new Set(registry.list().filter(p => p.enabled).map(p => p.id)), recent })
         if (g) { elog.event({ t, kind: 'goal_guard', kev: chosen, to: g }); why = `goal guard: kev picked ${chosen}`; chosen = g; source = 'goal_guard' }
       }
     }

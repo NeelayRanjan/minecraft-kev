@@ -96,3 +96,17 @@ test('goalGuard: under a pushed goal the teacher\'s plugin pick replaces kev\'s;
   assert.equal(g('explore_toward(surface)', 'dig_blueprint(bp9)'), null, 'not offered')
   assert.equal(g('explore_toward(surface)', null), null)
 })
+
+test('goalGuard backs off when the teacher\'s plugin pick failed in 2 of its last 3 attempts', () => {
+  const plugins = new Set(['dig_blueprint'])
+  const offered = ['dig_blueprint(bp3)', 'explore_toward(down)']
+  const g = recent => goalGuard({ kevPick: 'explore_toward(down)', teacherPick: 'dig_blueprint(bp3)', offered, depth: 1, plugins, recent })
+  const a = (id, result) => ({ id, result })
+  assert.equal(g([]), 'dig_blueprint(bp3)')
+  assert.equal(g([a('dig_blueprint(bp3)', 'unreachable')]), 'dig_blueprint(bp3)', 'one failure: still guarded')
+  assert.equal(g([a('dig_blueprint(bp3)', 'unreachable'), a('explore_toward(down)', 'ok'), a('dig_blueprint(bp3)', 'no_path')]), null)
+  assert.equal(g([a('dig_blueprint(bp3)', 'ok'), a('dig_blueprint(bp3)', 'unreachable'), a('dig_blueprint(bp3)', 'ok')]), 'dig_blueprint(bp3)')
+  // only its last 3 attempts count
+  assert.equal(g([a('dig_blueprint(bp3)', 'failed'), a('dig_blueprint(bp3)', 'failed'), a('dig_blueprint(bp3)', 'ok'), a('dig_blueprint(bp3)', 'ok'), a('dig_blueprint(bp3)', 'ok')]), 'dig_blueprint(bp3)')
+  assert.equal(g([a('dig_blueprint(bp3)', 'interrupted'), a('dig_blueprint(bp3)', 'timeout')]), null, 'any non-ok result counts')
+})

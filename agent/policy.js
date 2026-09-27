@@ -42,11 +42,15 @@ export function interruptFor({ hostileDist, prevHostileDist, current, healthDrop
 // picking moves over them (blueprint smoke: explore_toward(surface) p 0.45 vs build_blueprint 0.20, 34 times). Under a
 // pushed goal (depth > 0) whose teacher picks an offered plugin option (its name in `plugins`), that pick replaces
 // kev's, unless kev picked a threat response, eat, or the same id. Returns the id to start instead, or null (kev's
-// pick stands). At depth 0 never fires, so experiment-1 and chain runs are unchanged.
-export function goalGuard({ kevPick, teacherPick, offered, depth, plugins }) {
+// pick stands). At depth 0 never fires, so experiment-1 and chain runs are unchanged. It backs off when the teacher's pick
+// failed (any result but ok) in 2 of its last 3 attempts in `recent` ([{ id, result }], oldest first), so kev's pick
+// stands and the livelock breaker can withhold the failing executor (fix round 2: re-picked against "over a drop").
+export function goalGuard({ kevPick, teacherPick, offered, depth, plugins, recent = [] }) {
   if (!(depth > 0) || !teacherPick || !kevPick || kevPick === teacherPick) return null
   const name = id => String(id).split('(')[0]
   if (THREAT_SUBTASKS.has(name(kevPick)) || kevPick === 'eat') return null
   if (!plugins.has(name(teacherPick)) || !offered.includes(teacherPick)) return null
+  const last3 = recent.filter(r => r.id === teacherPick).slice(-3)
+  if (last3.filter(r => r.result !== 'ok').length >= 2) return null
   return teacherPick
 }
