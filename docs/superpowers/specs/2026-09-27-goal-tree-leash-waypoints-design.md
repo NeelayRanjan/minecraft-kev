@@ -60,6 +60,7 @@ Kevin never ate in 24 minutes; starvation took him to exactly 1/20 health twice 
 
 - When food <= 6 and no food is held: a survival goal `feed` is pushed on the priority stack. It hunts the nearest cow, pig, sheep or chicken within the leash (via the hunt plugin), then cooks the meat at a furnace if one is within 16 m and fuel is held, and eats. It pops at food >= 14.
 - At food <= 3 it preempts everything except threat responses.
+- Food held but not eaten (live: food 0/20 with food in the inventory, kev chose armor crafting and wood for minutes): at food <= 6 with food held, `eat` is forced by the guard before any non-threat option; at food <= 14 with food held and no threat, eat wins ties.
 
 ## 5. Findings from the third session
 
