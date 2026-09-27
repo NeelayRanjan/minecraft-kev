@@ -580,3 +580,11 @@ test('plugin options go through the livelock breaker and the supervisor withhold
     assert.ok(!s.filter(sup, options(sup)).some(x => x.id === 'go_to_player(Steve)'), 'supervisor withhold')
   })
 })
+
+// Final review, Important 4: gather(<wood>_planks) crafts planks only from that species' logs.
+test('gather(oak_planks): craft(planks) only with oak logs held; birch logs alone mean gather_wood', () => {
+  const p = new GoalStack({ goal: 'nether' })
+  p.push({ kind: 'gather', arg: 'oak_planks', count: 6, source: 'leader', t: 0 })
+  assert.equal(p.teacher(chain({ inventory: { iron_pickaxe: 1, birch_log: 3 }, blocks: [...stone, ...logs] })), 'gather_wood')
+  assert.equal(p.teacher(chain({ inventory: { iron_pickaxe: 1, birch_log: 3, oak_log: 1 }, blocks: [...stone, ...logs] })), 'craft(planks)')
+})

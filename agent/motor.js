@@ -30,6 +30,13 @@ export function fleeHeadings(away) {
   return [away, HEADING_ORDER[(i + 1) % 4], HEADING_ORDER[(i + 3) % 4]]
 }
 export const FLEE_DIST = 14
+// The log craft(planks) uses: the most-held species, except under a gather(<wood>_planks) goal (a wood-specific plan
+// step) whose species' log is held. byType: {<wood>_log: count}. Pure.
+export function planksLog(byType, goalTop) {
+  const want = goalTop?.kind === 'gather' && /_planks$/.test(goalTop.arg ?? '') ? goalTop.arg.replace(/_planks$/, '_log') : null
+  if (want && byType[want] > 0) return want
+  return Object.keys(byType).sort((a, b) => byType[b] - byType[a])[0]
+}
 // The point flee() runs from: a hostile mob's position when one is found, else (fix round 1: flee never fled a
 // player-only attacker, since nearestHostileEntity/obs.nearestHostile are mob-only) the attacker's live entity
 // position when it's a player still tracked in bot.players, else the position recorded in obs.attacker at
@@ -670,13 +677,13 @@ export class Motor {
       return this.mineKind(this.obsidianIds, 16, 10, n => n === 'obsidian', 'obsidian', frame)
     },
 
-    async craft(item) {
+    async craft(item, obs) {
       let target = item
       let logName = null
       if (item === 'planks') {
         const byType = {}
         for (const i of this.bot.inventory.items()) if (i.name.endsWith('_log')) byType[i.name] = (byType[i.name] || 0) + i.count
-        logName = Object.keys(byType).sort((a, b) => byType[b] - byType[a])[0]
+        logName = planksLog(byType, obs?.goalTop)
         if (!logName) return fail('no_materials', 'no logs')
         target = logName.replace('_log', '_planks')
       } else if (item === 'sticks') target = 'stick'

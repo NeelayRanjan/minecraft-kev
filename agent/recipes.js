@@ -6,8 +6,9 @@
 // its own tools), the legacy recipes (goals.RECIPES: `craft_item` expanded through those tables, never through
 // minecraft-data), then MINE (a gather step with a pickaxe tier), SMELT, HUNT, and finally a minecraft-data 1.20.4
 // recipe. On the legacy path planks of any wood count toward `planks` (gathered as `planks`), logs likewise as `log`,
-// and `sticks` is the item `stick`; a minecraft-data ingredient names its species and is counted and gathered exactly
-// (`gather(oak_planks, n)`; only the goals.WOODS species are producible).
+// and `sticks` is the item `stick`; a minecraft-data recipe with one variant per wood (a chest: any planks) is read on
+// those generic names too (collapseWoods); only a recipe specific to one wood (oak_stairs) names its species, counted
+// and gathered exactly (`gather(oak_planks, n)`; only the goals.WOODS species are producible).
 //
 // Ordering rule: tools first. A dry walk finds every tool the whole tree needs (the highest pickaxe tier of its MINE
 // steps, a crafting table for a 3x3 recipe, a furnace for a smelt, shears for a shearing hunt); the real walk acquires
@@ -80,7 +81,30 @@ function mdRecipes(item) {
     const table = r.inShape ? r.inShape.length > 2 || r.inShape.some(row => row.length > 2) : cells.length > 4
     return { ingredients: [...q], yield: r.result.count || 1, table }
   })
-  recipeCache.set(item, out)
+  const collapsed = collapseWoods(out)
+  recipeCache.set(item, collapsed)
+  return collapsed
+}
+// Tag recipes (a chest, a barrel, a crafting table: "any planks") come from minecraft-data as one variant per wood.
+// Variants that differ only in the wood species collapse into one recipe on the generic names (planks, log), so a
+// plan gathers whatever wood grows nearby (final review: a chest in a birch forest asked for oak planks and never
+// progressed). A recipe with a single variant (oak_stairs, oak_boat) keeps its exact species. Pure.
+function collapseWoods(recipes) {
+  const generic = n => n.endsWith('_planks') ? 'planks' : n.endsWith('_log') ? 'log' : n
+  const sig = r => JSON.stringify([r.ingredients.map(([n, q]) => [generic(n), q]), r.yield, r.table])
+  const groups = new Map()
+  for (const r of recipes) { const k = sig(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r) }
+  const out = [], done = new Set()
+  for (const r of recipes) {
+    const k = sig(r)
+    if (done.has(k)) continue
+    done.add(k)
+    const g = groups.get(k)
+    if (g.length < 2) { out.push(r); continue }
+    const q = new Map()
+    for (const [n, c] of r.ingredients) { const gn = generic(n); q.set(gn, (q.get(gn) || 0) + c) }
+    out.push({ ingredients: [...q], yield: r.yield, table: r.table })
+  }
   return out
 }
 

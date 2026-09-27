@@ -193,7 +193,8 @@ function baseStep(obs, label) {
 const DAY = new Set(['morning', 'midday', 'afternoon'])
 // Plan-book vocabularies (agent/recipes.js): a species of planks is counted exactly (a wood-specific recipe never
 // plans on another wood's planks); MINE items come through the plugin's mine(<block>) options; a non-legacy craft
-// through craft_item(<item>).
+// through craft_item(<item>). A species' planks are crafted only from that species' logs (craft(planks) reads the top
+// goal, motor.planksLog); with none held the teacher gathers wood (final review: birch logs made birch planks forever).
 const exactPlanks = item => item !== 'planks' && item.endsWith('_planks')
 const gHave = (obs, item) => exactPlanks(item) ? (obs.inventory?.[item] || 0) : have(obs, item)
 const mined = item => !!MINE[item]
@@ -256,7 +257,7 @@ export const GOAL_KINDS = {
     step: (obs, item, count) => ({ index: fifths(gHave(obs, item), count), of: 5,
       text: `gather ${count} ${humanize(item)} (have ${gHave(obs, item)})` }),
     teacher: (obs, item, count, g) => mined(item) ? firstPlugin(obs, goalOf('gather', item, count, g), mineRelevant(item))
-      : exactPlanks(item) ? (have(obs, 'log') > 0 ? 'craft(planks)' : acquire(obs, 'log')) : acquire(obs, item),
+      : exactPlanks(item) ? ((obs.inventory?.[item.replace(/_planks$/, '_log')] || 0) > 0 ? 'craft(planks)' : acquire(obs, 'log')) : acquire(obs, item),
     describe: (obs, item, count) => `gather ${count} ${humanize(item)} (have ${gHave(obs, item)})`,
     stuckS: (item, count) => Math.max(300, Math.min(600, 20 * count)),
   },

@@ -122,7 +122,8 @@ test('wood-specific recipes count planks by exact species; tag recipes take the 
   assert.deepEqual(stairs, ['gather(oak_planks, 6)', 'craft_item(oak_stairs, 4)'])
   assert.deepEqual(ids(expandItem('oak_boat', 1, { spruce_planks: 5 }, TABLE)), ['gather(oak_planks, 5)', 'craft_item(oak_boat, 1)'])
   assert.deepEqual(ids(expandItem('chest', 1, { spruce_planks: 8 }, TABLE)), ['craft_item(chest, 1)'])
-  assert.deepEqual(ids(expandItem('chest', 1, {}, TABLE)), ['gather(oak_planks, 8)', 'craft_item(chest, 1)'])
+  // final review, Important 4: a recipe with one variant per wood takes any planks (was pinned to oak_planks)
+  assert.deepEqual(ids(expandItem('chest', 1, {}, TABLE)), ['gather(planks, 8)', 'craft_item(chest, 1)'])
   // the legacy path still takes any wood: a crafting table from birch planks
   assert.deepEqual(ids(expandItem('crafting_table', 1, { birch_planks: 4 })), ['craft_item(crafting_table, 1)'])
 })
@@ -172,4 +173,12 @@ test('no craft or smelt precedes a step producing one of its ingredients: compas
       assert.deepEqual(later.map(t => `${t.kind}(${t.arg})`), [], `${item}: ${s.kind}(${s.arg}) comes before a producer of its input`)
     })
   }
+})
+
+// Final review, Important 4: recipes whose minecraft-data variants differ only in the wood species take generic planks
+// (logs); a recipe specific to one wood (oak_stairs, oak_boat: one variant) keeps the exact name.
+test('any-wood recipes: chest from birch logs is gather(planks, 8) and one craft; oak_stairs still needs oak', () => {
+  assert.deepEqual(ids(expandItem('chest', 1, { birch_log: 5 }, TABLE)), ['gather(planks, 8)', 'craft_item(chest, 1)'])
+  assert.deepEqual(ids(expandItem('oak_stairs', 4, { birch_planks: 6 }, TABLE)), ['gather(oak_planks, 6)', 'craft_item(oak_stairs, 4)'])
+  assert.ok(ids(expandItem('barrel', 1, {}, TABLE)).includes('gather(planks, 6)'), 'the planks of a barrel are any wood')
 })

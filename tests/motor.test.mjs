@@ -305,3 +305,13 @@ test('flee: walks along the dry heading with dryMovements; never toward the thre
   assert.equal(m.calls[1].goal.constructor.name, 'GoalInvert')
   assert.equal(m.calls[1].movements, m.dryMovements)
 })
+
+// Final review, Important 4: craft(planks) under a gather(<wood>_planks) goal uses that species' logs.
+import { planksLog } from '../agent/motor.js'
+test('planksLog: the most-held log, unless the top goal wants one species and it is held', () => {
+  assert.equal(planksLog({ birch_log: 5, oak_log: 1 }, null), 'birch_log')
+  assert.equal(planksLog({ birch_log: 5, oak_log: 1 }, { kind: 'gather', arg: 'oak_planks' }), 'oak_log')
+  assert.equal(planksLog({ birch_log: 5 }, { kind: 'gather', arg: 'oak_planks' }), 'birch_log')
+  assert.equal(planksLog({ birch_log: 5, oak_log: 1 }, { kind: 'chain', arg: null }), 'birch_log')
+  assert.equal(planksLog({}, null), undefined)
+})
