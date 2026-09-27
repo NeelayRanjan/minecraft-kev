@@ -45,10 +45,15 @@ export function interruptFor({ hostileDist, prevHostileDist, current, healthDrop
 // pick stands). At depth 0 never fires, so experiment-1 and chain runs are unchanged. It backs off when the teacher's pick
 // failed (any result but ok) in 2 of its last 3 attempts in `recent` ([{ id, result }], oldest first), so kev's pick
 // stands and the livelock breaker can withhold the failing executor (fix round 2: re-picked against "over a drop").
-export function goalGuard({ kevPick, teacherPick, offered, depth, plugins, recent = [] }) {
+// At FIGHT_HEALTH or less it never forces a fight-like executor (protect, hunt): kev's pick stands (final review,
+// Important 6: protect was forced at 3 hp).
+export const FIGHT_HEALTH = 8
+const FIGHT_LIKE = new Set(['protect', 'hunt'])
+export function goalGuard({ kevPick, teacherPick, offered, depth, plugins, recent = [], health = null }) {
   if (!(depth > 0) || !teacherPick || !kevPick || kevPick === teacherPick) return null
   const name = id => String(id).split('(')[0]
   if (THREAT_SUBTASKS.has(name(kevPick)) || kevPick === 'eat') return null
+  if (health != null && health <= FIGHT_HEALTH && FIGHT_LIKE.has(name(teacherPick))) return null
   if (!plugins.has(name(teacherPick)) || !offered.includes(teacherPick)) return null
   const last3 = recent.filter(r => r.id === teacherPick).slice(-3)
   if (last3.filter(r => r.result !== 'ok').length >= 2) return null
