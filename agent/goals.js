@@ -95,6 +95,8 @@ const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
 // Blueprints (build(<id>) / dig(<id>), ids bp<n>): the goal layer reads them through an accessor the runner registers
 // (a BlueprintBook read through the bot's world, agent/blueprint_book.js bookAccessor), so this module stays pure:
 //   get(id) -> blueprint | null ; progress(id, obs) -> BlueprintBook.progress fields + surface | null ; advance(id)
+//   (+ scaffold(id) -> the build's scaffold record, used by the build_blueprint executor, not by the goals; a build's
+//   progress stays unfinished while its scaffold stands, so its goal keeps offering build_blueprint(<id>))
 // The default knows no blueprint. An accessor that throws reads as unknown (null).
 const NO_BLUEPRINTS = { get: () => null, progress: () => null, advance: () => null }
 let blueprints = NO_BLUEPRINTS

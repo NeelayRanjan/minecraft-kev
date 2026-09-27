@@ -39,7 +39,7 @@ test('build progress over a fake world: empty, a finished layer, an unwanted blo
   const b = new BlueprintBook(), id = b.add(hut()), w = world()
   assert.deepEqual(b.progress(id, w.blockAt), {
     kind: 'build', name: 'hut', done: 29, total: 100, missing: 71, blocked: 0, layer: 1, layers: 4, segment: 1, segments: 1,
-    finished: false, blocksDone: 0, blocksTotal: 71, needs: { cobblestone: 71 }, layerNeeds: { cobblestone: 15 },
+    finished: false, blocksDone: 0, blocksTotal: 71, needs: { cobblestone: 71 }, layerNeeds: { cobblestone: 15 }, scaffoldLeft: 0,
   })
   const bp = b.get(id)
   for (const c of cells(bp)) if (c.layer === 0 && c.want !== 'air') w.set(c.pos, 'cobblestone')
@@ -149,4 +149,26 @@ test('build progress: a liquid in an air cell, or in a block cell with nothing t
   w.set(inside.pos, 'water')
   p = b.progress(hid, w.blockAt)
   assert.equal(p.blocked, 1); assert.equal(p.missing, 71)
+})
+
+test('a build is not finished while its scaffold stands; the line says removing scaffold (n); the record round-trips', () => {
+  const b = new BlueprintBook(), w = world()
+  const id = b.add(makeBlueprint('floor', { w: 1, d: 1 }, 'cobblestone', { anchor, facing: 'north' }))
+  for (const c of cells(b.get(id))) w.set(c.pos, 'cobblestone')
+  assert.equal(b.progress(id, w.blockAt).finished, true)
+  const s1 = { x: 3, y: 64, z: 0, item: 'dirt', layer: 0, segment: 0 }, s2 = { x: 3, y: 65, z: 0, item: 'dirt', layer: 0, segment: 0 }
+  b.scaffold(id).push(s1, s2)
+  w.set(s1, 'dirt'); w.set(s2, 'dirt')
+  let p = b.progress(id, w.blockAt)
+  assert.deepEqual([p.finished, p.scaffoldLeft, p.missing], [false, 2, 0])
+  assert.match(b.line(id, w.blockAt, {}), /, removing scaffold \(2\)$/)
+  assert.equal(bookAccessor(b, { blockAt: w.blockAt }).scaffold(id), b.scaffold(id))
+  const r = BlueprintBook.fromJSON(JSON.parse(JSON.stringify(b)))
+  assert.equal(r.progress(id, w.blockAt).scaffoldLeft, 2)
+  w.set(s2, 'air')   // a block broken by someone else no longer counts
+  assert.equal(b.progress(id, w.blockAt).scaffoldLeft, 1)
+  w.set(s1, 'air')
+  p = b.progress(id, w.blockAt)
+  assert.deepEqual([p.finished, p.scaffoldLeft], [true, 0])
+  assert.doesNotMatch(b.line(id, w.blockAt, {}), /scaffold/)
 })

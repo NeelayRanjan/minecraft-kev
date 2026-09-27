@@ -17,6 +17,7 @@
 //   needs     { item: n } the materials the remaining block cells (unloaded ones included) and their foundation
 //             blocks take (build only)
 //   layerNeeds the same restricted to the working layer
+//   scaffoldLeft (build only) scaffold blocks of this build still standing; finished stays false while any is
 import { diff, foundation, itemForBlock, liquidBlocked } from './blueprints.js'
 import { nextSegment } from './templates.js'
 
@@ -27,7 +28,7 @@ const add = (m, item, n = 1) => { m[item] = (m[item] ?? 0) + n }
 export const blueprintNumber = id => { const m = /^bp(\d+)$/.exec(id ?? ''); return m ? Number(m[1]) : null }
 
 export class BlueprintBook {
-  constructor () { this.blueprints = new Map(); this.next = 1 }
+  constructor () { this.blueprints = new Map(); this.next = 1; this.scaffolds = new Map() }
 
   add (bp) {
     const id = `bp${this.next++}`
@@ -36,6 +37,15 @@ export class BlueprintBook {
   }
 
   get (id) { return this.blueprints.get(id) ?? null }
+
+  // The scaffold record of a build (the executor pushes every scaffold block it places and removes the ones it digs):
+  // the live array [{ x, y, z, item, layer, segment }], created on first use. A build is not finished while one of its
+  // scaffold blocks is still standing (progress().scaffoldLeft), so its goal keeps offering the executor until they
+  // are dug.
+  scaffold (id) {
+    if (!this.scaffolds.has(id)) this.scaffolds.set(id, [])
+    return this.scaffolds.get(id)
+  }
 
   update (id, bp) {
     if (!this.blueprints.has(id)) throw new Error(`no blueprint ${id}`)
@@ -69,6 +79,9 @@ export class BlueprintBook {
       finished: work.length === 0 && d.blocked.length === 0 && nextSegment(bp) === null,
     }
     if (!build) return out
+    // scaffold blocks still standing (an entry whose block is gone or changed no longer counts)
+    const scaffoldLeft = (this.scaffolds.get(id) ?? []).filter(p => blockAt(p)?.name === p.item).length
+    if (scaffoldLeft) out.finished = false
     const notDone = new Set([...d.missing, ...d.wrong, ...d.blocked].map(c => key(c.pos)))
     const blockCells = [...d.missing, ...d.wrong, ...d.blocked].filter(c => c.want !== 'air')
     let total = 0
@@ -86,7 +99,7 @@ export class BlueprintBook {
       add(needs, item)
       if (layerIdx === 0) add(layerNeeds, item)
     }
-    return { ...out, blocksDone: total - blockCells.length, blocksTotal: total, needs, layerNeeds }
+    return { ...out, blocksDone: total - blockCells.length, blocksTotal: total, needs, layerNeeds, scaffoldLeft }
   }
 
   // The state-text line: `building hut (#4): layer 2 of 3, 41 of 96 blocks, 3 unreachable, need 12 cobblestone` /
@@ -101,15 +114,17 @@ export class BlueprintBook {
     const unr = unreachable ?? p.blocked
     const short = Object.entries(p.needs).map(([item, n]) => [item, n - (inventory[item] || 0)]).filter(([, n]) => n > 0)
     return `${head}${seg}layer ${p.layer} of ${p.layers}, ${p.blocksDone} of ${p.blocksTotal} blocks` +
-      `${unr ? `, ${unr} unreachable` : ''}${short.length ? `, need ${short.map(([item, n]) => `${n} ${pretty(item)}`).join(', ')}` : ''}`
+      `${unr ? `, ${unr} unreachable` : ''}${short.length ? `, need ${short.map(([item, n]) => `${n} ${pretty(item)}`).join(', ')}` : ''}` +
+      `${p.scaffoldLeft ? `, removing scaffold (${p.scaffoldLeft})` : ''}`
   }
 
-  toJSON () { return { next: this.next, blueprints: Object.fromEntries(this.blueprints) } }
+  toJSON () { return { next: this.next, blueprints: Object.fromEntries(this.blueprints), scaffolds: Object.fromEntries([...this.scaffolds].filter(([, l]) => l.length)) } }
 
   static fromJSON (j) {
     const b = new BlueprintBook()
     b.next = j?.next ?? 1
     for (const [id, bp] of Object.entries(j?.blueprints ?? {})) b.blueprints.set(id, bp)
+    for (const [id, list] of Object.entries(j?.scaffolds ?? {})) b.scaffolds.set(id, [...list])
     return b
   }
 }
@@ -117,7 +132,8 @@ export class BlueprintBook {
 function nameOf (bp) { return pretty(bp.template ?? bp.title ?? 'blueprint') }
 
 // The goal layer's accessor (goals.registerBlueprintAccessor) over a book: progress(id, obs) reads the world through
-// blockAt and adds `surface` (isSurface(bp, obs): the runner's sky-light test of the anchor).
+// blockAt and adds `surface` (isSurface(bp, obs): the runner's sky-light test of the anchor). The runner hands the same
+// accessor to the motor (motor.blueprints) for build_blueprint, which also uses scaffold(id).
 export function bookAccessor (book, { blockAt, isSurface = () => false }) {
   return {
     get: id => book.get(id),
@@ -126,5 +142,6 @@ export function bookAccessor (book, { blockAt, isSurface = () => false }) {
       return p && { ...p, surface: !!isSurface(book.get(id), obs) }
     },
     advance: id => book.advance(id),
+    scaffold: id => book.scaffold(id),
   }
 }

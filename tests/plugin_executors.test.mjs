@@ -169,3 +169,27 @@ test('build(bp<n>) offers build_blueprint(bp<n>) through the registry and the ac
     assert.equal(GOAL_KINDS.build.teacher(obs, id, 1), `build_blueprint(${id})`)
   } finally { registerOptionProvider(null); registerBlueprintAccessor(null) }
 })
+
+test('a build goal whose blocks are all placed stays active while its scaffold stands, offering build_blueprint', async () => {
+  const reg = new PluginRegistry({ dir: DIR })
+  await reg.load()
+  const book = new BlueprintBook(), w = buildWorld()
+  const id = book.add(makeBlueprint('pillar', { h: 2 }, 'cobblestone', { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' }))
+  for (const c of buildWork(book.get(id), w.blockAt).work) w.set(c.pos, 'cobblestone')
+  const s1 = { x: 1, y: 64, z: -2, item: 'dirt', layer: 1, segment: 0 }
+  book.scaffold(id).push(s1); w.set(s1, 'dirt')
+  registerOptionProvider((obs, goal) => reg.optionsFor(obs, goal))
+  registerBlueprintAccessor(bookAccessor(book, { blockAt: w.blockAt }))
+  try {
+    const obs = baseObs()
+    assert.equal(GOAL_KINDS.build.done(obs, id, 1), false)
+    assert.ok(GOAL_KINDS.build.filter(obs, id, options(obs), 1).some(o => o.id === `build_blueprint(${id})`))
+    assert.equal(GOAL_KINDS.build.teacher(obs, id, 1), `build_blueprint(${id})`)
+    w.set(s1, 'air')
+    assert.equal(GOAL_KINDS.build.done(obs, id, 1), true)
+    // a stub accessor: the goal follows progress().finished, whatever keeps it false
+    registerBlueprintAccessor({ get: () => book.get(id), progress: () => ({ ...book.progress(id, w.blockAt), finished: false, scaffoldLeft: 1 }), advance: () => null })
+    assert.equal(GOAL_KINDS.build.done(obs, id, 1), false)
+    assert.equal(GOAL_KINDS.build.teacher(obs, id, 1), `build_blueprint(${id})`)
+  } finally { registerOptionProvider(null); registerBlueprintAccessor(null) }
+})

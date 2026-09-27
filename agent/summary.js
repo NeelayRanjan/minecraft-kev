@@ -45,7 +45,7 @@ export function hurtFromDamageEvent(packet, entities) {
   return { source: { id: e.id, type: e.type, name: e.name || e.username || 'unknown', pos: { x: e.position.x, y: e.position.y, z: e.position.z } } }
 }
 export class EpisodeMemory {
-  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null; this.spawn = null; this.lastHealth = null; this.attacker = null; this.hurts = []; this.scaffold = {} }
+  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null; this.spawn = null; this.lastHealth = null; this.attacker = null; this.hurts = [] }
   noteHurt(h) { this.hurts.push(h) }   // from the runner's damage_event listener; summarize() consumes them
   sawIron(pos, t, where = null) { this.ironSeen = { pos: { x: pos.x, y: pos.y, z: pos.z }, t, where } }
   saw(kind, pos, t) { this.seen[kind] = { pos: { x: pos.x, y: pos.y, z: pos.z }, t } }

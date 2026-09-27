@@ -46,6 +46,8 @@ export function fleeTargetPos({ hostilePos, attacker, livePlayerPos } = {}) {
   return hostilePos ?? livePlayerPos ?? attacker?.pos ?? null
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
+const MIN_STEP_MS = 2000   // a building step (a walk, a dig, a placement) is not started with less time left than this
+const PLACE_MS = 6000      // a placement: equip + placeBlock (its server-reply wait is 5 s)
 const ok = detail => ({ result: 'ok', detail })
 const fail = (result, detail) => ({ result, detail })
 
@@ -1434,9 +1436,14 @@ export class Motor {
   // ---- building: reach spots, placement, scaffolding (the geometry is agent/reach.js; agent/plugins/build_blueprint.mjs
   // drives these). Positions are plain { x, y, z } block coordinates. Walks use walkMovements (no digging, no towers,
   // no scaffolding by the pathfinder: it would break or bury the build).
+  //
+  // Time budget: `reserveMs` (set per run by the caller on its run context; 0 by default) is kept free before the
+  // deadline. timeLeft() is what remains before that reserve; every walk is capped at min(15 s, timeLeft()), and a step
+  // with under MIN_STEP_MS left is not started (why 'no_time'), so a step never runs into the run's deadline.
   blockAtP(p) { return this.bot.blockAt(new Vec3(p.x, p.y, p.z)) }
   feetP() { const f = this.bot.entity.position.floored(); return { x: f.x, y: f.y, z: f.z } }
   eyeP() { const p = this.bot.entity.position; return { x: p.x, y: p.y + EYE, z: p.z } }
+  timeLeft() { return this.deadline - (this.reserveMs ?? 0) - Date.now() }
 
   // The cells the bot's body and every other player's body overlap (keys): never placed into.
   occupied() {
@@ -1445,23 +1452,24 @@ export class Motor {
     return occupiedCells([b.entity.position, ...others])
   }
 
-  // Walk to the best standing cell for placing into (mode 'place') or digging (mode 'dig') `pos`, trying the `tries`
-  // best ranked spots (reach.js reachSpots; `avoid` = the cells the build still has to fill). Returns the spot, or null
-  // with this.lastReach = 'unreachable' (no spot at all) | 'no_path' (spots, none walkable).
-  // `bad` (a Set of feet keys the caller keeps for its run) collects the spots no path reached, so they are not tried
-  // again for the next cell.
+  // Walk to the best standing cell for placing into (mode 'place') or digging (mode 'dig') `pos`: up to `tries` spots
+  // with a seen face, then up to `tries` hidden ones (reach.js reachSpots; `avoid` = the cells the build still has to
+  // fill; a region no path reaches, the ground under a staircase built from the top, holds many seen spots that all
+  // fail alike). `bad` (a Set of feet keys the caller keeps for its run) collects the spots no path reached, so they are
+  // not tried again. Returns the spot, or null with this.lastReach = 'unreachable' (no spot at all) | 'no_path' (spots,
+  // none walkable) | 'no_time' (the budget ran out first).
   async reachSpot(pos, { avoid = new Set(), mode = 'place', tries = 3, bad = new Set() } = {}) {
     const from = this.feetP()
     const spots = reachSpots(pos, p => this.blockAtP(p), { from, avoid, mode })
     this.lastReach = spots.length ? 'no_path' : 'unreachable'
-    // up to `tries` spots with a seen face, then up to `tries` hidden ones (a region no path reaches, the ground under
-    // a staircase built from the top, holds many seen spots that all fail alike)
     const open = spots.filter(s => !bad.has(cellKey(s.feet)))
     for (const s of [...open.filter(s => s.seen).slice(0, tries), ...open.filter(s => !s.seen).slice(0, tries)]) {
       if (cellKey(s.feet) === cellKey(this.feetP())) return s
+      if (this.timeLeft() < MIN_STEP_MS) { this.lastReach = 'no_time'; return null }
       try { await this.walkWithin(new goals.GoalBlock(s.feet.x, s.feet.y, s.feet.z)) } catch (e) {
         if (e instanceof Abort) throw e
         this.check()
+        if (e?.name === 'NoTime') { this.lastReach = 'no_time'; return null }
         bad.add(cellKey(s.feet))
         this.log(`reach ${cellKey(pos)}: cannot stand at ${cellKey(s.feet)} (${e?.name ?? e})`)
         continue
@@ -1473,14 +1481,18 @@ export class Motor {
     return null
   }
 
-  // walkTo with a time cap (a GoalBlock the bot cannot settle in, a step edge it slides off, replans forever): past
-  // `ms` the goal is dropped and a Timeout is thrown (the caller treats it like NoPath).
+  // walkTo capped at min(ms, timeLeft()): past the cap the goal is dropped and a Timeout is thrown (a GoalBlock the bot
+  // cannot settle in, a step edge it slides off, replans forever; the caller treats it like NoPath). NoTime when the
+  // budget is already under MIN_STEP_MS; a walk cut by the budget (not by its own 15 s) throws NoTime too.
   async walkWithin(goal, ms = 15_000) {
+    const cap = Math.min(ms, this.timeLeft())
+    const err = name => { const e = new Error(`no arrival in ${(cap / 1000).toFixed(1)} s`); e.name = name; return e }
+    if (cap < MIN_STEP_MS) throw err('NoTime')
     let timer
     try {
       await Promise.race([
         this.walkTo(goal),
-        new Promise((_, rej) => { timer = setTimeout(() => { try { this.bot.pathfinder.setGoal(null) } catch {} const e = new Error(`no arrival in ${ms / 1000} s`); e.name = 'Timeout'; rej(e) }, ms) }),
+        new Promise((_, rej) => { timer = setTimeout(() => { try { this.bot.pathfinder.setGoal(null) } catch {} rej(err(cap < ms ? 'NoTime' : 'Timeout')) }, cap) }),
       ])
     } finally { clearTimeout(timer) }
   }
@@ -1502,7 +1514,7 @@ export class Motor {
   // Place `itemName` so that block `blockName` fills `pos`: from where the bot stands when a face is within reach, else
   // from the best reach spot. Clears a non-solid block (grass, a flower) first; places into a liquid (displacing it).
   // Never into a cell a body occupies. { ok } | { ok: false, why: 'solid'|'occupied'|'no_materials'|'no_face'|
-  // 'unreachable'|'no_path'|'rejected'|'unloaded' }.
+  // 'unreachable'|'no_path'|'no_time'|'rejected'|'unloaded' }.
   async placeCell(pos, itemName, blockName = itemName, { avoid = new Set(), bad } = {}) {
     const blockAt = p => this.blockAtP(p)
     const cur = blockAt(pos)
@@ -1512,10 +1524,11 @@ export class Motor {
     if (!this.item(itemName)) return { ok: false, why: 'no_materials' }
     if (!faces(pos, blockAt).length) return { ok: false, why: 'no_face' }
     if (this.occupied().has(cellKey(pos))) return { ok: false, why: 'occupied' }
+    if (this.timeLeft() < PLACE_MS) return { ok: false, why: 'no_time' }
     let best = bestFace(blockAt, this.eyeP(), pos)
     if (!best || !best.seen) {
       const spot = await this.reachSpot(pos, { avoid, bad })
-      if (!spot && !best) return { ok: false, why: this.lastReach }
+      if (!spot && (!best || this.lastReach === 'no_time')) return { ok: false, why: this.lastReach }
       best = bestFace(blockAt, this.eyeP(), pos)
       if (!best) return { ok: false, why: 'unreachable' }
     }
@@ -1525,9 +1538,10 @@ export class Motor {
       best = bestFace(blockAt, this.eyeP(), pos)
       if (!best) return { ok: false, why: 'unreachable' }
     }
+    if (this.timeLeft() < PLACE_MS) return { ok: false, why: 'no_time' }
     const here = blockAt(pos)
     if (here && !isSolid(here) && !['air', 'cave_air', 'water', 'lava'].includes(here.name)) {
-      try { await this.digSafe(here); await this.bot.waitForTicks(2) } catch (e) { this.log(`place ${itemName} at ${cellKey(pos)}: clearing ${here.name}: ${e.message}`) }
+      try { await this.digSafe(here); await this.bot.waitForTicks(2) } catch (e) { if (e instanceof Abort) throw e; this.log(`place ${itemName} at ${cellKey(pos)}: clearing ${here.name}: ${e.message}`) }
       this.check()
     }
     const it = this.item(itemName)
@@ -1541,15 +1555,20 @@ export class Motor {
     return blockAt(pos)?.name === blockName ? { ok: true, seen: best.seen } : { ok: false, why: 'rejected' }
   }
 
-  // Dig the solid block at `pos` from a reach spot. { ok } | { ok: false, why: 'unbreakable'|'unreachable'|'no_path'|'rejected' }.
+  // Dig the solid block at `pos` from a reach spot. { ok } | { ok: false, why: 'unbreakable'|'unreachable'|'no_path'|
+  // 'no_time'|'rejected' }. Not started when the dig itself would not fit the budget.
   async digCell(pos, { avoid = new Set(), bad } = {}) {
     let blk = this.blockAtP(pos)
     if (!isSolid(blk)) return { ok: true }
     if (blk.hardness == null || blk.hardness < 0 || blk.name === 'bedrock') return { ok: false, why: 'unbreakable' }
+    const digMs = () => { try { return this.bot.digTime(this.blockAtP(pos)) } catch { return 1000 } }
+    if (this.timeLeft() < MIN_STEP_MS + digMs()) return { ok: false, why: 'no_time' }
     const e = this.eyeP(), c = { x: pos.x + 0.5, y: pos.y + 0.5, z: pos.z + 0.5 }
     const near = Math.hypot(e.x - c.x, e.y - c.y, e.z - c.z) <= REACH && lineOfSight(p => this.blockAtP(p), e, c, new Set([cellKey(pos)]))
     if (!near && !(await this.reachSpot(pos, { avoid, mode: 'dig', bad }))) return { ok: false, why: this.lastReach }
     blk = this.blockAtP(pos)
+    if (!isSolid(blk)) return { ok: true }
+    if (this.timeLeft() < 500 + digMs()) return { ok: false, why: 'no_time' }
     try { await this.digSafe(blk) } catch (err) { if (err instanceof Abort) throw err; this.log(`dig ${blk.name} at ${cellKey(pos)}: ${err.message}`) }
     await this.bot.waitForTicks(2)
     this.check()
@@ -1557,24 +1576,28 @@ export class Motor {
   }
 
   // Pillar up on a scaffold column (reach.js scaffoldPlan: outside every cell in `avoid`) until `pos` is in reach; every
-  // block placed is recorded in mem.scaffold[bpId] ({ x, y, z, item, layer, segment }). The plan, or null.
-  async scaffoldTo(pos, { bpId, avoid = new Set(), material, layer = null, segment = 0 } = {}) {
+  // block placed is pushed onto `list` (the blueprint's scaffold record, BlueprintBook.scaffold(id)) as
+  // { x, y, z, item, layer, segment }. { plan, placed } when the bot stands where the plan says, else { plan: null, placed }.
+  async scaffoldTo(pos, { list, avoid = new Set(), material, layer = null, segment = 0, max = Infinity } = {}) {
     const b = this.bot
+    let placed = 0
+    const none = { plan: null, placed: 0 }
     const plan = scaffoldPlan(pos, p => this.blockAtP(p), { from: this.feetP(), avoid })
-    if (!plan) { this.log(`scaffold for ${cellKey(pos)}: no column`); return null }
-    if (this.count(material) < plan.height) { this.log(`scaffold for ${cellKey(pos)}: ${plan.height} ${material} needed`); return null }
+    if (!plan) { this.log(`scaffold for ${cellKey(pos)}: no column`); return none }
+    if (this.count(material) < plan.height || plan.height > max) { this.log(`scaffold for ${cellKey(pos)}: ${plan.height} ${material} needed`); return none }
+    if (this.timeLeft() < MIN_STEP_MS + plan.height * 1200) return none
     if (cellKey(this.feetP()) !== cellKey(plan.base)) {
       try { await this.walkWithin(new goals.GoalBlock(plan.base.x, plan.base.y, plan.base.z)) } catch (e) {
         if (e instanceof Abort) throw e
-        this.check(); this.log(`scaffold for ${cellKey(pos)}: cannot reach ${cellKey(plan.base)} (${e?.name ?? e})`); return null
+        this.check(); this.log(`scaffold for ${cellKey(pos)}: cannot reach ${cellKey(plan.base)} (${e?.name ?? e})`); return none
       }
       this.check()
-      if (cellKey(this.feetP()) !== cellKey(plan.base)) return null
+      if (cellKey(this.feetP()) !== cellKey(plan.base)) return none
     }
     await this.centre(); this.check()
-    const list = ((this.mem.scaffold ??= {})[bpId] ??= [])
     for (let i = 0; i < plan.height; i++) {
       this.check()
+      if (this.timeLeft() < 1500) break
       const feet = this.feetP()
       const below = this.blockAtP(cellAt(feet, 0, -1, 0))
       const it = this.item(material)
@@ -1584,22 +1607,27 @@ export class Motor {
       b.setControlState('jump', true)
       const y0 = b.entity.position.y, tj = Date.now()
       while (b.entity.position.y < y0 + 1.0 && Date.now() - tj < 500) await sleep(20)   // the jump apex (~1.25 blocks)
-      try { await b.placeBlock(below, new Vec3(0, 1, 0)) } catch (e) { this.log(`scaffold at ${cellKey(feet)}: ${e.message}`) }
+      let accepted = false
+      try { await b.placeBlock(below, new Vec3(0, 1, 0)); accepted = true } catch (e) { this.log(`scaffold at ${cellKey(feet)}: ${e.message}`) }
       b.setControlState('jump', false)
-      if (this.blockAtP(feet)?.name === material) {
+      // the client may lag the server's update by a tick or two: record what the server accepted (a scaffold block
+      // missing from the record would stay in the world forever), else what the client comes to see within 5 ticks
+      for (let t = 0; t < 5 && !accepted && this.blockAtP(feet)?.name !== material; t++) await b.waitForTicks(1)
+      if (accepted || this.blockAtP(feet)?.name === material) {
         list.push({ ...feet, item: material, layer, segment })
-        this.log(`scaffold: placed ${material} at ${cellKey(feet)} for ${bpId}`)
+        placed++
+        this.log(`scaffold: placed ${material} at ${cellKey(feet)}`)
       } else break
       await sleep(400)
     }
     this.check()
-    return cellKey(this.feetP()) === cellKey(plan.feet) ? plan : null
+    return { plan: cellKey(this.feetP()) === cellKey(plan.feet) ? plan : null, placed }
   }
 
-  // Dig the scaffold of `bpId` top down (standing on it: dig the block underfoot and drop; else from a reach spot).
-  // Entries whose block is gone or changed are dropped. Returns the number dug; mem.scaffold[bpId] is deleted once empty.
-  async removeScaffold(bpId, { avoid = new Set(), keep = () => false } = {}) {
-    const list = this.mem.scaffold?.[bpId]
+  // Dig the scaffold blocks of `list` top down (standing on one: dig the block underfoot and drop; else from a reach
+  // spot, sharing the caller's `bad` spots). Entries whose block is gone or changed are dropped from the list; entries
+  // `keep` says are still needed stay. Stops when the budget runs out. Returns the number dug.
+  async removeScaffold(list, { avoid = new Set(), keep = () => false, bad } = {}) {
     if (!list?.length) return 0
     let removed = 0
     list.sort((a, b) => b.y - a.y)
@@ -1609,15 +1637,15 @@ export class Motor {
       if (keep(p)) { i++; continue }
       const blk = this.blockAtP(p)
       if (!blk || blk.name !== p.item) { list.splice(i, 1); continue }
+      if (this.timeLeft() < MIN_STEP_MS) break
       const f = this.feetP()
       const onTop = f.x === p.x && f.z === p.z && f.y === p.y + 1
       const r = onTop ? await this.digSafe(blk).then(() => ({ ok: !isSolid(this.blockAtP(p)) }), err => { if (err instanceof Abort) throw err; return { ok: false, why: err.message } })
-        : await this.digCell(p, { avoid })
+        : await this.digCell(p, { avoid, bad })
       if (onTop) await this.bot.waitForTicks(8)   // fall onto the next one
       if (r.ok && !isSolid(this.blockAtP(p))) { list.splice(i, 1); removed++; this.log(`scaffold: removed ${p.item} at ${cellKey(p)}`) }
-      else { this.log(`scaffold: cannot remove ${cellKey(p)} (${r.why ?? 'still there'})`); i++ }
+      else { this.log(`scaffold: cannot remove ${cellKey(p)} (${r.why ?? 'still there'})`); if (r.why === 'no_time') break; i++ }
     }
-    if (!list.length) delete this.mem.scaffold[bpId]
     return removed
   }
 
@@ -1629,6 +1657,7 @@ export class Motor {
       try { await this.walkWithin(new goals.GoalBlock(s.x, s.y, s.z)); this.check(); return true } catch (e) {
         if (e instanceof Abort) throw e
         this.check()
+        if (e?.name === 'NoTime') break
       }
     }
     this.log(`step clear: no spot outside the build near ${cellKey(f)}`)

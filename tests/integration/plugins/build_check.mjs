@@ -7,6 +7,8 @@
 //   (d) staircase_up(6): built, then the bot walks (no digging, no towers) from the anchor onto the top step
 //   (e) staircase_down(5) from the top of a 6-high pillar: built from the top, then the bot walks down to the lowest step
 //   (f) a 9-high pillar: the top cells need a scaffold column, which is dug away afterwards
+//   (g) the same, interrupted right after its first scaffold block: the book keeps it unfinished until a later call
+//       digs the scaffold
 // Usage: node tests/integration/plugins/build_check.mjs [--port 25576] [--seed plugins-build] [--only a,b,...]
 // PASS/FAIL; exit 0 on PASS.
 import { Vec3 } from 'vec3'
@@ -20,19 +22,20 @@ const { goals } = pathfinderPkg
 const args = argsOf(process.argv)
 const only = args.only ? new Set(String(args.only).split(',')) : null
 const A = await startArena({ port: Number(args.port ?? 25576), seed: args.seed ?? 'plugins-build', minutes: 30 })
-const { X, Y, Z, cmd, check, motor, obs, bot, log, mem } = A
+const { X, Y, Z, cmd, check, motor, obs, bot, log } = A
 
 const book = new BlueprintBook()
 motor.blueprints = book
 const blockAt = p => bot.blockAt(new Vec3(p.x, p.y, p.z))
 const k = p => `${p.x},${p.y},${p.z}`
 
-// Count the scaffold blocks the motor places (its log line), per blueprint.
+// Count the scaffold blocks the motor places (its log line), per blueprint (the case's current one).
 const scaffoldPlaced = new Map()
+let currentId = null
 const baseLog = motor.log
 motor.log = s => {
-  const m = /^scaffold: placed \w+ at (-?\d+,-?\d+,-?\d+) for (bp\d+)$/.exec(s)
-  if (m) { if (!scaffoldPlaced.has(m[2])) scaffoldPlaced.set(m[2], new Set()); scaffoldPlaced.get(m[2]).add(m[1]) }
+  const m = /^scaffold: placed \w+ at (-?\d+,-?\d+,-?\d+)$/.exec(s)
+  if (m && currentId) { if (!scaffoldPlaced.has(currentId)) scaffoldPlaced.set(currentId, new Set()); scaffoldPlaced.get(currentId).add(m[1]) }
   baseLog(s)
 }
 
@@ -43,6 +46,7 @@ async function arena () {
 }
 
 async function buildLoop (id, cap = 25) {
+  currentId = id
   let calls = 0, last = null
   while (calls < cap && !book.progress(id, blockAt).finished) {
     calls++
@@ -51,10 +55,11 @@ async function buildLoop (id, cap = 25) {
   return { calls, last, finished: !!book.progress(id, blockAt).finished }
 }
 
-// Every scaffold position the motor placed for `id` is gone (air or anything but dirt/cobblestone), and its memory is empty.
+// Every scaffold position the motor placed for `id` is gone (air or anything but dirt/cobblestone), and the book's
+// scaffold record for it is empty.
 function scaffoldGone (id) {
   const left = [...(scaffoldPlaced.get(id) ?? [])].map(s => s.split(',').map(Number)).filter(([x, y, z]) => ['dirt', 'cobblestone'].includes(blockAt({ x, y, z })?.name))
-  return left.length === 0 && !(mem.scaffold?.[id]?.length)
+  return left.length === 0 && book.scaffold(id).length === 0
 }
 // No dirt anywhere around the build (the arena is stone and air; dirt is only ever scaffold here).
 function dirtAround (bp) {
@@ -111,6 +116,7 @@ if (run('c')) {
   await arena()
   await cmd(`/give ${USER} cobblestone 80`); await cmd(`/give ${USER} dirt 20`)
   const id = book.add(hut(anchorHere()))
+  currentId = id
   const d0 = diff(book.get(id), blockAt).done
   const running = motor.run(`build_blueprint(${id})`, obs())
   let placedAtInterrupt = null
@@ -184,6 +190,26 @@ if (run('f')) {
   const used = scaffoldPlaced.get(id)?.size ?? 0
   const dirt = dirtAround()
   check(used > 0 && scaffoldGone(id) && dirt.length === 0, `(f) scaffold used (${used} blocks) and removed (dirt ${dirt.join(' ') || 'none'})`)
+}
+
+// (g) interrupted once a scaffold block stands: unfinished until the scaffold is gone, then complete and clean
+if (run('g')) {
+  log('--- (g) a 9-high pillar interrupted on its scaffold')
+  await arena()
+  await cmd(`/give ${USER} cobblestone 20`); await cmd(`/give ${USER} dirt 20`)
+  const id = book.add(makeBlueprint('pillar', { h: 9 }, 'cobblestone', { anchor: anchorHere(), facing: 'north' }))
+  currentId = id
+  const running = motor.run(`build_blueprint(${id})`, obs())
+  const poll = setInterval(() => { if (book.scaffold(id).length >= 1) motor.interrupt('test') }, 50)
+  const r0 = await running
+  clearInterval(poll)
+  const p0 = book.progress(id, blockAt)
+  log(`build_blueprint(${id}) -> ${r0.result} (${r0.detail ?? ''}); scaffoldLeft ${p0.scaffoldLeft}, finished ${p0.finished}`)
+  check(r0.result === 'interrupted' && p0.scaffoldLeft >= 1 && !p0.finished, `(g) interrupted with a scaffold standing: not finished (scaffoldLeft ${p0.scaffoldLeft})`)
+  const r = await buildLoop(id)
+  const c = complete(id)
+  const dirt = dirtAround()
+  check(r.finished && c.ok && scaffoldGone(id) && dirt.length === 0, `(g) resumed: complete and the scaffold removed in ${r.calls} calls (${c.text}; last ${r.last?.result} ${r.last?.detail ?? ''}; dirt ${dirt.join(' ') || 'none'})`)
 }
 
 await A.finish()
