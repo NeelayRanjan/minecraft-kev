@@ -29,6 +29,8 @@
 import mcDataFor from 'minecraft-data'
 import { PRODUCERS, RECIPES, WOODS } from './goals.js'
 import { TABLE_ITEMS } from './subtasks.js'
+import { materials, validate, cells } from './blueprints.js'
+import { TEMPLATES, templateMaterials } from './templates.js'
 
 const md = mcDataFor('1.20.4')
 
@@ -165,14 +167,50 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
   const want = Math.min(MAX_COUNT, n0)
   // Two walks: a dry one finds the tools the whole tree needs (the pickaxe tier of its MINE steps, a crafting table, a
   // furnace, shears); the real one acquires them first, in that order, then walks the materials.
-  const dry = walkTree(item, want, inventory, placed, null)
+  return walk([[item, want]], inventory, placed)
+}
+
+// The two walks over a list of targets [[item, n]] (in order), with extra tools to hoist (a dig's pickaxe tier).
+function walk(targets, inventory, placed, extra = {}) {
+  const dry = walkTree(targets, inventory, placed, null)
   if (dry.missing) return { steps: [], missing: [dry.missing], tree: dry.lines.join('\n') + `\n(missing: ${dry.missing})` }
-  const r = walkTree(item, want, inventory, placed, dry.tools)
+  const tools = { ...dry.tools, tier: Math.max(dry.tools.tier, extra.tier ?? 0) }
+  const r = walkTree(targets, inventory, placed, tools)
   if (r.missing) return { steps: [], missing: [r.missing], tree: r.lines.join('\n') + `\n(missing: ${r.missing})` }
   return { steps: r.steps, missing: [], tree: r.lines.join('\n') }
 }
 
-function walkTree(item, want, inventory, placed, hoist) {
+// Pricing a blueprint (agent/blueprints.js): a build takes its materials (a streamed template: every segment,
+// templates.templateMaterials) plus `foundationCount` blocks of its material (the runner counts foundation(bp, blockAt)),
+// through the same walk as expandItem (net of the inventory, tools hoisted), then the step build(<id>); a dig takes a
+// stone pickaxe unless one of that tier is held, then dig(<id>). The id is the book's (`bp<n>`), passed in as opts.id.
+// The blueprint is validated first: the 150-block cap only for free-form blueprints (no template); a streamed template
+// skips the size caps per segment as validate's `streamed` does. -> { steps, missing, tree } | { steps: [], missing: [],
+// reason } when the blueprint is refused.
+export function expandBlueprint(bp, inventory = {}, { placed = { crafting_table: false, furnace: false }, foundationCount = 0, id = bp?.id } = {}) {
+  const t = bp?.template && Object.hasOwn(TEMPLATES, bp.template) ? TEMPLATES[bp.template] : null
+  const v = validate(bp, { maxBlocks: t ? Infinity : 150, streamed: !!t?.streamed })
+  if (!v.ok) return { steps: [], missing: [], reason: v.reason }
+  const last = { kind: bp.kind, arg: id, count: null }
+  if (bp.kind === 'dig') {
+    const r = walk([], inventory, placed, { tier: TOOL_TIER.stone })
+    return r.missing.length ? r : { ...r, steps: [...r.steps, last] }
+  }
+  const mats = { ...(t?.streamed ? templateMaterials(bp.template, bp.params, bp.material) : materials(bp)) }
+  if (foundationCount > 0) {
+    const m = bp.material ?? majority(cells(bp).filter(c => c.layer === 0 && c.want !== 'air').map(c => c.want)) ?? Object.keys(mats)[0]
+    if (m) mats[m] = (mats[m] ?? 0) + foundationCount
+  }
+  const r = walk(Object.entries(mats), inventory, placed)
+  return r.missing.length ? r : { ...r, steps: [...r.steps, last] }
+}
+function majority(names) {
+  const n = new Map()
+  for (const x of names) n.set(x, (n.get(x) ?? 0) + 1)
+  return [...n].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+}
+
+function walkTree(targets, inventory, placed, hoist) {
   const tools = { tier: 0, crafting_table: false, furnace: false, shears: false }
   const inv = { ...inventory }
   const steps = [], index = new Map(), lines = []
@@ -269,6 +307,6 @@ function walkTree(item, want, inventory, placed, hoist) {
     if (hoist.furnace) station('furnace', 0)
     if (hoist.shears && !(held('shears') > 0)) need('shears', 1, 0) && give('shears', 1)
   }
-  need(item, want, 0)
+  for (const [item, want] of targets) if (!need(item, want, 0)) break
   return { steps, missing, lines, tools }
 }

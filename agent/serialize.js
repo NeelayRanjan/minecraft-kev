@@ -113,8 +113,10 @@ export function serialize(obs) {
   // Underground used to hide "in water": the bot drowned in flooded tunnels with the text saying only "underground".
   let where = obs.underground ? (obs.inWater ? 'underground, in water' : 'underground') : obs.inWater ? 'in water' : 'in the open'
   if (obs.inWater && (obs.oxygen ?? 20) <= 10) where += ', running out of air'
+  // obs.blueprintLine: the runner's BlueprintBook.line while a build(bp<n>) / dig(bp<n>) goal is on top (absent otherwise)
   const lines = [
     first,
+    obs.blueprintLine ? `${obs.blueprintLine}.` : null,
     describeTime(obs),
     `you: health ${Math.round(obs.health)}/20, food ${Math.round(obs.food)}/20, standing on ${item(obs.standingOn || 'air')} at y ${Math.round(obs.pos.y)}, ${where}, light ${Math.max(obs.skyLight ?? 0, obs.blockLight ?? 0)}.`,
     describeInventory(obs),

@@ -10,7 +10,7 @@
 // continues seamlessly (tunnel / strip_mine: forward SEGMENT; the staircases: forward SEGMENT and down/up SEGMENT).
 // turnSegment(bp, 'right') re-orients a dig segment 90 degrees from its start (the executor's liquid turn); null for
 // builds.
-import { isPlaceable } from './blueprints.js'
+import { isPlaceable, materials } from './blueprints.js'
 
 export const SEGMENT = 8
 const DEFAULT_MATERIAL = 'cobblestone'
@@ -296,6 +296,25 @@ export function nextSegment (bp) {
   if (!f || !bp.anchor) throw new Error('a streamed blueprint needs its anchor and facing to continue')
   const anchor = { x: bp.anchor.x + f[0] * SEGMENT, y: bp.anchor.y + t.shift * SEGMENT, z: bp.anchor.z + f[1] * SEGMENT }
   return { ...bp, ...t.segment(bp.params, i, bp.material, { anchorY: anchor.y }), anchor, segment: i }
+}
+
+// The materials a whole template takes: every segment of a streamed build (not only the one the blueprint holds), the
+// one body otherwise; {} for digs. Params are checked (defaults, clamps) as makeBlueprint does. Pure.
+export function templateMaterials (name, params, material) {
+  const t = Object.hasOwn(TEMPLATES, name) ? TEMPLATES[name] : null
+  if (!t) throw new Error(`unknown template ${name}`)
+  if (t.kind !== 'build') return {}
+  const chk = checkParams(name, t.material && material != null ? { ...params, material } : params)
+  if (!chk.ok) throw new Error(chk.reason)
+  const p = chk.params
+  const mat = t.material ? p.material : null
+  const out = {}
+  const n = t.streamed ? t.count(p, {}) : 1
+  for (let i = 0; i < n; i++) {
+    const body = t.streamed ? t.segment(p, i, mat, {}) : t.make(p, mat, {})
+    for (const [item, c] of Object.entries(materials(body))) out[item] = (out[item] ?? 0) + c
+  }
+  return out
 }
 
 // The same segment turned 90 degrees ('right' or 'left') about its anchor; the stream continues in the new facing.

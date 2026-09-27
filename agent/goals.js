@@ -91,6 +91,56 @@ function surfaceWork(id) {
 }
 const firstPlugin = (obs, goal, relevant) => pluginOptions(obs, goal).map(o => o.id).find(relevant) ?? null
 const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
+
+// Blueprints (build(<id>) / dig(<id>), ids bp<n>): the goal layer reads them through an accessor the runner registers
+// (a BlueprintBook read through the bot's world, agent/blueprint_book.js bookAccessor), so this module stays pure:
+//   get(id) -> blueprint | null ; progress(id, obs) -> BlueprintBook.progress fields + surface | null ; advance(id)
+// The default knows no blueprint. An accessor that throws reads as unknown (null).
+const NO_BLUEPRINTS = { get: () => null, progress: () => null, advance: () => null }
+let blueprints = NO_BLUEPRINTS
+export function registerBlueprintAccessor(acc) { blueprints = acc && typeof acc === 'object' ? { ...NO_BLUEPRINTS, ...acc } : NO_BLUEPRINTS }
+export const isBlueprintId = arg => /^bp\d+$/.test(arg ?? '')
+const bpGet = id => { try { return blueprints.get(id) ?? null } catch { return null } }
+const bpProgress = (id, obs) => { try { return blueprints.progress(id, obs) ?? null } catch { return null } }
+const bpName = id => { const bp = bpGet(id); return `${humanize(bp?.template ?? bp?.title ?? 'blueprint')} (#${id.slice(2)})` }
+// The night rule for blueprint work: a blueprint anchored on the surface (the accessor's sky-light test) is withheld at
+// dusk and night, wherever the bot is (running it would take the bot out), and its goal's stuck clock pauses.
+const bpNight = (obs, id) => isDuskOrNight(obs) && !!bpProgress(id, obs)?.surface
+// The producer options of one material: legacy items through the option layer's tables (wanted), MINE items through
+// the plugin's mine(<block>), SMELT products through smelt_item(<item>), any other item through craft_item(<item>).
+function materialIds(obs, item, n, legacy, plugin) {
+  if (PRODUCERS[item] || RECIPES[item]) wanted(obs, item, n, legacy)
+  else if (MINE[item]) for (const b of MINE[item].blocks) plugin.add(`mine(${b})`)
+  else if (SMELT[item]) plugin.add(`smelt_item(${item})`)
+  else plugin.add(`craft_item(${item})`)
+}
+const shortOf = (obs, needs) => Object.entries(needs || {}).map(([item, n]) => [item, n - have(obs, item)]).filter(([, n]) => n > 0)
+function bpStep(obs, id, verb) {
+  const p = bpProgress(id, obs)
+  if (!p) return { index: 1, of: 1, text: `${verb} ${id} (no progress yet)` }
+  const of = 10 * (p.segments || 1)
+  const text = `${verb} ${bpName(id)}: ${p.done} of ${p.total} cells`
+  if (p.finished) return { index: of + 1, of, text }
+  const within = p.total ? Math.floor(10 * p.done / p.total) : 0
+  return { index: Math.min(of, 1 + 10 * ((p.segment || 1) - 1) + within), of, text }
+}
+function buildFilter(obs, id, opts, g) {
+  const p = bpProgress(id, obs)
+  const legacy = new Set(moves(opts)), plugin = new Set()
+  for (const [item, n] of shortOf(obs, p?.needs)) materialIds(obs, item, n, legacy, plugin)
+  const mine = !bpNight(obs, id) ? `build_blueprint(${id})` : null
+  return keepWithPlugins(obs, goalOf('build', id, null, g), opts, legacy, x => x === mine || plugin.has(x))
+}
+function buildTeacher(obs, id, g) {
+  const p = bpProgress(id, obs)
+  if (!p || bpNight(obs, id)) return null
+  const short = shortOf(obs, p.layerNeeds)
+  if (!short.length) return `build_blueprint(${id})`
+  const [item] = short[0]
+  if (PRODUCERS[item] || RECIPES[item]) return acquire(obs, item)
+  if (MINE[item]) return firstPlugin(obs, goalOf('build', id, null, g), mineRelevant(item))
+  return SMELT[item] ? `smelt_item(${item})` : `craft_item(${item})`
+}
 // The legacy crafting and gathering options (a non-legacy craft keeps them: its ingredients may need them)
 const LEGACY_WORK = new Set(Object.values(PRODUCERS))
 const isLegacyWork = o => LEGACY_WORK.has(o.id) || o.name === 'craft'
@@ -207,7 +257,8 @@ const giver = g => g?.from ?? 'a player'
 
 // Each kind: done(obs, arg, count), filter(obs, arg, options, count), step(obs, arg, count) -> {index, of, text} with
 // index of+1 meaning done, teacher(obs, arg, count) -> id|null (optional), describe(obs, arg, count) -> text, stuckS
-// (seconds, or a function of (arg, count)). The two defaults are never pushed. The stack passes the goal entry as a
+// (seconds, or a function of (arg, count)), optionally paused(obs, arg) -> true while the kind's own night rule holds its
+// stuck clock. The two defaults are never pushed. The stack passes the goal entry as a
 // last argument to each (receive's describe reads g.from; the plugin filters hand it to the option provider).
 export const GOAL_KINDS = {
   chain: {
@@ -341,19 +392,40 @@ export const GOAL_KINDS = {
     describe: () => 'return to base',
     stuckS: 180,
   },
+  // build(portal_frame): the chain's portal frame (STRUCTURES). build(bp<n>): a blueprint of the book, done when its
+  // last segment has no work left; filter: its build_blueprint(<id>) option, the producers of the materials still
+  // short, moves; teacher: build when the working layer's materials are held, else the first short material's producer.
   build: {
-    done: (obs, s) => s === 'portal_frame' && !!obs.portalFrame,
-    filter: (obs, s, opts) => keepOnly(opts, new Set(['build_portal', 'light_portal', 'mine_obsidian', 'cast_obsidian', 'fill_bucket(water)',
-      'mine_gravel', ...opts.filter(o => o.name === 'craft').map(o => o.id), ...opts.map(o => o.id).filter(isMove)])),
+    done: (obs, s) => isBlueprintId(s) ? !!bpProgress(s, obs)?.finished : s === 'portal_frame' && !!obs.portalFrame,
+    filter: (obs, s, opts, count, g) => isBlueprintId(s) ? buildFilter(obs, s, opts, g)
+      : keepOnly(opts, new Set(['build_portal', 'light_portal', 'mine_obsidian', 'cast_obsidian', 'fill_bucket(water)',
+        'mine_gravel', ...opts.filter(o => o.name === 'craft').map(o => o.id), ...opts.map(o => o.id).filter(isMove)])),
     // obsidian held plus placed, 1..11 (12 = frame complete)
-    step: obs => {
+    step: (obs, s) => {
+      if (isBlueprintId(s)) return bpStep(obs, s, 'build')
       if (obs.portalFrame) return { index: 12, of: 11, text: 'portal frame built' }
       const n = Math.min(10, (obs.inventory?.obsidian || 0) + (obs.memory?.portal?.placed || 0))
       return { index: 1 + n, of: 11, text: `build a nether portal frame (${n} of 10 obsidian)` }
     },
-    teacher: obs => teacherSubtask(obs),   // the chain teacher's stage 4; outside it the pick is usually filtered out (null)
-    describe: () => 'build a nether portal frame',
-    stuckS: 600,
+    teacher: (obs, s, count, g) => isBlueprintId(s) ? buildTeacher(obs, s, g)
+      : teacherSubtask(obs),   // the chain teacher's stage 4; outside it the pick is usually filtered out (null)
+    describe: (obs, s) => isBlueprintId(s) ? `build ${bpName(s)}` : 'build a nether portal frame',
+    paused: (obs, s) => isBlueprintId(s) && bpNight(obs, s),
+    stuckS: s => isBlueprintId(s) ? 300 : 600,
+  },
+  // dig(bp<n>): a dig blueprint of the book; done when its last segment has no solid cell left (liquid cells are never
+  // work). Only its dig_blueprint(<id>) option and moves; withheld at dusk/night only when anchored on the surface.
+  dig: {
+    done: (obs, id) => !!bpProgress(id, obs)?.finished,
+    filter: (obs, id, opts, count, g) => {
+      const mine = !bpNight(obs, id) ? `dig_blueprint(${id})` : null
+      return keepWithPlugins(obs, goalOf('dig', id, null, g), opts, new Set(moves(opts)), x => x === mine)
+    },
+    step: (obs, id) => bpStep(obs, id, 'dig'),
+    teacher: (obs, id) => bpProgress(id, obs) && !bpNight(obs, id) ? `dig_blueprint(${id})` : null,
+    describe: (obs, id) => `dig ${bpName(id)}`,
+    paused: (obs, id) => bpNight(obs, id),
+    stuckS: 300,
   },
   // hunt(<drop>, n): arg is the drop (recipes.HUNT key: white_wool, leather, ...); the plugin's hunt(<mob>) options.
   hunt: {
@@ -436,8 +508,15 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
       if (FINDABLE_NOW.includes(arg)) return { ok: true }
       return { ok: false, reason: DECLARED_FINDABLE.includes(arg) ? 'no detector yet' : `cannot find ${arg}` }
     case 'build':
-      if (!STRUCTURES[arg]) return { ok: false, reason: `cannot build ${arg}` }
-      return STRUCTURES[arg].executor ? { ok: true } : { ok: false, reason: 'no executor yet' }
+    case 'dig': {
+      if (!isBlueprintId(arg)) {
+        if (kind === 'dig' || !STRUCTURES[arg]) return { ok: false, reason: `cannot ${kind} ${arg}` }
+        return STRUCTURES[arg].executor ? { ok: true } : { ok: false, reason: 'no executor yet' }
+      }
+      const bp = bpGet(arg)
+      if (!bp) return { ok: false, reason: `no blueprint ${arg}` }
+      return bp.kind === kind ? { ok: true } : { ok: false, reason: `${arg} is not a ${kind} blueprint` }
+    }
     case 'hunt':
       if (!HUNT[arg]) return { ok: false, reason: 'hunt needs a hunted drop (white_wool, leather, ...)' }
       return countOk(count) ? { ok: true } : BAD_COUNT
@@ -569,7 +648,7 @@ export class GoalStack {
       if (g.best == null || s > g.best || g.progressT == null) {
         if (g.best == null || s > g.best) g.best = s
         g.progressT = t
-      } else if (g.lastT != null && nightPaused(obs, K.filter(obs, g.arg, options(obs), g.count, g))) g.progressT += t - g.lastT   // the night rule: the clock stands still
+      } else if (g.lastT != null && (K.paused?.(obs, g.arg, g) || nightPaused(obs, K.filter(obs, g.arg, options(obs), g.count, g)))) g.progressT += t - g.lastT   // the night rule: the clock stands still
       g.lastT = t
       if (t - g.progressT >= stuckOf(g.kind, g)) { this.pop('stuck'); events.push({ kind: 'goal_failed', goal: pub(g), t, reason: 'stuck' }); continue }
       break

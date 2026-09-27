@@ -174,7 +174,8 @@ function applyPlanAnswer(action, answer, why, obs) {
   return { kind: 'say', id: null, text }
 }
 
-export const PUSHABLE_KINDS = Object.keys(GOAL_KINDS).filter(k => k !== 'chain' && k !== 'iron_pickaxe')
+// dig(<bp id>) arrives through the blueprint plans only (the leader never names a blueprint id), so the schema is unchanged
+export const PUSHABLE_KINDS = Object.keys(GOAL_KINDS).filter(k => k !== 'chain' && k !== 'iron_pickaxe' && k !== 'dig')
 const STEP_SCHEMA = { type: 'object', properties: { kind: { type: 'string', enum: PUSHABLE_KINDS }, arg: { type: 'string' }, count: { type: 'integer' }, from: { type: 'string' } }, required: ['kind'] }
 
 export const leaderSchema = (options, { goals = false } = {}) => goals ? {

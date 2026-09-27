@@ -198,3 +198,50 @@ test('legacy ore gathers hoist the pickaxe: diamond_sword from nothing crafts th
   assert.ok(!ids(expandItem('flint', 1, {})).some(s => s.includes('pickaxe')), 'flint needs no pickaxe')
   assert.deepEqual(ids(expandItem('iron_nugget', 9, { stone_pickaxe: 1 })), ['gather(iron_ingot, 1)', 'craft_item(iron_nugget, 9)'])
 })
+
+// ---- Blueprints Task 3: pricing a blueprint ------------------------------------------------------------------------
+import { expandBlueprint } from '../agent/recipes.js'
+import { makeBlueprint, templateMaterials } from '../agent/templates.js'
+
+const at = { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' }
+const bsteps = r => r.steps.map(s => `${s.kind}(${s.arg}, ${s.count})`)
+
+test('expandBlueprint: a 5x5x3 cobblestone hut with 10 held is 61 cobblestone then the build', () => {
+  const hut = makeBlueprint('hut', { w: 5, d: 5, h: 3 }, 'cobblestone', at)
+  const r = expandBlueprint(hut, { cobblestone: 10 }, { id: 'bp4' })
+  assert.deepEqual(bsteps(r), ['gather(cobblestone, 61)', 'build(bp4, null)'])
+  assert.deepEqual(r.missing, [])
+  assert.deepEqual(bsteps(expandBlueprint(hut, { cobblestone: 10 }, { id: 'bp4', foundationCount: 3 })), ['gather(cobblestone, 64)', 'build(bp4, null)'])
+  assert.deepEqual(bsteps(expandBlueprint(hut, { cobblestone: 80 }, { id: 'bp4' })), ['build(bp4, null)'])
+})
+
+test('expandBlueprint: a streamed staircase is priced over all its segments', () => {
+  assert.deepEqual(templateMaterials('staircase_up', { height: 12, width: 1 }, 'cobblestone'), { cobblestone: 23 })
+  assert.deepEqual(templateMaterials('room', { w: 3, d: 3, h: 2 }, null), {})
+  const st = makeBlueprint('staircase_up', { height: 12 }, 'cobblestone', at)
+  assert.deepEqual(bsteps(expandBlueprint(st, {}, { id: 'bp2' })), ['gather(cobblestone, 23)', 'build(bp2, null)'])
+})
+
+test('expandBlueprint: a glass material goes through the same walk (tools first, smelt, then the build)', () => {
+  const bp = { kind: 'build', legend: { g: 'glass' }, layers: [['gggg']], title: 'glass strip', source: 'leader' }
+  const l = bsteps(expandBlueprint(bp, {}, { id: 'bp3', placed: { crafting_table: true, furnace: true } }))
+  assert.deepEqual(l, ['gather(sand, 4)', 'smelt_item(glass, 4)', 'build(bp3, null)'])
+})
+
+test('expandBlueprint: a dig needs only a stone pickaxe', () => {
+  const room = makeBlueprint('room', { w: 3, d: 3, h: 2 }, null, at)
+  assert.deepEqual(bsteps(expandBlueprint(room, { stone_pickaxe: 1 }, { id: 'bp5' })), ['dig(bp5, null)'])
+  assert.deepEqual(bsteps(expandBlueprint(room, { iron_pickaxe: 1 }, { id: 'bp5' })), ['dig(bp5, null)'])
+  const l = bsteps(expandBlueprint(room, {}, { id: 'bp5' }))
+  before(l, 'craft_item(wooden_pickaxe, 1)', 'craft_item(stone_pickaxe, 1)')
+  assert.equal(l.at(-1), 'dig(bp5, null)')
+  assert.ok(!l.some(s => s.startsWith('build(')), l.join(' '))
+})
+
+test('expandBlueprint: the 150-block cap applies to free-form blueprints only', () => {
+  const big = { kind: 'build', legend: { '#': 'cobblestone' }, layers: [Array(9).fill('#########'), Array(9).fill('#########')], title: 'slab', source: 'leader' }
+  const r = expandBlueprint(big, {}, { id: 'bp6' })
+  assert.deepEqual(r, { steps: [], missing: [], reason: 'too many blocks: 162 (max 150)' })
+  const hut = makeBlueprint('hut', { w: 9, d: 9, h: 5 }, 'cobblestone', at)
+  assert.deepEqual(bsteps(expandBlueprint(hut, {}, { id: 'bp7' })), ['gather(cobblestone, 239)', 'build(bp7, null)'])
+})

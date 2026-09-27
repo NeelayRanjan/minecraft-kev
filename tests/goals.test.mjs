@@ -645,3 +645,141 @@ test('every producible item from stage 0: each step validates, or the plan is re
   }
   assert.ok(refused > 0)
 })
+
+// ---- Blueprints Task 3: build(<bp id>) and dig(<bp id>) through a registered accessor -----------------------------
+import { registerBlueprintAccessor } from '../agent/goals.js'
+
+// A stub accessor: blueprints by id, progress from the obs field `bpProgress` (the test's stand-in for the world).
+const BPS = { bp4: { id: 'bp4', kind: 'build', template: 'hut' }, bp5: { id: 'bp5', kind: 'dig', template: 'strip_mine' } }
+const prog = over => ({ done: 29, total: 100, missing: 71, blocked: 0, layer: 1, layers: 4, segment: 1, segments: 1, finished: false,
+  blocksDone: 0, blocksTotal: 71, needs: { cobblestone: 71 }, layerNeeds: { cobblestone: 15 }, surface: true, ...over })
+function withBlueprints(fn) {
+  registerBlueprintAccessor({ get: id => BPS[id] ?? null, progress: (id, obs) => BPS[id] ? obs.bpProgress?.[id] ?? null : null, advance: () => null })
+  try { fn() } finally { registerBlueprintAccessor(null) }
+}
+const bpObs = (p, over = {}) => chain({ inventory: { stone_pickaxe: 1 }, blocks: [...stone, ...logs], bpProgress: p, ...over })
+
+test('validateGoal: build and dig take a blueprint id the accessor knows; portal_frame unchanged', () => {
+  assert.equal(validateGoal({ kind: 'build', arg: 'bp4' }).reason, 'no blueprint bp4', 'the default accessor knows none')
+  withBlueprints(() => {
+    assert.deepEqual(validateGoal({ kind: 'build', arg: 'bp4' }), { ok: true })
+    assert.deepEqual(validateGoal({ kind: 'dig', arg: 'bp5' }), { ok: true })
+    assert.deepEqual(validateGoal({ kind: 'build', arg: 'portal_frame' }), { ok: true })
+    assert.equal(validateGoal({ kind: 'build', arg: 'house' }).reason, 'no executor yet')
+    assert.equal(validateGoal({ kind: 'build', arg: 'bp9' }).reason, 'no blueprint bp9')
+    assert.equal(validateGoal({ kind: 'dig', arg: 'bp4' }).reason, 'bp4 is not a dig blueprint')
+    assert.equal(validateGoal({ kind: 'build', arg: 'bp5' }).reason, 'bp5 is not a build blueprint')
+    assert.equal(validateGoal({ kind: 'dig', arg: 'portal_frame' }).reason, 'cannot dig portal_frame')
+  })
+  assert.equal(GOAL_KINDS.build.stuckS('portal_frame'), 600)
+  assert.equal(GOAL_KINDS.build.stuckS('bp4'), 300)
+  assert.equal(GOAL_KINDS.dig.stuckS, 300)
+})
+
+test('build(bp4): done when the accessor says finished; filter keeps its option, the material producers and moves', () => {
+  withBlueprints(() => {
+    const K = GOAL_KINDS.build
+    assert.equal(K.done(bpObs({ bp4: prog() }), 'bp4'), false)
+    assert.equal(K.done(bpObs({ bp4: prog({ finished: true, missing: 0 }) }), 'bp4'), true)
+    assert.equal(K.done(bpObs({}), 'bp4'), false, 'no progress (unknown to the world): not done')
+    const s = new GoalStack({ goal: 'nether' })
+    s.push({ kind: 'build', arg: 'bp4', source: 'leader', t: 0 })
+    const o = bpObs({ bp4: prog() }, { inventory: { stone_pickaxe: 1, cobblestone: 5 } })
+    withProvider(['build_blueprint(bp4)', 'build_blueprint(bp7)', 'dig_blueprint(bp5)', 'mine(sand)'], () => {
+      const kept = s.filter(o, options(o)).map(x => x.id)
+      for (const id of ['build_blueprint(bp4)', 'mine_stone', 'wait']) assert.ok(kept.includes(id), `${id} in ${kept.join(' ')}`)
+      for (const id of ['build_blueprint(bp7)', 'dig_blueprint(bp5)', 'mine(sand)', 'gather_wood']) assert.ok(!kept.includes(id), id)
+      assert.equal(s.teacher(o), 'mine_stone', '5 held, the next layer takes 15: get cobblestone first')
+      const rich = bpObs({ bp4: prog() }, { inventory: { stone_pickaxe: 1, cobblestone: 20 } })
+      assert.equal(s.teacher(rich), 'build_blueprint(bp4)')
+      const clearing = bpObs({ bp4: prog({ layerNeeds: {} }) })   // the working layer only needs clearing
+      assert.equal(s.teacher(clearing), 'build_blueprint(bp4)')
+    })
+    // a material from the plugins: glass through smelt_item(glass), sand through mine(sand)
+    withProvider(['build_blueprint(bp4)', 'smelt_item(glass)', 'mine(sand)', 'mine(gravel)'], () => {
+      const g = bpObs({ bp4: prog({ needs: { glass: 4, sand: 2 }, layerNeeds: { glass: 4 } }) })
+      const kept = s.filter(g, options(g)).map(x => x.id)
+      for (const id of ['build_blueprint(bp4)', 'smelt_item(glass)', 'mine(sand)']) assert.ok(kept.includes(id), `${id} in ${kept.join(' ')}`)
+      assert.ok(!kept.includes('mine(gravel)') && !kept.includes('mine_stone'), kept.join(' '))
+      assert.equal(s.teacher(g), 'smelt_item(glass)')
+    })
+    assert.match(s.describe(o), /^Goal from the leader: build hut \(#4\)\. Then: /)
+  })
+})
+
+test('build(bp4) step: monotone over blocks and segments, done past the last', () => {
+  withBlueprints(() => {
+    const K = GOAL_KINDS.build
+    const st = p => K.step(bpObs({ bp4: p }), 'bp4')
+    assert.deepEqual(st(prog()), { index: 3, of: 10, text: 'build hut (#4): 29 of 100 cells' })
+    assert.equal(st(prog({ done: 64 })).index, 7)
+    assert.equal(st(prog({ done: 100, missing: 0, finished: true })).index, 11)
+    const seg = p => st(prog({ segments: 3, ...p })).index
+    assert.ok(seg({ segment: 1, done: 99 }) < seg({ segment: 2, done: 0 }))
+    assert.ok(seg({ segment: 2, done: 100 }) <= seg({ segment: 3, done: 0 }))
+    assert.deepEqual(K.step(bpObs({}), 'bp4'), { index: 1, of: 1, text: 'build bp4 (no progress yet)' })
+  })
+})
+
+test('night: a surface build is withheld at dusk/night and its stuck clock pauses; an underground one continues', () => {
+  withBlueprints(() => {
+    const s = new GoalStack({ goal: 'nether' })
+    s.push({ kind: 'build', arg: 'bp4', source: 'leader', t: 0 })
+    withProvider(['build_blueprint(bp4)'], () => {
+      const rich = { stone_pickaxe: 1, cobblestone: 64 }
+      const night = bpObs({ bp4: prog() }, { phase: 'night', inventory: rich })
+      assert.ok(!s.filter(night, options(night)).some(o => o.id === 'build_blueprint(bp4)'))
+      assert.notEqual(s.teacher(night), 'build_blueprint(bp4)')
+      const dusk = bpObs({ bp4: prog() }, { phase: 'dusk', inventory: rich })
+      assert.ok(!s.filter(dusk, options(dusk)).some(o => o.id === 'build_blueprint(bp4)'))
+      // the bot underground at night: a surface build is still withheld (running it would climb out)
+      const below = bpObs({ bp4: prog() }, { phase: 'night', underground: true, inventory: rich })
+      assert.ok(!s.filter(below, options(below)).some(o => o.id === 'build_blueprint(bp4)'))
+      const cave = bpObs({ bp4: prog({ surface: false }) }, { phase: 'night', underground: true, inventory: rich })
+      assert.ok(s.filter(cave, options(cave)).some(o => o.id === 'build_blueprint(bp4)'))
+      assert.equal(s.teacher(cave), 'build_blueprint(bp4)')
+      // the clock: the whole night without a pop, then 300 s by day
+      assert.deepEqual(s.update(night, 0), [])
+      assert.deepEqual(s.update(below, 500), [])
+      assert.deepEqual(s.update(night, 1000), [])
+      const day = bpObs({ bp4: prog() }, { inventory: rich })
+      assert.deepEqual(s.update(day, 1200), [])
+      assert.equal(s.update(day, 1300)[0]?.reason, 'stuck')
+    })
+  })
+})
+
+test('dig(bp5): keeps its option and moves only; teacher digs; withheld at night only on the surface', () => {
+  withBlueprints(() => {
+    const K = GOAL_KINDS.dig
+    assert.equal(K.done(bpObs({ bp5: prog({ finished: true }) }), 'bp5'), true)
+    assert.equal(K.done(bpObs({ bp5: prog() }), 'bp5'), false)
+    const s = new GoalStack({ goal: 'nether' })
+    s.push({ kind: 'dig', arg: 'bp5', source: 'leader', t: 0 })
+    withProvider(['dig_blueprint(bp5)', 'dig_blueprint(bp6)', 'build_blueprint(bp4)', 'mine(redstone_ore)'], () => {
+      const o = bpObs({ bp5: prog({ surface: false }) })
+      const kept = s.filter(o, options(o)).map(x => x.id)
+      assert.ok(kept.includes('dig_blueprint(bp5)') && kept.includes('wait'), kept.join(' '))
+      for (const id of ['dig_blueprint(bp6)', 'build_blueprint(bp4)', 'mine(redstone_ore)', 'mine_stone', 'gather_wood']) assert.ok(!kept.includes(id), id)
+      assert.equal(s.teacher(o), 'dig_blueprint(bp5)')
+      assert.match(s.describe(o), /^Goal from the leader: dig strip mine \(#5\)\./)
+      const nightDeep = bpObs({ bp5: prog({ surface: false }) }, { phase: 'night', underground: true })
+      assert.equal(s.teacher(nightDeep), 'dig_blueprint(bp5)', 'underground digging continues at night')
+      const nightTop = bpObs({ bp5: prog({ surface: true }) }, { phase: 'night' })
+      assert.ok(!s.filter(nightTop, options(nightTop)).some(x => x.id === 'dig_blueprint(bp5)'))
+      assert.equal(GOAL_KINDS.dig.paused(nightTop, 'bp5'), true)
+      assert.equal(GOAL_KINDS.dig.paused(nightDeep, 'bp5'), false)
+    })
+  })
+})
+
+test('the portal_frame build keeps its old filter, step and describe', () => {
+  const o = chain({ inventory: { ...allTools, water_bucket: 1, obsidian: 3 }, armor: armorKit })
+  const K = GOAL_KINDS.build
+  assert.equal(K.describe(o, 'portal_frame'), 'build a nether portal frame')
+  assert.deepEqual(K.step(o, 'portal_frame'), { index: 4, of: 11, text: 'build a nether portal frame (3 of 10 obsidian)' })
+  const kept = K.filter(o, 'portal_frame', options(o)).map(x => x.id)
+  assert.deepEqual(kept, ['explore_toward(down)', 'explore_toward(surface)', 'explore_toward(deep)', 'wait'])
+  const withObs = chain({ inventory: { ...allTools, water_bucket: 1, obsidian: 10, flint_and_steel: 1, cobblestone: 4 }, armor: armorKit })
+  assert.ok(K.filter(withObs, 'portal_frame', options(withObs)).some(x => x.id === 'build_portal'))
+})

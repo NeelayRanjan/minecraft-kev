@@ -107,3 +107,17 @@ test('in water reads even underground, and low air is said in words', () => {
   assert.match(you({ inWater: true, oxygen: 6 }), /, in water, running out of air, light/)
   assert.match(you({ underground: true, skyLight: 0 }), /, underground, light/)
 })
+
+test('a blueprint goal on top adds its line after the goal line; without one nothing changes', () => {
+  const o = baseObs({ goal: 'nether' })
+  const plain = serialize(o)
+  const line = 'building hut (#4): layer 2 of 3, 41 of 96 blocks, 3 unreachable, need 12 cobblestone'
+  const lines = serialize({ ...o, blueprintLine: line }).split('\n')
+  assert.equal(lines[1], `${line}.`)
+  assert.deepEqual([lines[0], ...lines.slice(2)], plain.split('\n'))
+  assert.equal(serialize({ ...o, blueprintLine: null }), plain)
+  assert.equal(serialize({ ...o, blueprintLine: '' }), plain)
+  const exp1 = serialize({ ...baseObs(), blueprintLine: 'digging strip mine (#5): segment 3 of 4, 22 of 30 cells' }).split('\n')
+  assert.equal(exp1[1], 'digging strip mine (#5): segment 3 of 4, 22 of 30 cells.')
+  assert.equal(exp1.length, 11)
+})
