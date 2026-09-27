@@ -31,17 +31,19 @@
 //             next dig. A cell with more than MAX_DROP non-solid cells straight below it is never dug (dropUnder:
 //             whoever stands in it afterwards falls into the cave or shaft under it).
 //
-// Results: ok (+n dug[, v ore mined][, k drops][, j liquid][, t needs_tool][, d over a drop][, turned right], segment i/n[, complete]) |
+// Drops under a TURNABLE dig (a staircase or tunnel over a cave): a floor block goes under the walkable cell first
+// (floorCell; a held filler, reach.scaffoldMaterial), else the segment turns right once, else the cell is refused.
+// Results: ok (+n dug[, f floor][, v ore mined][, k drops][, j liquid][, t needs_tool][, d over a drop][, turned right], segment i/n[, complete]) |
 // hit_liquid (x, y, z: <liquid>, +n dug) | needs_tool (<block>) | no_path (<n> cells) | unreachable (<n> cells over a
 // drop) | failed (no blueprint).
 // Started more than 12 m from the nearest cell still to work on, the call first walks toward it (blueprint_exec.approach).
 import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import { diff } from '../blueprints.js'
-import { FACES, REACH, at, isLiquid, key, standable } from '../reach.js'
+import { FACES, REACH, at, isLiquid, key, standable, scaffoldMaterial } from '../reach.js'
 import { turnSegment } from '../templates.js'
 import { MINE } from '../recipes.js'
-import { FINAL_MS, MARGIN_MS, approach, loadBlueprint } from '../blueprint_exec.js'
+import { FINAL_MS, MARGIN_MS, approach, inventoryOf, loadBlueprint } from '../blueprint_exec.js'
 
 const { goals } = pathfinderPkg
 
@@ -104,6 +106,15 @@ export function dropUnder (pos, blockAt, max = MAX_DROP) {
   return n
 }
 
+// The floor to bridge under a plan cell over a drop (TURNABLE digs: a staircase step or tunnel floor over a cave): the
+// cell right under it, when that cell is not itself in the plan (else the column's lower cell carries the floor) and
+// the drop under `pos` is deeper than MAX_DROP. null otherwise. Pure.
+export function floorCell (pos, blockAt, plan) {
+  const f = at(pos, 0, -1, 0)
+  if (plan.has(key(f)) || dropUnder(pos, blockAt) <= MAX_DROP) return null
+  return f
+}
+
 // True when a held item (or the hand) harvests `block`: no harvest tool needed, or one held. Never bedrock or blocks
 // with no hardness. Pure (prismarine-block's harvestTools: { itemId: true }).
 export function harvestable (block, items) {
@@ -144,7 +155,7 @@ const plugin = {
     const bot = motor.bot
     const blockAt = p => bot.blockAt(new Vec3(p.x, p.y, p.z))
     const dropsBefore = DROPS.reduce((n, d) => n + motor.count(d), 0)
-    let dug = 0, ores = 0, turned = 0, complete = false, stalled = false, hit = null
+    let dug = 0, ores = 0, turned = 0, floors = 0, complete = false, stalled = false, hit = null
     const skip = new Map()      // cell key -> why, for this call ('needs_tool' stays; reach failures are retried)
     const bad = new Set()       // standing spots no path reached (cleared after every dig: new spots open)
     const mined = []            // vein ore positions (their drops are collected at the end)
@@ -216,7 +227,28 @@ const plugin = {
         }
         const blk = blockAt(c.pos)
         if (!harvestable(blk, bot.inventory.items())) { skip.set(k, 'needs_tool'); continue }
-        if (overDrop(c.pos)) { skip.set(k, 'drop'); continue }
+        if (overDrop(c.pos)) {
+          // a staircase or tunnel over a cave (Task 7 fix round 2): a floor block under the walkable cell (a filler the
+          // plan does not need: dirt, cobblestone, ...), placed against the still-solid cell, then the cell is dug as
+          // usual; no filler or a failed placement: the segment turns right once; else the cell is refused
+          const f = TURNABLE.has(bp.template) ? floorCell(c.pos, blockAt, plan) : null
+          if (!f) { skip.set(k, 'drop'); continue }
+          const filler = scaffoldMaterial(inventoryOf(bot))
+          const pr = filler && typeof motor.placeCell === 'function' ? await motor.placeCell(f, filler, filler, { avoid: plan, bad }) : { ok: false, why: 'no_materials' }
+          if (pr.ok) { floors++; acted = true; motor.log(`dig ${arg}: floor ${filler} at ${key(f)} under ${k}`); break }
+          if (pr.why === 'no_time') { outOfTime = true; break }
+          const seg = bp.segment ?? 0
+          if (bp.turned !== seg) {
+            const t = { ...turnSegment(bp, 'right'), turned: seg }
+            const first = digOrder(digWork(t, blockAt).work, t)[0]
+            if (first && !liquidExposure(first.pos, blockAt)) {
+              acc.update(arg, t); turned++; skip.clear(); bad.clear(); acted = true
+              motor.log(`dig ${arg}: a drop under ${k} and no floor (${pr.why}), turning right (now ${t.facing})`)
+              break
+            }
+          }
+          skip.set(k, 'drop'); continue
+        }
         const r = await motor.digCell(c.pos, { avoid: plan, bad })
         if (r.ok) {
           dug++; acted = true
@@ -248,8 +280,9 @@ const plugin = {
       const name = blockAt(hit)?.name ?? 'liquid'
       return { result: 'hit_liquid', detail: `${hit.x}, ${hit.y}, ${hit.z}: ${name}, +${dug} dug${ores ? `, ${ores} ore mined` : ''}${turned ? ', turned right' : ''}` }
     }
-    if (dug + ores > 0 || turned || complete) {
+    if (dug + ores + floors > 0 || turned || complete) {
       const parts = [`+${dug} dug`]
+      if (floors) parts.push(`${floors} floor`)
       if (ores) parts.push(`${ores} ore mined`)
       if (drops > 0) parts.push(`${drops} drops`)
       if (w.liquid.length) parts.push(`${w.liquid.length} liquid`)

@@ -502,3 +502,53 @@ test('build_blueprint and dig_blueprint run: from 30 m away they walk toward the
   const r = await dig.run(dm, did)
   assert.equal(dwalks.length, 1); assert.equal(r.result, 'ok')
 })
+
+// Task 7 fix round 2: a dug staircase (or tunnel) over a cave gets a floor block under the walkable cell before it is
+// dug; with no filler held the segment turns right once; rooms and pits keep the drop refusal.
+import { floorCell } from '../agent/plugins/dig_blueprint.mjs'
+import { cells } from '../agent/blueprints.js'
+const stairsAt = () => makeBlueprint('stairs_down_to', { y: 56 }, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' })
+function caveUnderSteps (w, bp, rows) {
+  const low = new Map()
+  for (const c of cells(bp)) if (rows.includes(c.row)) { const k = `${c.col},${c.row}`; if (!low.has(k) || c.pos.y < low.get(k).y) low.set(k, c.pos) }
+  const floors = [...low.values()].map(p => ({ x: p.x, y: p.y - 1, z: p.z }))
+  for (const f of floors) for (let d = 0; d < 5; d++) w.set({ ...f, y: f.y - d }, 'air')
+  return floors
+}
+function placingMotor (book, w, items) {
+  const m = fakeMotor(book, w, items)
+  m.placed = []
+  m.count = name => items.filter(i => i.name === name).reduce((n, i) => n + (i.count ?? 1), 0)
+  m.placeCell = async (pos, item) => { w.set(pos, item); m.placed.push(wk(pos)); return { ok: true } }
+  return m
+}
+test('floorCell: the cell under a plan column\'s lowest cell, when that column has a drop and the cell is not in the plan', () => {
+  const w = digWorld(), bp = stairsAt()
+  const plan = new Set(cells(bp).map(c => wk(c.pos)))
+  const floors = caveUnderSteps(w, bp, [3, 4])
+  const lowest = cells(bp).filter(c => c.row === 3).sort((a, b) => a.pos.y - b.pos.y)[0]
+  assert.deepEqual(floorCell(lowest.pos, w.blockAt, plan), floors.find(f => f.z === lowest.pos.z))
+  const upper = cells(bp).filter(c => c.row === 3).sort((a, b) => b.pos.y - a.pos.y)[0]
+  assert.equal(floorCell(upper.pos, w.blockAt, plan), null, 'a cell with a plan cell under it: its floor is dug later, not bridged')
+})
+test('dig_blueprint run: stairs over a cave under steps 3-4 get floor blocks and the segment completes; no filler: turn right once', async () => {
+  const w = digWorld(), book = new BlueprintBook(), id = book.add(stairsAt())
+  const floors = caveUnderSteps(w, book.get(id), [3, 4])
+  const m = placingMotor(book, w, [{ name: 'stone_pickaxe', type: 1 }, { name: 'cobblestone', count: 20 }])
+  const r = await dig.run(m, id)
+  assert.equal(r.result, 'ok', r.detail); assert.match(r.detail, /complete/); assert.match(r.detail, /2 floor/)
+  assert.deepEqual(m.placed.sort(), floors.map(wk).sort())
+  assert.ok(floors.every(f => w.blockAt(f).name === 'cobblestone'))
+  // no filler: the segment turns right once, and digs on in the new facing
+  const w2 = digWorld(), b2 = new BlueprintBook(), id2 = b2.add(stairsAt())
+  caveUnderSteps(w2, b2.get(id2), [3, 4])
+  const m2 = placingMotor(b2, w2, [{ name: 'stone_pickaxe', type: 1 }])
+  const r2 = await dig.run(m2, id2)
+  assert.match(r2.detail, /turned right/); assert.equal(b2.get(id2).facing, 'east'); assert.equal(m2.placed.length, 0)
+  // a room keeps the refusal (no floor placed)
+  const w3 = digWorld(), b3 = new BlueprintBook(), id3 = b3.add(roomAt())
+  for (let y = 60; y <= 63; y++) w3.set({ x: 1, y, z: -2 }, 'air')
+  const m3 = placingMotor(b3, w3, [{ name: 'stone_pickaxe', type: 1 }, { name: 'cobblestone', count: 20 }])
+  const r3 = await dig.run(m3, id3)
+  assert.match(r3.detail, /1 over a drop/); assert.equal(m3.placed.length, 0)
+})
