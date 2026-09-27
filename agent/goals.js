@@ -52,6 +52,19 @@ const FIND_MATCH = {
 export const FIND_RANGE = 16
 export const NEAR_BASE = 6
 export const DIAMOND_LEVEL_Y = -50
+// go_to(player) lingers on arrival (live retry session: the bot left before a hand-off): LINGER_S seconds offering
+// linger(<name>) (stay close, pick up drops), then done; the player moving past LEFT_M restarts the approach.
+export const LINGER_S = 20, ARRIVE_M = 3, LEFT_M = 8
+// The linger state lives on the stack entry g (arrivedT). Without an entry (a pure caller) it is plain arrival.
+function arrivedFor(obs, who, g) {
+  const d = obs.players?.[who]?.dist
+  if (!g) return d != null && d <= ARRIVE_M
+  const t = obs.t ?? 0
+  if (g.arrivedT == null) { if (d != null && d <= ARRIVE_M) g.arrivedT = t; return false }
+  if (d == null || d > LEFT_M) { g.arrivedT = null; return false }
+  return t - g.arrivedT >= LINGER_S
+}
+const lingering = g => g?.arrivedT != null
 export const CLOSING_M = 4   // go_to(player): a distance decrease this large is progress for the stuck clock
 
 const humanize = s => s.replace(/_/g, ' ')
@@ -328,9 +341,9 @@ export const GOAL_KINDS = {
   },
   // go_to(player:<name>): walk to a player (the plugin's go_to_player(<name>)), done within 3 m (obs.players).
   go_to: {
-    done: (obs, place) => {
+    done: (obs, place, count, g) => {
       const who = playerOf(place)
-      if (who) return (obs.players?.[who]?.dist ?? Infinity) <= 3
+      if (who) return arrivedFor(obs, who, g)
       const y = goToY(place)
       if (y != null) return Math.abs((obs.pos?.y ?? 0) - y) <= 2
       return place === 'base' ? nearBase(obs) : place === 'surface' ? !obs.underground : (obs.pos?.y ?? 0) <= DIAMOND_LEVEL_Y
@@ -339,17 +352,18 @@ export const GOAL_KINDS = {
     // and explore_toward(surface) stays under low air (it is the way out of the water): never only wait.
     filter: (obs, place, opts, count, g) => {
       const who = playerOf(place)
-      if (who) return keepWithPlugins(obs, goalOf('go_to', place, count, g), opts, new Set(), id => id === `go_to_player(${who})`)
+      if (who) return keepWithPlugins(obs, goalOf('go_to', place, count, g), opts, new Set(), id => id === `${lingering(g) ? 'linger' : 'go_to_player'}(${who})`)
       const y = goToY(place)
       const above = y != null ? (obs.pos?.y ?? 0) > y : place !== 'surface'
       return keepOnly(opts, new Set(place === 'base' ? opts.map(o => o.id).filter(isMove)
         : [...(above ? ['explore_toward(deep)', 'explore_toward(down)'] : ['explore_toward(surface)']),
           ...(nightOnSurface(obs) ? NIGHT_REFUGES : []), ...((obs.oxygen ?? 20) <= LOW_AIR ? ['explore_toward(surface)'] : [])]))
     },
-    step: (obs, place) => {
+    step: (obs, place, count, g) => {
       const who = playerOf(place)
       if (who) {
         const d = obs.players?.[who]?.dist
+        if (lingering(g)) return { index: 5, of: 4, text: `with ${who}, waiting ${LINGER_S} s for anything to pick up` }
         if (d != null && d <= 3) return { index: 5, of: 4, text: `with ${who}` }
         return { index: d == null || d > 64 ? 1 : d > 32 ? 2 : d > 16 ? 3 : 4, of: 4, text: d == null ? `go to ${who} (not in sight)` : `go to ${who} (${Math.round(d)} m away)` }
       }
@@ -365,8 +379,8 @@ export const GOAL_KINDS = {
       if (cur <= DIAMOND_LEVEL_Y) return { index: 9, of: 8, text: 'at diamond level' }
       return { index: 1 + Math.max(0, Math.min(7, Math.floor((64 - cur) / 16))), of: 8, text: `go down to diamond level (y -58), now at y ${Math.round(cur)}` }
     },
-    teacher: (obs, place) => {
-      if (playerOf(place)) return `go_to_player(${playerOf(place)})`
+    teacher: (obs, place, count, g) => {
+      if (playerOf(place)) return `${lingering(g) ? 'linger' : 'go_to_player'}(${playerOf(place)})`
       const y = goToY(place)
       if (y != null) return (obs.pos?.y ?? 0) > y ? (counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)') : 'explore_toward(surface)'
       return place === 'base' ? 'return_to_base' : place === 'surface' ? 'explore_toward(surface)'

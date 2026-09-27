@@ -835,3 +835,31 @@ test('go_to(player): a distance decrease of 4 m since the last progress mark res
   for (let u = t; u <= t + 130; u += 10) e.push(...s.update(at(d), u))
   assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_failed')
 })
+
+// Live retry session: "come here" ended at 3 m and the bot walked off before the player could hand anything over. On
+// arrival the goal lingers LINGER_S (20 s) with the bot near the player, offering linger(<name>) (stay close, pick up
+// item drops within 6 m); then done. The player moving well away (over 8 m) restarts the approach.
+import { LINGER_S } from '../agent/goals.js'
+test('go_to(player): arrival lingers 20 s offering linger(<name>), then done; the player leaving restarts the approach', () => {
+  assert.equal(LINGER_S, 20)
+  const s = new GoalStack({ goal: 'nether' })
+  const at = (d, t) => chain({ t, players: { Steve: { dist: d, dir: 'north' } } })
+  s.push({ kind: 'go_to', arg: 'player:Steve', source: 'audience:Steve', t: 0, obs: at(30, 0) })
+  withProvider(['go_to_player(Steve)', 'linger(Steve)'], () => {
+    assert.deepEqual(s.update(at(30, 0), 0), [])
+    assert.ok(s.filter(at(30, 0), options(at(30, 0))).some(o => o.id === 'go_to_player(Steve)'))
+    assert.deepEqual(s.update(at(2.5, 10), 10), [], 'arrived: lingering, not done')
+    const o = at(2.5, 11)
+    const kept = s.filter(o, options(o)).map(x => x.id)
+    assert.ok(kept.includes('linger(Steve)') && !kept.includes('go_to_player(Steve)'), kept.join(' '))
+    assert.equal(s.teacher(o), 'linger(Steve)')
+    assert.match(s.step(o).text, /with Steve/)
+    assert.deepEqual(s.update(at(3.5, 20), 20), [], 'within 4 m still lingering')
+    assert.deepEqual(s.update(at(12, 25), 25), [], 'the player walked off: approach again')
+    assert.ok(s.filter(at(12, 26), options(at(12, 26))).some(o => o.id === 'go_to_player(Steve)'))
+    assert.deepEqual(s.update(at(2, 30), 30), [])
+    assert.deepEqual(s.update(at(2, 45), 45), [])
+    const e = s.update(at(2, 50), 50)
+    assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_done')
+  })
+})
