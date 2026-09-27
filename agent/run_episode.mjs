@@ -32,7 +32,7 @@ import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
-  requestStillWaiting, WAITING_FEEDBACK } from './leader.js'
+  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep } from './goals.js'
 import { PlanBook, planTitle, itemPlanTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
@@ -434,7 +434,8 @@ function leaderAnswered(snap, a, err) {
   const threatNear = snap.threatNear || threatNearIn(lastObs)
   // say guards: a say needs a shown request with a question and must not repeat one of the leader's last 5 lines
   let res = err ? { kind: 'error', id: null } : applyAnswer({ answer: a, currentId, askedCurrentId: askedIdFor(snap, currentId), offered: snap.offered, threatNear, recentResults: recent,
-    goalsEnabled: goalsOn, obs: lastObs, requests: snap.requests || [], recentSays: recentSayTexts(elog.events), botName: me })
+    goalsEnabled: goalsOn, obs: lastObs, requests: snap.requests || [], recentSays: recentSayTexts(elog.events), botName: me,
+    recentCannots: recentCannotTexts(elog.events) })
   // The night rule: gather, find and go_to(surface) at dusk/night on the surface wait for the morning (answered as cannot).
   if (res.kind === 'push_goal' && nightBlocksGoal(res.goal, lastObs)) res = { kind: 'cannot', id: null, why: `${goalPhrase(res.goal)} has to wait until morning`, night: true, goal: res.goal }
   // A pushed goal gets the plan steps' treatment (goals.routePush): counted kinds read the count as n more (held + n);
@@ -505,7 +506,7 @@ function leaderAnswered(snap, a, err) {
     say(`Dropping that${reply ? '.' : whyTail(a.why) || '.'}`)
   } else if (res.kind === 'cannot') {
     const why = res.night || res.guard ? res.why : a.why ?? null
-    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why, ...(res.night ? { reason: 'night', goal: res.goal } : {}),
+    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why, ...(reply && !res.night && !res.guard ? { reply } : {}), ...(res.night ? { reason: 'night', goal: res.goal } : {}),
       ...(res.guard ? { reason: res.guard, plan_id: res.plan_id, title: res.title } : {}) })
     say(res.night ? `Not until morning: ${goalPhrase(res.goal)} would mean working on the surface at night.`
       : res.guard ? `Can't do ${res.title} again yet (plan #${res.plan_id}), ${res.why}.` : `Can't do that yet${whyTail(reply || a.why) || '.'}`)

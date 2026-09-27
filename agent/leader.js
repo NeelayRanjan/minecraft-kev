@@ -136,13 +136,18 @@ export function askedIdFor(snap, currentId) {
 }
 
 export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [], goalsEnabled = false, obs = null,
-  requests = [], recentSays = [], botName = null }) {
+  requests = [], recentSays = [], botName = null, recentCannots = [] }) {
   const action = answer?.action ?? null
   if (!action) return { kind: 'invalid', id: null }
   if (goalsEnabled && GOAL_ACTIONS.includes(action)) {
     const why = typeof answer.why === 'string' ? answer.why : ''
     if (action === 'say') return guardSay(applyPlanAnswer(action, answer, why, obs), requests, recentSays, botName)
     if (PLAN_ACTIONS.includes(action)) return applyPlanAnswer(action, answer, why, obs)
+    // a cannot repeating one of the last SAY_MEMORY cannot texts word for word (the reply, else why) is refused
+    if (action === 'cannot') {
+      const text = typeof answer.reply === 'string' && answer.reply.trim() ? answer.reply : why
+      if (text.trim() && (recentCannots || []).slice(-SAY_MEMORY).some(x => sameText(x, text))) return { kind: 'invalid', id: 'cannot', reason: 'repeated reply' }
+    }
     if (action !== 'push_goal') return { kind: action, id: null, why }
     const raw = answer.goal
     if (!raw || typeof raw !== 'object') return { kind: 'invalid', id: action, reason: 'push_goal without a goal' }
@@ -246,9 +251,12 @@ const SUBTASK_OUTCOMES = new Set(['continue', 'override', 'stale', 'blocked'])
 export const requestStillWaiting = (settleAs, shown = []) => SUBTASK_OUTCOMES.has(settleAs) && (shown || []).some(r => !r.answered)
 // The leader's say texts from the runner's events, the last SAY_MEMORY.
 export const recentSayTexts = events => (events || []).filter(e => e?.kind === 'leader_say' && typeof e.text === 'string').map(e => e.text).slice(-SAY_MEMORY)
-// The FEEDBACK line for the next call: a refused say with requests shown (they stay pending), else null.
+// The leader's own cannot texts (the reply it sent, else why; not the code's night or blocked-plan refusals), the last SAY_MEMORY.
+export const recentCannotTexts = events => (events || []).filter(e => e?.kind === 'leader_cannot' && !e.reason)
+  .map(e => (typeof e.reply === 'string' && e.reply ? e.reply : e.why)).filter(x => typeof x === 'string' && x).slice(-SAY_MEMORY)
+// The FEEDBACK line for the next call: a refused say or a repeated cannot with requests shown (they stay pending), else null.
 export function leaderFeedback(res, hasRequests) {
-  if (res?.kind !== 'invalid' || res.id !== 'say' || !hasRequests) return null
+  if (res?.kind !== 'invalid' || (res.id !== 'say' && res.id !== 'cannot') || !hasRequests) return null
   return `your last answer was refused: ${res.reason}; act on the request with a goal, a plan or cannot`
 }
 

@@ -174,3 +174,18 @@ test('item 13: the goals prompt has the persona and a HOW I WORK block of at mos
   assert.ok(sys.includes(HOW_I_WORK))
   assert.doesNotMatch(LEADER_SYSTEM, /HOW I WORK|You are Kevin/)
 })
+
+// 14: cannot answers repeated word for word ("...but I can craft items, gather materials, or head to a spot").
+import { recentCannotTexts, leaderFeedback } from '../agent/leader.js'
+test('item 14: a cannot whose text repeats one of the last 5 cannot texts is invalid (repeated reply) and gets FEEDBACK', () => {
+  const base = { currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true, requests: q }
+  const said = ['I cannot do that, but I can craft items.']
+  const r = applyAnswer({ ...base, answer: { action: 'cannot', why: 'I Cannot do that, but I can craft items. ' }, recentCannots: said })
+  assert.deepEqual(r, { kind: 'invalid', id: 'cannot', reason: 'repeated reply' })
+  assert.equal(applyAnswer({ ...base, answer: { action: 'cannot', why: 'x', reply: 'I cannot do that, but I can craft items.' }, recentCannots: said }).kind, 'invalid', 'the reply is the text')
+  assert.equal(applyAnswer({ ...base, answer: { action: 'cannot', why: 'No village finder yet, sorry!' }, recentCannots: said }).kind, 'cannot')
+  assert.equal(settleKind(r, true), 'invalid', 'settles nothing')
+  assert.match(leaderFeedback(r, true), /refused: repeated reply/)
+  const ev = [{ kind: 'leader_cannot', why: 'a' }, { kind: 'leader_cannot', why: 'b', reply: 'B!' }, { kind: 'leader_cannot', why: 'night', reason: 'night' }, { kind: 'leader_say', text: 'c' }]
+  assert.deepEqual(recentCannotTexts(ev), ['a', 'B!'], 'the code\'s own refusals (night, blocked plan) do not count')
+})
