@@ -95,7 +95,8 @@ export function recentFailure(id, recentResults) {
 // - plan_dig {dig: {template, params, at_y}}: a dig template, checkParams without an anchor; at_y (optional) an integer
 //   in AT_Y (the runner walks there first) -> {template, params, at_y (or null)};
 // - plan_blueprint {blueprint: {title, kind, legend, layers}}: a free-form shape validated with the free-form caps and
-//   no anchor (connectivity does not depend on it) -> {blueprint: {title, kind, legend, layers, source: 'leader'}};
+//   no anchor (connectivity does not depend on it); a dig one holds only '.' and ' ' cells -> {blueprint: {title,
+//   kind, legend, layers, source: 'leader'}};
 //   invalid carries the title too, for the runner's BLUEPRINT FEEDBACK.
 export const PLAN_ACTIONS = ['plan_item', 'plan_steps', 'edit', 'say', 'plan_build', 'plan_dig', 'plan_blueprint']
 export const GOAL_ACTIONS = [...PLAN_ACTIONS, 'push_goal', 'pop_goal', 'cannot']
@@ -225,6 +226,7 @@ function applyBlueprintAnswer(answer, why) {
   const bp = { title, kind: b.kind, legend, layers: b.layers, source: 'leader' }
   const v = validate(bp, FREE_FORM)
   if (!v.ok) return bad(v.reason)
+  if (bp.kind === 'dig' && cells(bp).some(c => c.want !== 'air')) return bad('a dig blueprint can only contain . (dig) and spaces')
   if (!cells(bp).length) return bad('empty blueprint')
   return { kind: 'plan_blueprint', id: null, blueprint: bp, why }
 }
@@ -241,7 +243,7 @@ const BLUEPRINT_SCHEMA = {
   properties: {
     title: { type: 'string' },
     kind: { type: 'string', enum: ['build', 'dig'] },
-    legend: { type: 'object', propertyNames: { minLength: 1, maxLength: 1 }, additionalProperties: { type: 'string' } },
+    legend: { type: 'object', additionalProperties: { type: 'string' } },   // single-character keys: checked by validate
     layers: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
   },
   required: ['title', 'kind', 'layers'],

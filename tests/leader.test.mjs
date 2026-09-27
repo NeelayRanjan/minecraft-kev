@@ -792,7 +792,7 @@ test('blueprint answers: plan actions, schema enums split by template kind, inte
   assert.deepEqual(s.properties.dig.required, ['template'])
   const b = s.properties.blueprint
   assert.deepEqual(b.properties.kind.enum, ['build', 'dig'])
-  assert.deepEqual(b.properties.legend.additionalProperties, { type: 'string' })
+  assert.deepEqual(b.properties.legend, { type: 'object', additionalProperties: { type: 'string' } }, 'no propertyNames (grammar support uncertain)')
   assert.deepEqual(b.properties.layers, { type: 'array', items: { type: 'array', items: { type: 'string' } } })
   assert.deepEqual(b.required, ['title', 'kind', 'layers'])
   const plain = leaderSchema([{ id: 'wait' }])
@@ -858,6 +858,9 @@ test('applyAnswer plan_blueprint: validated with the free-form caps, no anchor; 
   assert.equal(ga({ action: 'plan_blueprint' }).reason, 'plan_blueprint without a blueprint')
   const dig = ga({ action: 'plan_blueprint', blueprint: { title: 'nook', kind: 'dig', layers: [['..'], ['..']] } })
   assert.equal(dig.kind, 'plan_blueprint'); assert.deepEqual(dig.blueprint.legend, {})
+  assert.equal(ga({ action: 'plan_blueprint', blueprint: { title: 'nook', kind: 'dig', legend: { '#': 'stone' }, layers: [['.#'], ['..']] } }).reason,
+    'a dig blueprint can only contain . (dig) and spaces')
+  assert.equal(ga({ action: 'plan_blueprint', blueprint: { title: 'nook', kind: 'dig', legend: { '#': 'stone' }, layers: [['. '], ['..']] } }).kind, 'plan_blueprint', 'an unused legend entry is harmless')
 })
 
 test('blueprint answers settle audience requests; an invalid one settles them as cannot', () => {
