@@ -337,7 +337,7 @@ export function goalStackView(stack, obs) {
   return {
     text: stack.describe(obs),
     pushed: stack.stack.slice(1).reverse().map(g => ({ id: g.id, kind: g.kind, arg: g.arg, count: g.count, source: g.source, t: g.t,
-      progress: GOAL_KINDS[g.kind].step(obs, g.arg, g.count).text })),
+      progress: GOAL_KINDS[g.kind].step(obs, g.arg, g.count, g).text })),
   }
 }
 

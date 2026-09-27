@@ -391,6 +391,12 @@ test('goalStackView: describe text plus one line per pushed goal, top first, wit
   assert.deepEqual(goalStackView(new GoalStack({ goal: 'nether' }), obsDay).pushed, [])
 })
 
+test('goalStackView: a receive goal names the giver in its progress', () => {
+  const st = new GoalStack({ goal: 'nether' })
+  st.push({ kind: 'receive', arg: 'redstone', count: 4, from: 'Spacers_Choice', source: 'audience:Spacers_Choice', t: 40 })
+  assert.match(goalStackView(st, obsDay).pushed[0].progress, /from Spacers_Choice/)
+})
+
 const goalCtx = {
   ...ctx,
   goalStack: { text: 'Goal from the audience (Steve): gather 8 cobblestone (have 3). Then: the chain', pushed: [

@@ -6,6 +6,9 @@ import { MINE, HUNT } from './recipes.js'
 
 const humanize = s => String(s).replace(/_/g, ' ')
 const ACTIVE = new Set(['pending', 'running'])
+// Active with a step left: a plan with no steps (expandItem of a held item) is done at add, and one whose cursor ran
+// past its steps (a restored book) is never the front.
+const live = p => ACTIVE.has(p.status) && p.cursor < p.steps.length
 
 export function planTitle(item, count = 1) {
   return count > 1 ? `${count} ${humanize(item)}` : humanize(item)
@@ -41,12 +44,13 @@ export class PlanBook {
   }
   add({ title, steps, source, t = null }) {
     const plan = { id: this.nextId++, title, source, steps: steps.map(s => ({ ...s })), cursor: 0, status: 'pending', t, end_t: null, reason: null }
+    if (!plan.steps.length) { plan.status = 'done'; plan.end_t = t }
     this.plans.push(plan)
     return plan
   }
-  active() { return this.plans.filter(p => ACTIVE.has(p.status)) }
+  active() { return this.plans.filter(live) }
   front() {
-    const p = this.plans.find(q => ACTIVE.has(q.status))
+    const p = this.plans.find(live)
     if (!p) return null
     p.status = 'running'
     return p
@@ -63,11 +67,12 @@ export class PlanBook {
     if (p.cursor >= p.steps.length) { p.status = 'done'; p.end_t = t; out.push({ kind: 'plan_done', plan_id: p.id, step_index: p.cursor - 1 }) }
   }
   // ev: a goal event, { kind: 'goal_done'|'goal_failed', plan_id, step_index, reason } or the goal stack's shape
-  // { kind, goal: { plan_id, step_index }, reason }. Events for another step than the current one are stale: ignored.
+  // { kind, goal: { plan_id, step_index }, reason }. Only the running (front) plan moves: events for another plan (a
+  // demoted one keeps its cursor and resumes that step at the front again) or another step are stale: ignored.
   advance(ev, t) {
     const planId = ev.plan_id ?? ev.goal?.plan_id, index = ev.step_index ?? ev.goal?.step_index
     const p = this.plans.find(q => q.id === planId)
-    if (!p || !ACTIVE.has(p.status) || index !== p.cursor) return []
+    if (!p || p.status !== 'running' || index !== p.cursor) return []
     if (ev.kind === 'goal_done') {
       const out = [{ kind: 'plan_step_done', plan_id: p.id, step_index: index }]
       this.#next(p, t, out)
@@ -81,7 +86,7 @@ export class PlanBook {
   }
   skip(t) {
     const p = this.front()
-    if (!p) return null
+    if (!p || p.cursor >= p.steps.length) return null
     const step = p.steps[p.cursor]
     step.skipped = true
     const out = []
