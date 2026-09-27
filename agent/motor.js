@@ -9,7 +9,7 @@ const { Movements, goals } = pathfinderPkg
 export const TIMEOUTS = { gather_wood: 60, mine_stone: 45, mine_coal: 60, mine_iron: 90, craft: 20, smelt: 90, explore_toward: 40,
   return_to_base: 60, eat: 10, build_shelter: 20, fight: 25, flee: 20, pillar_up: 10, wait: 3,
   mine_diamond: 120, mine_gravel: 60, mine_obsidian: 150, fill_bucket: 40, cast_obsidian: 60, build_portal: 90, light_portal: 20 }
-export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'failed', 'died']
+export const RESULTS = ['ok', 'no_path', 'timeout', 'target_gone', 'took_damage', 'interrupted', 'not_found', 'no_table', 'no_furnace', 'no_materials', 'no_fuel', 'needs_tool', 'failed', 'died']
 const INTERRUPT_RESULT = { threat: 'interrupted', took_damage: 'took_damage', died: 'died', drowning: 'interrupted' }
 const WAIT_IN_WATER_S = 12   // a wait that starts in water swims to shore (or floats) for this long instead of 3 s
 const IRON_Y = 16
@@ -664,7 +664,6 @@ export class Motor {
     },
 
     async craft(item) {
-      const md = this.md
       let target = item
       let logName = null
       if (item === 'planks') {
@@ -674,77 +673,20 @@ export class Motor {
         if (!logName) return fail('no_materials', 'no logs')
         target = logName.replace('_log', '_planks')
       } else if (item === 'sticks') target = 'stick'
-      const id = md.itemsByName[target]?.id
-      if (id == null) return fail('failed', `unknown item ${target}`)
+      if (this.md.itemsByName[target]?.id == null) return fail('failed', `unknown item ${target}`)
       let table = null
       if (TABLE_ITEMS.has(item)) {
-        table = await this.findStation('crafting_table', 'table')
-        if (!table) table = await this.placeNear('crafting_table')
-        if (!table) table = await this.findStation('crafting_table', 'table', true)
+        table = await this.craftingTable()
         if (!table) return fail('no_table')
-        this.mem.setBase('table', table.position)
       }
-      await this.settleInventory()
-      const recipes = this.bot.recipesFor(id, null, 1, table)
-      if (!recipes.length) return fail('no_materials', `no recipe for ${target} with the inventory`)
-      const times = item === 'planks' ? Math.min(this.count(logName), 2) : 1
-      const before = this.count(target)
-      // mineflayer's grabResult shift-clicks the output slot as soon as the grid is filled; if the server has not
-      // computed the result yet the click is a no-op and the ingredients come back when the window closes. Retry,
-      // but only after a long settle, since the resync burst can hide a success for a moment.
-      let got = 0
-      for (let attempt = 0; attempt < 3 && got <= 0; attempt++) {
-        this.check()
-        if (attempt) await this.settleInventory(6)
-        await this.bot.craft(recipes[0], times, table)
-        await this.bot.waitForTicks(3)
-        await this.settleInventory(6)
-        got = this.count(target) - before
-        if (got <= 0) { await this.bot.waitForTicks(20); got = this.count(target) - before }
-      }
-      if (got > 0 && ARMOR_SLOT[target]) {
-        await this.bot.equip(this.item(target), ARMOR_SLOT[target])
-        await this.settleInventory()
-        return ok(`+${got} ${target}, worn`)
-      }
-      return got > 0 ? ok(`+${got} ${target}`) : fail('failed', `craft ${target} produced nothing (table ${table ? `${table.name}@${table.position}` : 'none'})`)
+      return this.craftAny(target, () => item === 'planks' ? Math.min(this.count(logName), 2) : 1, table)
     },
 
     async smelt(item) {
-      const md = this.md
       if (item !== 'iron_ingot') return fail('failed', `cannot smelt ${item}`)
-      const raw = this.count('raw_iron')
-      if (raw === 0) return fail('no_materials', 'no raw iron')
-      let furnace = await this.findStation('furnace', 'furnace')
-      if (!furnace) furnace = await this.placeNear('furnace')
-      if (!furnace) furnace = await this.findStation('furnace', 'furnace', true)
-      if (!furnace) return fail('no_furnace')
-      this.mem.setBase('furnace', furnace.position)
-      await this.settleInventory()
-      const f = await this.bot.openFurnace(furnace)
-      let n = 0
-      try {
-        const slot = f.fuelItem()
-        const plan = fuelPlan(raw, this.bot.inventory.items(), slot ? { name: slot.name, count: slot.count } : null)
-        if (plan.smelt === 0) return fail('no_materials', 'no fuel')
-        if (plan.take) { await f.takeFuel(); await this.settleInventory() }
-        if (plan.put) await f.putFuel(md.itemsByName[plan.put.name].id, null, plan.put.count)
-        n = plan.smelt
-        await f.putInput(md.itemsByName.raw_iron.id, null, n)
-        const want = n + (f.outputItem()?.count || 0)
-        // ~10 s per item; a furnace that has stopped burning with output still missing will not finish (give up at 15 s idle)
-        let lastOut = -1, idleSince = Date.now()
-        while ((f.outputItem()?.count || 0) < want) {
-          this.check(); await sleep(1000)
-          const out = f.outputItem()?.count || 0
-          if (out !== lastOut || f.fuel > 0) { lastOut = out; idleSince = Date.now() }
-          else if (Date.now() - idleSince > 15_000) break
-        }
-        const got = f.outputItem()?.count || 0
-        if (got) await f.takeOutput()
-        if (got < n) return fail('no_materials', `fuel ran out: +${got} of ${n}`)
-      } finally { try { f.close() } catch {} }
-      return ok(`+${n} iron ingots`)
+      const r = await this.smeltAny('raw_iron', 'iron_ingot')
+      if (r.result === 'no_fuel') return fail('no_materials', 'no fuel')
+      return r.result === 'ok' ? ok(`+${r.count} iron ingots`) : r
     },
 
     async explore_toward(target, obs) {
@@ -1098,6 +1040,104 @@ export class Motor {
       for (let u = 0; u <= 1; u++) for (let v = 0; v <= 2; v++) cells.push(b.blockAt(axis === 'x' ? inside.offset(u, v, 0) : inside.offset(0, v, u))?.name)
       return fail('failed', `the portal did not light (inside: ${cells.join(' ')})`)
     },
+  }
+
+  // A crafting table in reach: the nearby or remembered one, else the carried one placed, else a walk to the remembered
+  // one after all (placing failed). Remembered as the base table. null when there is none.
+  async craftingTable() {
+    let table = await this.findStation('crafting_table', 'table')
+    if (!table) table = await this.placeNear('crafting_table')
+    if (!table) table = await this.findStation('crafting_table', 'table', true)
+    if (table) this.mem.setBase('table', table.position)
+    return table
+  }
+
+  // The same for a furnace.
+  async furnaceStation() {
+    let furnace = await this.findStation('furnace', 'furnace')
+    if (!furnace) furnace = await this.placeNear('furnace')
+    if (!furnace) furnace = await this.findStation('furnace', 'furnace', true)
+    if (furnace) this.mem.setBase('furnace', furnace.position)
+    return furnace
+  }
+
+  // Craft `target` (an exact item name) `times` times (a number, or a function read after the inventory settled) with
+  // the first recipe the inventory satisfies, at `table` (a crafting table block) or in the 2x2 grid when null. Worn
+  // at once when it is iron armor. Shared by craft(<item>) and the craft_item plugin.
+  async craftAny(target, times = 1, table = null) {
+    const id = this.md.itemsByName[target]?.id
+    if (id == null) return fail('failed', `unknown item ${target}`)
+    await this.settleInventory()
+    const recipes = this.bot.recipesFor(id, null, 1, table)
+    if (!recipes.length) return fail('no_materials', `no recipe for ${target} with the inventory`)
+    const n = typeof times === 'function' ? times() : times
+    const before = this.count(target)
+    // mineflayer's grabResult shift-clicks the output slot as soon as the grid is filled; if the server has not
+    // computed the result yet the click is a no-op and the ingredients come back when the window closes. Retry,
+    // but only after a long settle, since the resync burst can hide a success for a moment.
+    let got = 0
+    for (let attempt = 0; attempt < 3 && got <= 0; attempt++) {
+      this.check()
+      if (attempt) await this.settleInventory(6)
+      await this.bot.craft(recipes[0], n, table)
+      await this.bot.waitForTicks(3)
+      await this.settleInventory(6)
+      got = this.count(target) - before
+      if (got <= 0) { await this.bot.waitForTicks(20); got = this.count(target) - before }
+    }
+    if (got > 0 && ARMOR_SLOT[target]) {
+      await this.bot.equip(this.item(target), ARMOR_SLOT[target])
+      await this.settleInventory()
+      return ok(`+${got} ${target}, worn`)
+    }
+    return got > 0 ? ok(`+${got} ${target}`) : fail('failed', `craft ${target} produced nothing (table ${table ? `${table.name}@${table.position}` : 'none'})`)
+  }
+
+  // Smelt up to `max` of `inputName` (an exact item name) into `productName` at a furnace (findStation, placing a
+  // carried one), fuelled by fuelPlan. When the input is itself a fuel (logs for charcoal) the fuel is planned on what
+  // the input leaves. A foreign item in the input or output slot is taken out first. Returns ok with `count` (the
+  // items smelted), or no_materials (no input, fuel ran out), no_fuel, no_furnace. Shared by smelt(iron_ingot) and the
+  // smelt_item plugin.
+  async smeltAny(inputName, productName, max = Infinity) {
+    const md = this.md
+    const have = this.count(inputName)
+    if (have === 0) return fail('no_materials', `no ${inputName.replace(/_/g, ' ')}`)
+    const furnace = await this.furnaceStation()
+    if (!furnace) return fail('no_furnace')
+    await this.settleInventory()
+    const f = await this.bot.openFurnace(furnace)
+    let n = 0
+    try {
+      const s = f.fuelItem()
+      const slot = s ? { name: s.name, count: s.count } : null
+      const items = this.bot.inventory.items().map(i => ({ name: i.name, count: i.count }))
+      const without = k => { let left = k; return items.map(i => { if (i.name !== inputName) return i; const t = Math.min(left, i.count); left -= t; return { ...i, count: i.count - t } }) }
+      let want = Math.min(this.count(inputName), max)
+      let plan = fuelPlan(want, fuelValue(inputName) > 0 ? without(want) : items, slot)
+      // An input that is also fuel: smelt fewer until what is left of it (and the rest) covers them.
+      if (fuelValue(inputName) > 0) while (want > 0 && plan.smelt < want) { want--; plan = fuelPlan(want, without(want), slot) }
+      if (plan.smelt === 0) return fail('no_fuel')
+      const inSlot = f.inputItem(), outSlot = f.outputItem()
+      if (inSlot && inSlot.name !== inputName) { await f.takeInput(); await this.settleInventory() }
+      if (outSlot && outSlot.name !== productName) { await f.takeOutput(); await this.settleInventory() }
+      if (plan.take) { await f.takeFuel(); await this.settleInventory() }
+      if (plan.put) await f.putFuel(md.itemsByName[plan.put.name].id, null, plan.put.count)
+      n = plan.smelt
+      await f.putInput(md.itemsByName[inputName].id, null, n)
+      const target = n + (f.outputItem()?.count || 0)
+      // ~10 s per item; a furnace that has stopped burning with output still missing will not finish (give up at 15 s idle)
+      let lastOut = -1, idleSince = Date.now()
+      while ((f.outputItem()?.count || 0) < target) {
+        this.check(); await sleep(1000)
+        const out = f.outputItem()?.count || 0
+        if (out !== lastOut || f.fuel > 0) { lastOut = out; idleSince = Date.now() }
+        else if (Date.now() - idleSince > 15_000) break
+      }
+      const got = f.outputItem()?.count || 0
+      if (got) await f.takeOutput()
+      if (got < n) return fail('no_materials', `fuel ran out: +${got} of ${n}`)
+    } finally { try { f.close() } catch {} }
+    return { result: 'ok', detail: `+${n} ${productName}`, count: n }
   }
 
   nearestHostileEntity() {
