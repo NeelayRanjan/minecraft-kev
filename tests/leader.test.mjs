@@ -741,3 +741,24 @@ test('the plan events render in RECENT EVENTS', () => {
     't=15s cannot plan elytra: needs elytra (no way to get it)',
   ]) assert.ok(lines.includes(want), want)
 })
+
+import { settleKind } from '../agent/leader.js'
+test('settleKind: an invalid push or plan answer settles the shown requests as cannot; nothing is left for "not now"', () => {
+  for (const id of ['push_goal', 'plan_item', 'plan_steps', 'edit', 'say']) {
+    const res = applyAnswer({ ...g4, answer: id === 'plan_item' ? { action: id, item: { name: 'grass' } } : id === 'plan_steps' ? { action: id, steps: [] }
+      : id === 'edit' ? { action: id, edit: { op: 'drop' } } : id === 'say' ? { action: id, text: '' } : { action: id, goal: { kind: 'build', arg: 'house' } } })
+    assert.equal(res.kind, 'invalid', id); assert.equal(res.id, id)
+    assert.equal(settleKind(res, true), 'cannot', id)
+    assert.equal(settleKind(res, false), 'invalid', `${id} without requests`)
+    const b = new RequestBook()
+    const r = b.add({ t: 1, name: 'Steve', text: 'x' })
+    b.shown([r.id]); assert.deepEqual(b.settle([r.id], settleKind(res, true), 2), [])
+    b.shown([r.id]); assert.deepEqual(b.settle([r.id], settleKind(res, true), 3), [], 'a second call yields no "not now"')
+    assert.equal(r.answered.kind, 'cannot')
+  }
+  // other outcomes keep their kind: an invalid subtask id, continue, a valid plan answer
+  assert.equal(settleKind({ kind: 'invalid', id: 'mine_gold' }, true), 'invalid')
+  assert.equal(settleKind({ kind: 'invalid', id: null }, true), 'invalid')
+  assert.equal(settleKind({ kind: 'continue', id: null }, true), 'continue')
+  assert.equal(settleKind({ kind: 'plan_item', id: null }, true), 'plan_item')
+})

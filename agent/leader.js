@@ -404,6 +404,13 @@ export function parseChatMessage(jsonMsg, position, botName) {
 // (continue, override, blocked, stale, invalid, error) leaves it waiting; after maxShown such calls it is settled as
 // 'not_now' and returned so the runner can reply "Not now". Ids are 1, 2, ... in arrival order.
 export const REQUEST_ANSWERS = new Set(GOAL_ACTIONS)
+// How a call's outcome settles the audience requests it showed: an invalid goal-level answer (push_goal or a plan answer
+// the validator refused: an unknown item, a bad step, an edit without its plan_id, an empty say) is replied to with the
+// reason, so it settles them as cannot; every other outcome settles as its own kind.
+const REPLIED_INVALID = new Set(['push_goal', ...PLAN_ACTIONS])
+export function settleKind(res, hasRequests) {
+  return res?.kind === 'invalid' && hasRequests && REPLIED_INVALID.has(res.id) ? 'cannot' : res?.kind ?? null
+}
 export class RequestBook {
   constructor({ maxShown = 2 } = {}) { this.maxShown = maxShown; this.all = []; this.nextId = 1 }
   add({ t, name, text }) { const r = { id: this.nextId++, t, name, text, shown: 0, answered: null }; this.all.push(r); return r }

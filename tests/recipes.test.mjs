@@ -33,9 +33,9 @@ test('oak stairs from held planks with a placed table: one craft', () => {
   assert.deepEqual(ids(expandItem('oak_stairs', 4, { oak_planks: 6 }, TABLE)), ['craft_item(oak_stairs, 4)'])
 })
 
-test('oak stairs without a table: planks for the table, the table, then the stairs', () => {
+test('oak stairs without a table: the table first (from held planks), then the oak planks it used, then the stairs', () => {
   assert.deepEqual(ids(expandItem('oak_stairs', 4, { oak_planks: 6 })),
-    ['gather(planks, 4)', 'craft_item(crafting_table, 1)', 'craft_item(oak_stairs, 4)'])
+    ['craft_item(crafting_table, 1)', 'gather(oak_planks, 4)', 'craft_item(oak_stairs, 4)'])
 })
 
 test('white bed: shears, 3 white wool hunted (the goal kind names the drop), craft', () => {
@@ -131,4 +131,45 @@ test('count <= 0 or not a number: nothing to do; a bad item name is missing, nev
   for (const c of [0, -3, NaN, 'x', undefined]) assert.deepEqual(expandItem('compass', c, {}), { steps: [], missing: [], tree: '' })
   for (const it of [undefined, null, '', 42]) assert.deepEqual(expandItem(it, 1, {}), { steps: [], missing: [String(it)], tree: '' })
   assert.deepEqual(expandItem('not_a_thing', 1, {}).missing, ['not_a_thing'])
+})
+
+// ---- tools first (Task 8 ruling) ---------------------------------------------------------------------------------------
+test('compass from nothing, tools first: wooden chain, stone chain, the ingots, iron pickaxe, redstone, compass', () => {
+  assert.deepEqual(ids(expandItem('compass', 1, {})), [
+    'gather(planks, 7)', 'gather(stick, 6)', 'craft_item(crafting_table, 1)', 'craft_item(wooden_pickaxe, 1)',
+    'gather(cobblestone, 3)', 'craft_item(stone_pickaxe, 1)',
+    'gather(iron_ingot, 7)', 'craft_item(iron_pickaxe, 1)', 'gather(redstone, 1)', 'craft_item(compass, 1)'])
+})
+
+test('the station and the shears come before the materials: glass (furnace), white bed (shears)', () => {
+  const g = ids(expandItem('glass', 3, {}))
+  before(g, 'craft_item(furnace, 1)', 'gather(sand, 3)')
+  const b = ids(expandItem('white_bed', 1, {}))
+  before(b, 'craft_item(shears, 1)', 'hunt(white_wool, 3)')
+  before(b, 'craft_item(crafting_table, 1)', 'craft_item(shears, 1)')
+})
+
+// What each step's item needs directly (legacy gathers produce their own inputs, so only crafts and smelts are checked).
+import { RECIPES } from '../agent/goals.js'
+import mcDataFor from 'minecraft-data'
+const md = mcDataFor('1.20.4')
+const groupOf = n => n === 'sticks' ? 'stick' : n.endsWith('_log') || n === 'log' ? 'log' : n
+const inputsOf = step => {
+  if (step.kind === 'smelt_item') return [SMELT[step.arg]]
+  if (step.kind !== 'craft_item') return []
+  if (RECIPES[step.arg]) return Object.keys(RECIPES[step.arg]).map(groupOf)
+  const r = (md.recipes[md.itemsByName[step.arg].id] || [])
+  return [...new Set(r.flatMap(x => (x.inShape ? x.inShape.flat() : x.ingredients || []).filter(c => c != null).map(c => md.items[c].name)))]
+}
+const produces = step => step.kind === 'hunt' || step.kind === 'smelt_item' || step.kind === 'craft_item' || step.kind === 'gather' ? step.arg : null
+test('no craft or smelt precedes a step producing one of its ingredients: compass, clock, white_bed, bucket, iron_door', () => {
+  for (const item of ['compass', 'clock', 'white_bed', 'bucket', 'iron_door']) {
+    const steps = expandItem(item, 1, {}).steps
+    assert.ok(steps.length, item)
+    steps.forEach((s, i) => {
+      const ins = new Set(inputsOf(s))
+      const later = steps.slice(i + 1).filter(t => ins.has(produces(t)) || (ins.has('oak_planks') && produces(t) === 'planks'))
+      assert.deepEqual(later.map(t => `${t.kind}(${t.arg})`), [], `${item}: ${s.kind}(${s.arg}) comes before a producer of its input`)
+    })
+  }
 })

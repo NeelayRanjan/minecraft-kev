@@ -29,7 +29,7 @@ import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
-  snapshotFor, askedIdFor, TRANSPARENT, splitChat } from './leader.js'
+  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind } from './leader.js'
 import { options as optionsFor, tableNear, furnaceNear } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal } from './goals.js'
 import { PlanBook, planTitle, stepText } from './plans.js'
@@ -430,8 +430,8 @@ function leaderAnswered(snap, a, err) {
     try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1), obs: lastObs }) }
     catch (e) { res = { kind: 'invalid', id: 'push_goal', reason: String(e?.message || e).slice(0, 160) } }
   } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
-  // an invalid push is replied to below ("Can't do that yet"), so it answers the requests like cannot
-  const settleAs = res.kind === 'invalid' && res.id === 'push_goal' && reqs.length ? 'cannot' : res.kind
+  // an invalid push or plan answer is replied to below ("Can't do that yet: <reason>"), so it answers the requests like cannot
+  const settleAs = settleKind(res, reqs.length > 0)
   const waiting = reqs.filter(r => !r.answered)
   const notNow = requestBook.settle(reqs.map(r => r.id), settleAs, +t.toFixed(1))
   const settled = waiting.filter(r => r.answered).map(r => ({ t: r.t, name: r.name, as: r.answered.kind }))
@@ -476,7 +476,7 @@ function leaderAnswered(snap, a, err) {
   } else {
     elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
     // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
-    if (res.kind === 'invalid' && res.id === 'push_goal' && reqs.length) { say(`Can't do that yet${whyTail(res.reason) || '.'}`); logRequests(reqs, t, { kind: 'cannot', why: res.reason ?? null, missing: null }) }
+    if (res.kind === 'invalid' && settleAs === 'cannot') { say(`Can't do that yet${whyTail(res.reason) || '.'}`); logRequests(reqs, t, { kind: 'cannot', answer: res.id, reason: res.reason ?? null, missing: null }) }
   }
   if (notNow.length) {   // shown to two calls that did not answer them: tell the players the bot is busy
     let busy = 'the current goal'
@@ -518,7 +518,8 @@ function onPlanEvent(ev, t) {
     elog.event({ t, kind: 'plan_blocked', plan_id: p.id, title: p.title, step_index: ev.step_index, step, reason: ev.reason ?? null })
     leaderNote('plan_blocked')
     log(`plan #${p.id} ${p.title}: blocked at step ${ev.step_index + 1} (${ev.reason})`)
-    say(`Stuck on ${p.title} at step ${ev.step_index + 1} (${stepText(step)}): ${ev.reason ?? 'stuck'}.`)
+    const tail = ev.reason && ev.reason !== 'stuck' ? `: ${ev.reason}` : ''
+    say(`Stuck on ${p.title} at step ${ev.step_index + 1} (${stepText(step)})${tail}.`)
   }
 }
 

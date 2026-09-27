@@ -37,7 +37,7 @@ run_arm() {   # run_arm <name> [--leader events --leader-model ... --leader-url 
     # Preload the leader model before the leader arm only, so the first call never spends the 300 s first-call
     # budget on a cold load (~265 s for a 27B).
     local t_load=$(date +%s)
-    curl -s -m 600 "$LEADER_URL/api/generate" -d "{\"model\":\"$LEADER_MODEL\",\"prompt\":\"ok\",\"stream\":false,\"think\":false,\"options\":{\"num_ctx\":4096,\"num_predict\":2},\"keep_alive\":\"90m\"}" > /dev/null
+    curl -s -m 600 "$LEADER_URL/api/generate" -d "{\"model\":\"$LEADER_MODEL\",\"prompt\":\"ok\",\"stream\":false,\"think\":false,\"options\":{\"num_ctx\":6144,\"num_predict\":2},\"keep_alive\":\"90m\"}" > /dev/null
     say "leader model $LEADER_MODEL preloaded in $(( $(date +%s) - t_load )) s"
   fi
   say "running $name${*:+ ($*)}"

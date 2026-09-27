@@ -9,7 +9,10 @@
 // and `sticks` is the item `stick`; a minecraft-data ingredient names its species and is counted and gathered exactly
 // (`gather(oak_planks, n)`; only the goals.WOODS species are producible).
 //
-// Ordering rule: the walk is post-order. A step is emitted after every step its inputs need: for a craft, first its
+// Ordering rule: tools first. A dry walk finds every tool the whole tree needs (the highest pickaxe tier of its MINE
+// steps, a crafting table for a 3x3 recipe, a furnace for a smelt, shears for a shearing hunt); the real walk acquires
+// them in that order before any material, so a plan reads "pickaxes, table, furnace, shears, materials, the item".
+// Then the walk is post-order. A step is emitted after every step its inputs need: for a craft, first its
 // ingredients in recipe order (first appearance in the grid, row by row; held units by exact name, so the
 // variant whose wood the bot holds wins), then the crafting table if the grid is
 // larger than 2x2; for a smelt, its input then the furnace; for a hunt, the shears (a hunt step names the drop and
@@ -132,6 +135,17 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
   const n0 = Math.floor(Number(count))
   if (!Number.isFinite(n0) || n0 <= 0) return { steps: [], missing: [], tree: '' }   // 0, negatives, NaN: nothing to do
   const want = Math.min(MAX_COUNT, n0)
+  // Two walks: a dry one finds the tools the whole tree needs (the pickaxe tier of its MINE steps, a crafting table, a
+  // furnace, shears); the real one acquires them first, in that order, then walks the materials.
+  const dry = walkTree(item, want, inventory, placed, null)
+  if (dry.missing) return { steps: [], missing: [dry.missing], tree: dry.lines.join('\n') + `\n(missing: ${dry.missing})` }
+  const r = walkTree(item, want, inventory, placed, dry.tools)
+  if (r.missing) return { steps: [], missing: [r.missing], tree: r.lines.join('\n') + `\n(missing: ${r.missing})` }
+  return { steps: r.steps, missing: [], tree: r.lines.join('\n') }
+}
+
+function walkTree(item, want, inventory, placed, hoist) {
+  const tools = { tier: 0, crafting_table: false, furnace: false, shears: false }
   const inv = { ...inventory }
   const steps = [], index = new Map(), lines = []
   const held = name => {
@@ -174,7 +188,7 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
     return ok
   }
   const hasStation = s => !!placed?.[s] || held(s) > 0
-  const station = (s, depth) => hasStation(s) || (need(s, 1, depth) && (give(s, 1), true))
+  const station = (s, depth) => { tools[s] = true; return hasStation(s) || (need(s, 1, depth) && (give(s, 1), true)) }
   function tier(t, depth) {   // hold a pickaxe of tier >= t, reaching tier t-1 first
     if (tierHeld(inv) >= t) return true
     if (t > 1 && !tier(t - 1, depth)) return false
@@ -185,6 +199,7 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
   }
   function produce(name, r, p, depth) {
     if (p.kind === 'gather') {
+      if (p.mine && TOOL_TIER[p.mine.tool] > 0) tools.tier = Math.max(tools.tier, TOOL_TIER[p.mine.tool])
       if (p.mine && TOOL_TIER[p.mine.tool] > 0 && !tier(TOOL_TIER[p.mine.tool], depth)) return false
       emit('gather', p.item, r)
       return true
@@ -195,6 +210,7 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
       return true
     }
     if (p.kind === 'hunt') {
+      if (p.tool) tools.shears = true
       if (p.tool && !(held(p.tool) > 0 || (need(p.tool, 1, depth) && (give(p.tool, 1), true)))) return false
       const mobs = Math.ceil(r / p.per)
       give(name, mobs * p.per - r)
@@ -218,7 +234,12 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
     return true
   }
 
+  if (hoist) {   // the tools first: pickaxe tiers, then the table, the furnace, the shears
+    if (hoist.tier > 0) tier(hoist.tier, 0)
+    if (hoist.crafting_table) station('crafting_table', 0)
+    if (hoist.furnace) station('furnace', 0)
+    if (hoist.shears && !(held('shears') > 0)) need('shears', 1, 0) && give('shears', 1)
+  }
   need(item, want, 0)
-  if (missing) return { steps: [], missing: [missing], tree: lines.join('\n') + `\n(missing: ${missing})` }
-  return { steps, missing: [], tree: lines.join('\n') }
+  return { steps, missing, lines, tools }
 }
