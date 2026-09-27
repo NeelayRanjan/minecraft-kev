@@ -4,11 +4,13 @@
 //   node agent/run_episode.mjs --seed 7 --port 25580 --policy teacher|kev [--kev-url http://127.0.0.1:8009]
 //        [--goal iron_pickaxe|nether] [--eps-action 0.1] [--minutes 20] [--out name] [--video] [--live-view 3007] [--no-server] [--difficulty normal] [--quiet]
 //        [--leader off|periodic15|events|periodic30_interrupts|subgoals --leader-think --leader-model m --leader-url u --leader-num-predict n]   (chain mode, needs --kev-url)
+//        [--status-port 3008]   (a status page: plans, goal stack, subtask, forecasts, chat, leader, plugins at http://127.0.0.1:<port>)
 //
 // Writes out/<name>.json (meta / frames / decisions / events / timeline), out/<name>.jsonl (kev records with _meta),
 // and out/<name>.mp4 with --video (first-person at --fps, default 5; frame k <-> t = k/fps s).
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createBot } from 'mineflayer'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import collectPkg from 'mineflayer-collectblock'
@@ -27,9 +29,13 @@ import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
-  snapshotFor, askedIdFor, TRANSPARENT } from './leader.js'
-import { options as optionsFor } from './subtasks.js'
-import { GoalStack, nightBlocksGoal } from './goals.js'
+  snapshotFor, askedIdFor, TRANSPARENT, splitChat } from './leader.js'
+import { options as optionsFor, tableNear, furnaceNear } from './subtasks.js'
+import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal } from './goals.js'
+import { PlanBook, planTitle, stepText } from './plans.js'
+import { expandItem } from './recipes.js'
+import { PluginRegistry, appendRequestLog } from './plugins.js'
+import { startStatusServer } from './status_page.js'
 import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
 
 // ---- args ------------------------------------------------------------------------------------------------------
@@ -39,6 +45,7 @@ const flag = k => argv.includes(`--${k}`)
 const seed = opt('seed', '1'), port = Number(opt('port', 25580)), policy = opt('policy', 'teacher'), kevUrl = opt('kev-url', null)
 const epsAction = Number(opt('eps-action', 0)), minutes = Number(opt('minutes', 20)), successMin = Number(opt('success-minutes', 15))
 const name = opt('out', `${policy}_s${seed}`), video = flag('video'), fps = Number(opt('fps', 5)), noServer = flag('no-server'), difficulty = opt('difficulty', 'normal'), quiet = flag('quiet')
+const statusPort = opt('status-port', null)   // optional: the status page (agent/status_page.js)
 const liveViewPort = opt('live-view', null)   // optional, off by default: a browser view at http://127.0.0.1:<port> (prismarine-viewer's web viewer, not the recorder)
 const goal = opt('goal', 'iron_pickaxe')
 if (!['iron_pickaxe', 'nether'].includes(goal)) { console.error(`unknown goal ${goal}`); process.exit(2) }
@@ -83,6 +90,8 @@ const shutdown = async (why, code) => {
   log(`shutdown: ${why}`)
   try { clearInterval(loop) } catch {}
   try { clearInterval(chatTimer) } catch {}
+  try { registry?.unwatch() } catch {}
+  try { await statusSrv?.close() } catch {}
   if (!wrote) { try { elog?.finish({ end_reason: `crash: ${why}`.slice(0, 120), ended_t: now?.() ?? null, ...(() => { try { return stageMeta() } catch { return {} } })() }); fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(elog.toJSON())); wrote = true } catch {} }
   try { if (recorder) await recorder.stop() } catch {}
   try { bot.viewer?.close?.() } catch {}
@@ -116,6 +125,15 @@ const elog = new EpisodeLog({ seed, policy, goal, eps_action: epsAction, minutes
   supervisor: supMode === 'off' ? null : { mode: supMode, threshold: supThreshold, hold_s: supHold, cooldown_s: supervisor.cooldownS, pool: supPoolFile, pool_n: supervisor.pool?.length ?? null },
   leader: leaderTrigger ? { mode: leaderMode, think: leaderThink, model: leaderModel, url: leaderUrl, num_predict: leaderNumPredict ? Number(leaderNumPredict) : null } : null })
 elog.event({ t: 0, kind: 'op_granted', name: me, via: server ? 'console' : 'chat' })
+// The executor registry (agent/plugins.js): agent/plugins/*.mjs loaded now and reloaded when a file changes. Motor.run
+// falls back to it; its options reach kev only under the goals that need them (goals.js registerOptionProvider), so
+// experiment-1 and chain output is unchanged without plans.
+const registry = new PluginRegistry({ dir: fileURLToPath(new URL('./plugins/', import.meta.url)), log: s => log(s) })
+const pluginsLoaded = await registry.load()
+registry.watch()
+motor.plugins = registry
+registerOptionProvider((o, g) => registry.optionsFor(o, g))
+elog.event({ t: 0, kind: 'plugins_loaded', loaded: pluginsLoaded.loaded, failed: pluginsLoaded.failed })
 let recorder = null
 if (video) { const { startRecorder } = await import('./recorder.js'); recorder = startRecorder(bot, { output: path.join('out', `${name}.mp4`), fps, log }) }
 // The live view (--live-view <port>): prismarine-viewer's browser web viewer, separate from the recorder above (which
@@ -161,12 +179,21 @@ const goalLog = []   // pushed goals: {id, kind, arg, count, source, t, why, end
 // The bot's chat lines go through a paced queue (agent/leader.js ChatQueue): one line per 1.5 s, duplicates within 10 s
 // and more than one "not now" per 10 s dropped.
 const chatQueue = new ChatQueue()
-const say = (msg, kind = null) => chatQueue.enqueue(sanitizeChat(msg, 240), now(), kind)
+// A long text (a plan announcement, the leader's say) goes out as several lines split at word boundaries.
+const say = (msg, kind = null) => { for (const line of splitChat(sanitizeChat(msg, 2000), 200)) chatQueue.enqueue(sanitizeChat(line, 256), now(), kind) }
+const chatLines = []   // the status page's chat: the players' lines and the bot's, {t, name, text}
+const noteChat = (who, text) => { chatLines.push({ t: +now().toFixed(1), name: who, text }); if (chatLines.length > 50) chatLines.shift() }
 const chatTimer = setInterval(() => {
   if (finished) return
   const line = chatQueue.drain(now())
-  if (line) { try { bot.chat(line) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
+  if (line) { try { bot.chat(line); noteChat(me, line) } catch (e) { log(`chat failed: ${e?.message || e}`) } }
 }, 250)
+// The plan book (agent/plans.js): the front plan's current step is pushed on the goal stack (syncPlans, every tick);
+// its goal_done / goal_failed move the plan on. Requests the bot cannot serve go to the motor backlog (request log).
+const planBook = new PlanBook()
+const requestLogPath = path.join('out', `${name}.requests.jsonl`)
+const PLAN_WORDS = new Set(['plan', 'plans', 'stack'])   // chat words answered by code, never by a leader call
+let lastForecasts = {}   // kev's latest forecasts (the status page)
 const goalPhrase = g => {
   const h = x => String(x ?? '').replace(/_/g, ' ')
   switch (g.kind) {
@@ -180,7 +207,7 @@ const goalPhrase = g => {
     default: return `${h(g.kind)}${g.arg ? ` ${h(g.arg)}` : ''}`
   }
 }
-const whyTail = (why, sep = ': ') => { const w = sanitizeChat(why, 80).trim(); return w ? `${sep}${w}` : '' }
+const whyTail = (why, sep = ': ') => { const w = sanitizeChat(why, 200).trim(); return w ? `${sep}${w}` : '' }
 // The offered list everywhere (kev's question, the teacher, the leader, the LLM policy): options under the top goal.
 const offeredFor = o => goalStack.filter(o, optionsFor(o))
 const goalStepOf = o => { const s = goalStack.step(o), d = goalStack.depth(); return { ...s, local: s.index - 100 * d, pushed: d > 0 } }
@@ -189,6 +216,13 @@ bot.on('message', (jsonMsg, position) => {
   const c = parseChatMessage(jsonMsg, position, bot.username)
   if (!c) return
   const t = +now().toFixed(1), text = c.text.slice(0, 200)
+  noteChat(c.name, text)
+  if (PLAN_WORDS.has(text.trim().toLowerCase())) {   // "plan", "plans", "stack": the plan book's lines, no leader call
+    elog.event({ t, kind: 'chat_command', name: c.name, text: text.trim().toLowerCase() })
+    log(`chat <${c.name}> ${text} (answered by code)`)
+    for (const line of planBook.render()) say(line)
+    return
+  }
   requestBook.add({ t, name: c.name, text })
   elog.event({ t, kind: 'audience_request', name: c.name, text })
   log(`chat <${c.name}> ${text}`)
@@ -236,10 +270,12 @@ function tick() {
   const cur = motor.current ? { name: motor.current.name, arg: motor.current.arg, elapsedS: motor.elapsedS(), progress: motor.progress() } : null
   const obs = summarize(bot, mcData, mem, { t, current: cur, last: lastResult, goal, withhold })
   const goalEvents = goalStack.update(obs, t)   // a pushed goal done or stuck pops before this tick's step and text
+  for (const e of goalEvents) onGoalEvent(e, t)   // a plan step's goal_done / goal_failed moves its plan on
+  syncPlans(obs, t)                              // then the front plan's current step is the pushed goal
+  obs.goalTop = pubGoal(goalStack.top())         // receive(<item>) reads the giver and the count here (not in the state text)
   obs.goalText = goalStack.describe(obs)
   obs.goalStep = goalStepOf(obs)
   const step = obs.goalStep, c = counts(obs)
-  for (const e of goalEvents) onGoalEvent(e, t)
   if (goal === 'nether') {
     const st = stageOf(obs).index
     if (st > stageReached) { stageReached = st; elog.event({ t, kind: 'stage_done', stage: st }); log(`stage ${st} reached at ${t.toFixed(0)} s`) }
@@ -284,6 +320,7 @@ async function decide(obs, t) {
     if (finished) return
     const pStep = answers.subgoal_succeeds_60s?.probabilities?.true
     lastForecast = typeof pStep === 'number' && source !== 'kev_error' ? { t, p: pStep } : null
+    if (kevUrl && source !== 'kev_error') lastForecasts = forecastsOf(answers)
     if (leaderTrigger && kevUrl && source !== 'kev_error') {   // the leader's forecast trend (last 5 values; a question no longer asked drops out)
       const fc = forecastsOf(answers)
       forecastHist = Object.fromEntries(Object.entries(fc).map(([q, p]) => [q, [...(forecastHist[q] || []), +p.toFixed(3)].slice(-5)]))
@@ -360,7 +397,7 @@ function leaderTick(obs, t) {
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
-      ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
+      ...(goalsOn ? { goals: true, goalStack: goalStackView(goalStack, obs), plans: planBook.render(), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })) } : {}),
     }
     requestBook.shown(shownReqs.map(r => r.id))
   } catch (e) {
@@ -387,9 +424,9 @@ function leaderAnswered(snap, a, err) {
   if (res.kind === 'push_goal' && nightBlocksGoal(res.goal, lastObs)) res = { kind: 'cannot', id: null, why: `${goalPhrase(res.goal)} has to wait until morning`, night: true, goal: res.goal }
   // Goal answers act on the stack here. The requests the call was shown are answered only by a goal-level answer.
   const reqs = snap.requests || []
+  const src = reqs.length ? `audience:${reqs[0].name}` : 'leader'
   let pushed = null
   if (res.kind === 'push_goal') {
-    const src = reqs.length ? `audience:${reqs[0].name}` : 'leader'
     try { pushed = goalStack.push({ ...res.goal, source: src, t: +t.toFixed(1), obs: lastObs }) }
     catch (e) { res = { kind: 'invalid', id: 'push_goal', reason: String(e?.message || e).slice(0, 160) } }
   } else if (res.kind === 'pop_goal' && goalStack.depth() === 0) res = { kind: 'invalid', id: 'pop_goal', reason: 'no pushed goal to pop' }
@@ -413,6 +450,9 @@ function leaderAnswered(snap, a, err) {
     elog.event({ t, kind: 'goal_pushed', goal: g, why: a.why ?? null })
     goalLog.push({ ...g, t: +t.toFixed(1), why: a.why ?? null, end_t: null, outcome: null })
     say(`On it: ${goalPhrase(g)}${res.note ? ` (${sanitizeChat(res.note, 60)})` : ''}${whyTail(a.why) || '.'}`)
+  } else if (res.kind === 'pop_goal' && goalStack.top().plan_id != null) {
+    // a plan step: popping it would only see it pushed again next tick, so the plan skips the step instead
+    editPlans({ op: 'skip', plan_id: null, why: a.why ?? null, via: 'pop_goal' }, t)
   } else if (res.kind === 'pop_goal') {
     const g = goalStack.top(), popped = { id: g.id, kind: g.kind, arg: g.arg, count: g.count, source: g.source }
     goalStack.pop('leader')
@@ -420,12 +460,23 @@ function leaderAnswered(snap, a, err) {
     closeGoal(popped.id, t, 'popped')
     say(`Dropping that${whyTail(a.why) || '.'}`)
   } else if (res.kind === 'cannot') {
-    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why: res.night ? res.why : a.why ?? null, ...(res.night ? { reason: 'night', goal: res.goal } : {}) })
+    const why = res.night ? res.why : a.why ?? null
+    elog.event({ t, kind: 'leader_cannot', action: a.action, current: currentId, why, ...(res.night ? { reason: 'night', goal: res.goal } : {}) })
     say(res.night ? `Not until morning: ${goalPhrase(res.goal)} would mean working on the surface at night.` : `Can't do that yet${whyTail(a.why) || '.'}`)
+    logRequests(reqs, t, { kind: 'cannot', why, missing: null })
+  } else if (res.kind === 'plan_item') {
+    planItem(res, reqs, src, t, a.why ?? null)
+  } else if (res.kind === 'plan_steps') {
+    addPlan({ title: res.title, steps: res.steps, source: src }, t, a.why ?? null)
+  } else if (res.kind === 'edit') {
+    editPlans({ op: res.op, plan_id: res.plan_id, why: a.why ?? null }, t)
+  } else if (res.kind === 'say') {
+    elog.event({ t, kind: 'leader_say', text: res.text, why: a.why ?? null })
+    say(res.text)
   } else {
     elog.event({ t, kind: `leader_${res.kind}`, action: a?.action ?? null, current: currentId, why: a?.why ?? null, ...(res.reason ? { reason: res.reason } : {}), ...(err ? { error: String(err.message || err).slice(0, 200) } : {}) })
     // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
-    if (res.kind === 'invalid' && res.id === 'push_goal' && reqs.length) say(`Can't do that yet${whyTail(res.reason) || '.'}`)
+    if (res.kind === 'invalid' && res.id === 'push_goal' && reqs.length) { say(`Can't do that yet${whyTail(res.reason) || '.'}`); logRequests(reqs, t, { kind: 'cannot', why: res.reason ?? null, missing: null }) }
   }
   if (notNow.length) {   // shown to two calls that did not answer them: tell the players the bot is busy
     let busy = 'the current goal'
@@ -443,7 +494,104 @@ function onGoalEvent(e, t) {
   leaderNote(e.kind)
   closeGoal(e.goal.id, t, e.kind === 'goal_done' ? 'done' : `failed${e.reason ? ` (${e.reason})` : ''}`)
   log(`goal #${e.goal.id} ${goalPhrase(e.goal)}: ${e.kind}${e.reason ? ` (${e.reason})` : ''}`)
+  // a plan step: the plan announces its next step, its end or where it is stuck (a stale step's event says nothing)
+  if (e.goal.plan_id != null) { for (const ev of planBook.advance(e, t)) onPlanEvent(ev, t); return }
   say(e.kind === 'goal_done' ? `Done: ${goalPhrase(e.goal)}.` : `Gave up on ${goalPhrase(e.goal)}: ${e.reason ?? 'stuck'}`)
+}
+
+// ---- plans ------------------------------------------------------------------------------------------------------------
+const planOf = id => planBook.plans.find(p => p.id === id)
+const stepOf = s => s ? { kind: s.kind, arg: s.arg ?? null, count: s.count ?? null, ...(s.from != null ? { from: s.from } : {}) } : null
+const humanItem = x => String(x).replace(/_/g, ' ')
+const capital = s => s.charAt(0).toUpperCase() + s.slice(1)
+
+// PlanBook.advance's results: logged, told to the leader (blocked) and the chat.
+function onPlanEvent(ev, t) {
+  const p = planOf(ev.plan_id)
+  if (!p) return
+  if (ev.kind === 'plan_done') {
+    elog.event({ t, kind: 'plan_done', plan_id: p.id, title: p.title })
+    log(`plan #${p.id} ${p.title}: done`)
+    say(`Done: ${p.title}.`)
+  } else if (ev.kind === 'plan_blocked') {
+    const step = stepOf(p.steps[ev.step_index])
+    elog.event({ t, kind: 'plan_blocked', plan_id: p.id, title: p.title, step_index: ev.step_index, step, reason: ev.reason ?? null })
+    leaderNote('plan_blocked')
+    log(`plan #${p.id} ${p.title}: blocked at step ${ev.step_index + 1} (${ev.reason})`)
+    say(`Stuck on ${p.title} at step ${ev.step_index + 1} (${stepText(step)}): ${ev.reason ?? 'stuck'}.`)
+  }
+}
+
+// Each tick after the stack's update: the front plan's current step is the top goal. A goal the leader pushed itself
+// (no plan_id) runs first and the plan waits under it; a plan step that is no longer current (skipped, dropped, another
+// plan in front) is popped. A step validateGoal refuses when it is pushed blocks its plan with that reason (the night
+// rule is not a refusal: the goal's stuck clock pauses).
+function syncPlans(obs, t) {
+  const top = goalStack.top()
+  if (goalStack.depth() > 0 && top.plan_id == null) return
+  const want = planBook.currentGoal()
+  if (want && top.plan_id === want.plan_id && top.step_index === want.step_index) return
+  if (top.plan_id != null) {
+    goalStack.pop('plan_changed')
+    elog.event({ t, kind: 'goal_popped', goal: pubGoal(top), reason: 'plan_changed' })
+    closeGoal(top.id, t, 'popped')
+  }
+  if (!want) return
+  const p = planOf(want.plan_id), goal = planStepGoal(want, obs)
+  let g
+  try { g = goalStack.push({ ...goal, source: p.source, t: +t.toFixed(1), obs, plan_id: want.plan_id, step_index: want.step_index }) }
+  catch (e) {
+    const reason = String(e?.message || e).replace(/^invalid goal [^:]*: /, '')
+    for (const ev of planBook.advance({ kind: 'goal_failed', plan_id: want.plan_id, step_index: want.step_index, reason }, t)) onPlanEvent(ev, t)
+    return
+  }
+  const pg = { id: g.id, kind: g.kind, arg: g.arg, count: g.count, source: g.source }
+  goalLog.push({ ...pg, plan_id: p.id, step_index: want.step_index, t: +t.toFixed(1), why: null, end_t: null, outcome: null })
+  elog.event({ t, kind: 'plan_step', plan_id: p.id, step_index: want.step_index, of: p.steps.length, step: stepOf(want), goal_id: g.id, target: g.count })
+  log(`plan #${p.id} ${p.title}: step ${want.step_index + 1}/${p.steps.length} ${stepText(want)} (goal #${g.id}${g.count != null ? `, target ${g.count}` : ''})`)
+  say(`Step ${want.step_index + 1}/${p.steps.length}: ${stepText(want)}`)
+}
+
+function addPlan({ title, steps, source }, t, why = null) {
+  const p = planBook.add({ title, steps, source, t: +t.toFixed(1) })
+  elog.event({ t, kind: 'plan_added', plan: { id: p.id, title: p.title, source: p.source, steps: p.steps.map(stepOf) }, why })
+  log(`plan #${p.id} ${p.title}: ${p.steps.map(stepText).join(', ')}`)
+  say(`Plan #${p.id} ${p.title}: ${p.steps.map((s, i) => `${i + 1}) ${stepText(s)}`).join(' ')}`)
+  return p
+}
+
+// plan_item: the expander turns the item into net steps (the leader never does the arithmetic). A leaf nothing can
+// produce is a reply and a motor-backlog line; an item already held is a reply and no plan.
+function planItem(res, reqs, source, t, why) {
+  const o = lastObs
+  const placed = { crafting_table: !!o?.base?.crafting_table || (o ? tableNear(o) : false), furnace: !!o?.base?.furnace || (o ? furnaceNear(o) : false) }
+  const ex = expandItem(res.item, res.count, o?.inventory || {}, { placed })
+  const title = planTitle(res.item, res.count)
+  if (ex.missing.length) {
+    elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: ex.missing, why })
+    say(`Can't make ${humanItem(title)} yet: needs ${ex.missing.map(humanItem).join(', ')} (no way to get it)`)
+    logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, missing: ex.missing, why })
+  } else if (!ex.steps.length) {
+    elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: [], held: true, why })
+    say(`Already have ${title}.`)
+  } else addPlan({ title, steps: ex.steps, source }, t, why)
+}
+
+// edit (the leader's, or pop_goal on a plan step): skip | drop | move_front | clear; the reply is the plan book's line.
+function editPlans({ op, plan_id, why, via = null }, t) {
+  const front = planBook.active()[0]?.id ?? null
+  const r = op === 'skip' ? planBook.skip(t) : op === 'drop' ? planBook.drop(plan_id, t) : op === 'move_front' ? planBook.moveFront(plan_id) : planBook.clear(t)
+  elog.event({ t, kind: 'plan_edit', op, plan_id, result: r, why, ...(via ? { via } : {}) })
+  if (op === 'skip' && front != null && planOf(front)?.status === 'done') elog.event({ t, kind: 'plan_done', plan_id: front, title: planOf(front).title, skipped_last: true })
+  log(`plan edit ${op}${plan_id != null ? ` #${plan_id}` : ''}: ${r ?? 'nothing to change'}`)
+  say(r ? `${capital(r)}.` : op === 'skip' ? 'No plan step to skip.' : `No plan #${plan_id} to ${op === 'move_front' ? 'move' : op}.`)
+}
+
+// The motor backlog (out/<run>.requests.jsonl): one line per request the bot could not serve.
+function logRequests(reqs, t, entry) {
+  const base = { t: +t.toFixed(1), ...entry }
+  if (!reqs.length) { appendRequestLog(requestLogPath, { ...base, name: null, text: null }); return }
+  for (const r of reqs) appendRequestLog(requestLogPath, { ...base, name: r.name, text: r.text, request_t: r.t })
 }
 function closeGoal(id, t, outcome) { const g = goalLog.find(x => x.id === id); if (g && !g.outcome) { g.end_t = +t.toFixed(1); g.outcome = outcome } }
 
@@ -472,7 +620,8 @@ async function finish(reason) {
   elog.timeline = injectDeaths(elog.timeline, elog.events)   // the sampler rarely catches the few ticks between death and respawn
   elog.finish({ end_reason: reason, ended_t: t, deaths, goal_done_t: doneAt, success_15min: doneAt != null && doneAt <= successMin * 60, ...stageMeta(), video_frames: recorder ? recorder.frames() : null,
     video_dupes: recorder ? recorder.stats().dupes : null,
-    ...(goalsOn || goalLog.length || requestBook.all.length ? { goals: goalsMeta() } : {}) })
+    ...(goalsOn || goalLog.length || requestBook.all.length ? { goals: goalsMeta() } : {}),
+    ...(planBook.plans.length ? { plans: planBook.toJSON().plans } : {}) })
   const json = elog.toJSON(), recs = elog.toRecords()
   fs.writeFileSync(path.join('out', `${name}.json`), JSON.stringify(json)); wrote = true
   fs.writeFileSync(path.join('out', `${name}.jsonl`), recs.map(r => JSON.stringify(r)).join('\n') + (recs.length ? '\n' : ''))
@@ -480,6 +629,25 @@ async function finish(reason) {
   const dec = json.decisions.filter(d => d.decision).length
   console.log(JSON.stringify({ name, seed, policy, end_reason: reason, t: Math.round(t), goal_done_t: doneAt, deaths, ...(goal === 'nether' ? { stage_reached: stageReached } : {}), decisions: json.decisions.length, decision_points: dec, records: recs.length, censoring: cens }))
   await shutdown(reason, 0)
+}
+
+// The status page (--status-port): read-only, from the runner's live state; a failure to start it never ends the episode.
+function statusState() {
+  const view = lastObs ? goalStackView(goalStack, lastObs) : { text: null, pushed: [] }
+  const byId = new Map(goalStack.stack.map(g => [g.id, g]))
+  const pushed = view.pushed.map(p => { const g = byId.get(p.id); return { ...p, plan_id: g?.plan_id ?? null, step_index: g?.step_index ?? null, from: g?.from ?? null } })
+  return {
+    t: +now().toFixed(1), plans: planBook.toJSON().plans, stack: { text: view.text, pushed },
+    current: motor.current ? { id: motor.current.id, elapsedS: +motor.elapsedS().toFixed(1), progress: motor.progress() } : null,
+    forecasts: lastForecasts, chat: chatLines.slice(-10),
+    leader: elog.leader.slice(-10).map(l => ({ t: l.t_answered ?? l.t_asked, action: l.action, kind: l.kind, why: l.why })),
+    plugins: registry.list(),
+  }
+}
+let statusSrv = null
+if (statusPort) {
+  try { statusSrv = await startStatusServer({ port: Number(statusPort), getState: statusState }); log(`status page: http://127.0.0.1:${statusSrv.port}`) }
+  catch (e) { log(`status page failed to start: ${e.message}`) }
 }
 
 log(`episode ${name}: seed ${seed}, goal ${goal}, policy ${policy}, eps ${epsAction}, ${minutes} min, spawn ${bot.entity.position.floored()}`)

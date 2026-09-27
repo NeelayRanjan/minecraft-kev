@@ -703,3 +703,41 @@ test('REQUEST_ANSWERS: the four plan answers settle audience requests', () => {
     assert.deepEqual(r.answered, { t: 2, kind: k })
   }
 })
+
+// ---- Task 8: splitChat, the plan events in the prompt ------------------------------------------------------------------
+import { splitChat } from '../agent/leader.js'
+
+test('splitChat: word boundaries, every line 1..max chars, never an empty line; a long word is cut', () => {
+  assert.deepEqual(splitChat('hello world', 200), ['hello world'])
+  assert.deepEqual(splitChat('', 200), [])
+  assert.deepEqual(splitChat('   ', 200), [])
+  assert.deepEqual(splitChat('aaa bbb ccc', 7), ['aaa bbb', 'ccc'])
+  const words = Array.from({ length: 120 }, (_, i) => `word${i}`).join(' ')
+  const lines = splitChat(words, 200)
+  assert.ok(lines.length > 1)
+  for (const l of lines) { assert.ok(l.length >= 1 && l.length <= 200, l); assert.equal(l, l.trim()) }
+  assert.equal(lines.join(' '), words, 'no word lost or split')
+  const long = splitChat('x'.repeat(450), 200)
+  assert.deepEqual(long.map(l => l.length), [200, 200, 50])
+  assert.deepEqual(splitChat('a  b\tc', 200), ['a b c'], 'runs of whitespace collapse')
+})
+
+test('the plan events render in RECENT EVENTS', () => {
+  const history = [
+    { t: 10, kind: 'plan_added', plan: { id: 1, title: 'compass', source: 'audience:Steve', steps: [{ kind: 'gather', arg: 'raw_iron', count: 4 }, { kind: 'craft_item', arg: 'compass', count: 1 }] } },
+    { t: 11, kind: 'plan_step', plan_id: 1, step_index: 0, of: 2, step: { kind: 'gather', arg: 'raw_iron', count: 4 }, goal_id: 3 },
+    { t: 12, kind: 'plan_edit', op: 'skip', plan_id: null, result: 'skipped mine 4 raw iron; next: craft compass' },
+    { t: 13, kind: 'plan_done', plan_id: 1, title: 'compass' },
+    { t: 14, kind: 'leader_say', text: 'I can craft tools and armor' },
+    { t: 15, kind: 'plan_missing', item: 'elytra', count: 1, missing: ['elytra'] },
+  ]
+  const lines = buildLeaderMessages({ ...goalCtx, history })[1].content.split('\n')
+  for (const want of [
+    't=10s plan #1 compass added (2 steps) for Steve',
+    't=11s plan #1 step 1/2: mine 4 raw iron',
+    't=12s plan edit skip: skipped mine 4 raw iron; next: craft compass',
+    't=13s plan #1 compass done',
+    't=14s you said: I can craft tools and armor',
+    't=15s cannot plan elytra: needs elytra (no way to get it)',
+  ]) assert.ok(lines.includes(want), want)
+})

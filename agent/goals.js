@@ -8,7 +8,7 @@
 import { stageOf, chainStep, describeChain, INGOTS, DIAMONDS, STICKS } from './stages.js'
 import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
-  NIGHT_REFUGES, LOW_AIR, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
+  NIGHT_REFUGES, LOW_AIR, stuckOn, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 // A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
 import { MINE, SMELT, HUNT, producerOf, isItem } from './recipes.js'
 
@@ -77,7 +77,11 @@ function keepWithPlugins(obs, goal, opts, keep, relevant) {
   if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
   const kept = keepOnly(opts, new Set([...keep, ...opts.map(o => o.id).filter(relevant), ...(nightOnSurface(obs) ? NIGHT_REFUGES : [])]))
   const night = nightSurface(obs)
-  return [...kept, ...pluginOptions(obs, goal).filter(o => relevant(o.id) && !own.has(o.id) && !(night && surfaceWork(o.id)))]
+  // the livelock breaker and the supervisor's withhold apply to plugin options as options() applies them to its own
+  // (plans_smoke: go_to_player(Steve) -> player_gone 13 times in 13 s under a go_to(player:Steve) goal)
+  const stuck = stuckOn(obs)
+  for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)
+  return [...kept, ...pluginOptions(obs, goal).filter(o => relevant(o.id) && !own.has(o.id) && !(night && surfaceWork(o.id)) && !stuck.has(o.id))]
 }
 const nightSurface = obs => isDuskOrNight(obs) && !obs.underground
 function surfaceWork(id) {
@@ -474,6 +478,19 @@ const sourceText = src => !src ? 'Goal' : src === 'leader' ? 'Goal from the lead
 // plan_id, step_index and from appear only on plan-book and receive goals (the leader's own goals keep their shape).
 const pub = g => ({ kind: g.kind, arg: g.arg ?? null, count: g.count ?? null, source: g.source, id: g.id,
   ...(g.plan_id != null || g.from != null ? { plan_id: g.plan_id ?? null, step_index: g.step_index ?? null, from: g.from ?? null } : {}) })
+export const pubGoal = pub   // the runner puts the top goal's public fields on obs.goalTop (receive reads from and count)
+
+// Plan steps carry a net need (agent/recipes.js expandItem); the goal kinds' done() reads an absolute count. goalHave is
+// the held count each counted kind's done() compares with; planStepGoal turns a plan step into the goal the runner
+// pushes: count = held + need (clamped to 64) for the counted kinds, the step unchanged otherwise.
+export const COUNTED_KINDS = new Set(['gather', 'craft_item', 'smelt_item', 'hunt', 'receive'])
+export const goalHave = (obs, kind, arg) => kind === 'gather' ? gHave(obs, arg) : have(obs, arg)
+export function planStepGoal(step, obs) {
+  const { kind, arg = null, count = null } = step
+  const goal = { kind, arg, count, ...(step.from != null ? { from: step.from } : {}) }
+  if (COUNTED_KINDS.has(kind) && Number.isInteger(count)) goal.count = Math.min(64, goalHave(obs, kind, arg) + count)
+  return goal
+}
 
 // The stack: entries [default, ...pushed], top last. update() pops finished (goal_done) and stuck (goal_failed) goals.
 export class GoalStack {

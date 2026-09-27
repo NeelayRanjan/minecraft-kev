@@ -12,6 +12,7 @@
 // Pure: the runner (agent/run_episode.mjs) owns the transport (planner.js askLeader), the timing and the motor.
 import { GOAL_KINDS, validateGoal, RECIPES, PRODUCERS, FINDABLE_NOW, PLACES, STRUCTURES } from './goals.js'
 import { isItem } from './recipes.js'
+import { stepText } from './plans.js'
 
 export const TRIGGERS = ['periodic15', 'events', 'periodic30_interrupts', 'subgoals']
 const PERIOD = { periodic15: 15, periodic30_interrupts: 30, subgoals: 120 }
@@ -287,7 +288,7 @@ Goal kinds and their arguments (nothing else is accepted):
 - receive, arg an item, count, from the name of the player giving it (the bot waits for the item);
 - survive_night, return_to_base: no arg.
 For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say answers a question or acknowledges; it is not an action. cannot only for things outside every list.
-The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.
+The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; Steve says "come here" -> push_goal go_to, arg player:Steve; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.
 Answer every audience request with exactly one of plan_item, plan_steps, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
 Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
 Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot.
@@ -322,6 +323,16 @@ function renderEvent(e) {
       const at = e.step_index != null ? `step ${e.step_index + 1}${st ? ` ${st}` : ''}` : st ? `step ${st}` : 'a step'
       return `${T(e.t)} plan #${e.plan_id}${e.title ? ` (${sanitizeChat(e.title, 60)})` : ''} blocked at ${at}${e.reason ? `: ${sanitizeChat(e.reason, 80)}` : ''}`
     }
+    case 'plan_added': {
+      const p = e.plan || {}, n = p.steps?.length ?? 0
+      const who = typeof p.source === 'string' && p.source.startsWith('audience:') ? ` for ${sanitizeChat(p.source.slice(9), 40)}` : ''
+      return `${T(e.t)} plan #${p.id} ${sanitizeChat(p.title, 60)} added (${n} step${n === 1 ? '' : 's'})${who}`
+    }
+    case 'plan_step': return `${T(e.t)} plan #${e.plan_id} step ${e.step_index + 1}/${e.of}: ${stepText(e.step)}`
+    case 'plan_done': return `${T(e.t)} plan #${e.plan_id}${e.title ? ` ${sanitizeChat(e.title, 60)}` : ''} done`
+    case 'plan_edit': return `${T(e.t)} plan edit ${e.op}${e.plan_id != null ? ` #${e.plan_id}` : ''}: ${sanitizeChat(e.result ?? 'nothing to change', 120)}`
+    case 'plan_missing': return `${T(e.t)} cannot plan ${humanize(e.item)}: needs ${(e.missing || []).map(humanize).join(', ')} (no way to get it)`
+    case 'leader_say': return `${T(e.t)} you said: ${sanitizeChat(e.text, 160)}`
     case 'leader_cannot': return `${T(e.t)} leader declined a request${e.why ? ` (${sanitizeChat(e.why, 120)})` : ''}`
     case 'stage_done': return e.stage >= 5 ? `${T(e.t)} stage 5: CHAIN DONE` : `${T(e.t)} reached stage ${e.stage}: now on ${STAGE_NAMES[e.stage] ?? e.stage}`
     case 'leader_override': return `${T(e.t)} leader override: ${e.from ?? 'idle'} -> ${e.to}${e.why ? ` (${e.why})` : ''}`
@@ -335,13 +346,33 @@ function renderEvent(e) {
 }
 const SHOWN_EVENTS = new Set(['subtask_done', 'subtask_error', 'interrupt', 'death', 'respawn', 'goal_done', 'stage_done',
   'leader_override', 'leader_continue', 'leader_stale', 'leader_invalid', 'leader_dropped', 'leader_blocked', 'kev_error',
-  'goal_failed', 'goal_pushed', 'goal_popped', 'leader_cannot', 'plan_blocked'])
+  'goal_failed', 'goal_pushed', 'goal_popped', 'leader_cannot', 'plan_blocked', 'plan_added', 'plan_step', 'plan_done', 'plan_edit', 'plan_missing',
+  'leader_say'])
 
 // Chat text for the prompt and for the bot's own chat lines: no special-token markers, one line (newlines become a
 // space), no formatting codes (a section sign and the code after it) and no other control characters (below 0x20,
 // 0x7f): the server disconnects a client that sends them, which would end the episode. Capped.
 export const sanitizeChat = (s, max = 200) => String(s ?? '').replace(/<\||\|>/g, '').replace(/[\r\n]+/g, ' ')
   .replace(/\u00a7.?/gs, '').replace(/[\x00-\x1f\x7f]/g, '').slice(0, max)
+
+// A chat text as lines of 1..max characters split at word boundaries (runs of whitespace collapse; a word longer than
+// max is cut). Blank text gives no lines. The runner's say() sends each line through the ChatQueue.
+export function splitChat(text, max = 200) {
+  const out = []
+  let line = ''
+  for (let w of String(text ?? '').split(/\s+/).filter(Boolean)) {
+    while (w.length > max) {
+      if (line) { out.push(line); line = '' }
+      out.push(w.slice(0, max)); w = w.slice(max)
+    }
+    if (!w) continue
+    if (!line) line = w
+    else if (line.length + 1 + w.length <= max) line += ' ' + w
+    else { out.push(line); line = w }
+  }
+  if (line) out.push(line)
+  return out
+}
 
 // A player's chat line from mineflayer's 'message' event (jsonMsg: a prismarine-chat ChatMessage, or its JSON), or
 // null. Only position 'chat' (signed player chat; system messages arrive as 'system'/'game_info') whose chat type is

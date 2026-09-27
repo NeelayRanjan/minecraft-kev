@@ -533,3 +533,50 @@ test('every step expandItem emits passes validateGoal', () => {
   }
   assert.ok(expandItem('white_bed', 1, {}).steps.some(st => st.kind === 'hunt' && st.arg === 'white_wool'))
 })
+
+// ---- Task 8: plan steps are net need; the runner pushes an absolute count ------------------------------------------
+import { goalHave, planStepGoal, pubGoal } from '../agent/goals.js'
+
+test('goalHave: the same have the goal kind done() reads', () => {
+  const o = chain({ inventory: { oak_planks: 3, birch_planks: 2, cobblestone: 5, redstone: 2, compass: 1, oak_log: 1 } })
+  assert.equal(goalHave(o, 'gather', 'planks'), 5, 'generic planks: any wood')
+  assert.equal(goalHave(o, 'gather', 'oak_planks'), 3, 'a species counted exactly')
+  assert.equal(goalHave(o, 'gather', 'cobblestone'), 5)
+  assert.equal(goalHave(o, 'receive', 'redstone'), 2)
+  assert.equal(goalHave(o, 'craft_item', 'compass'), 1)
+  assert.equal(goalHave(o, 'smelt_item', 'glass'), 0)
+  assert.equal(goalHave(o, 'hunt', 'white_wool'), 0)
+})
+
+test('planStepGoal: count = have + need for the counted kinds, clamped to 64; other kinds unchanged', () => {
+  const o = chain({ inventory: { cobblestone: 5, redstone: 2, oak_planks: 3, birch_planks: 9 } })
+  assert.deepEqual(planStepGoal({ kind: 'gather', arg: 'cobblestone', count: 3 }, o), { kind: 'gather', arg: 'cobblestone', count: 8 })
+  assert.deepEqual(planStepGoal({ kind: 'gather', arg: 'oak_planks', count: 4 }, o), { kind: 'gather', arg: 'oak_planks', count: 7 })
+  assert.deepEqual(planStepGoal({ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }, o), { kind: 'receive', arg: 'redstone', count: 6, from: 'Steve' })
+  assert.deepEqual(planStepGoal({ kind: 'smelt_item', arg: 'glass', count: 63 }, chain({ inventory: { glass: 5 } })), { kind: 'smelt_item', arg: 'glass', count: 64 })
+  assert.deepEqual(planStepGoal({ kind: 'craft_item', arg: 'compass', count: 1 }, o), { kind: 'craft_item', arg: 'compass', count: 1 })
+  assert.deepEqual(planStepGoal({ kind: 'hunt', arg: 'white_wool', count: 3 }, chain({ inventory: { white_wool: 1 } })), { kind: 'hunt', arg: 'white_wool', count: 4 })
+  assert.deepEqual(planStepGoal({ kind: 'go_to', arg: 'player:Steve', count: null }, o), { kind: 'go_to', arg: 'player:Steve', count: null })
+  assert.deepEqual(planStepGoal({ kind: 'craft_item', arg: 'crafting_table', count: null }, o), { kind: 'craft_item', arg: 'crafting_table', count: null })
+  // the pushed goal is not done at once (receive's plugin reads the absolute count)
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ ...planStepGoal({ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }, o), source: 'audience:Steve', t: 0, obs: o, plan_id: 1, step_index: 0 })
+  assert.deepEqual(s.update(o, 1), [])
+  assert.deepEqual(pubGoal(s.top()), { kind: 'receive', arg: 'redstone', count: 6, source: 'audience:Steve', id: 1, plan_id: 1, step_index: 0, from: 'Steve' })
+  assert.deepEqual(pubGoal(new GoalStack({ goal: 'nether' }).top()), { kind: 'chain', arg: null, count: null, source: 'chain', id: 0 })
+})
+
+test('plugin options go through the livelock breaker and the supervisor withhold (an instant failure is not re-offered)', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'go_to', arg: 'player:Steve', source: 'audience:Steve', t: 0 })
+  const o = chain({ inventory: { iron_pickaxe: 1 } })
+  withProvider(['go_to_player(Steve)'], () => {
+    assert.ok(s.filter(o, options(o)).some(x => x.id === 'go_to_player(Steve)'))
+    const failed = { ...o, last: { id: 'go_to_player(Steve)', result: 'player_gone', repeats: 3, recent: [] } }
+    assert.ok(!s.filter(failed, options(failed)).some(x => x.id === 'go_to_player(Steve)'), 'three in a row: withheld')
+    const window = { ...o, last: { id: 'wait', result: 'ok', repeats: 1, recent: ['player_gone', 'ok', 'player_gone', 'ok', 'player_gone'].map(r => ({ id: r === 'ok' ? 'wait' : 'go_to_player(Steve)', result: r })) } }
+    assert.ok(!s.filter(window, options(window)).some(x => x.id === 'go_to_player(Steve)'), 'three in the window: withheld')
+    const sup = { ...o, withhold: ['go_to_player(Steve)'] }
+    assert.ok(!s.filter(sup, options(sup)).some(x => x.id === 'go_to_player(Steve)'), 'supervisor withhold')
+  })
+})

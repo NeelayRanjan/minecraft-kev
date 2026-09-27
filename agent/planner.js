@@ -83,7 +83,7 @@ export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen
 // With think the model reasons first (Ollama returns it as message.thinking, kept up to 4000 chars for the log);
 // num_predict covers the thinking too, so it is larger. The caller sets a longer timeout for the very first call
 // (the 27B model may still be loading).
-export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'qwen38-27b-iq3xxs', think = false, numPredict = think ? 1500 : 200, numCtx = 4096,   // prompts run 1.4-2.9k tokens; 8192 cost ~5 GB of KV cache on the 27B and evicted the user's other model
+export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'qwen38-27b-iq3xxs', think = false, numPredict = think ? 1500 : 200, numCtx = 6144,   // goal-mode prompts with plans reach ~4.1k tokens (plans_smoke: one call over 4096 failed); 8192 cost ~5 GB of KV cache on the 27B and evicted the user's other model
   temperature = 0.2, timeoutMs = think ? 150_000 : 45_000, goals = false, ...ctx }) {
   // goals: the subgoals leader (schema and parser accept the goal and plan answers and return `goal` and the plan payload)
   const messages = buildLeaderMessages(ctx)
