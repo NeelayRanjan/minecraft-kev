@@ -16,12 +16,14 @@ export function planTitle(item, count = 1) {
   return count > 1 ? `${count} ${humanize(item)}` : humanize(item)
 }
 
-// A step in chat words: "mine 4 raw iron", "smelt 4 iron", "craft compass", "shear 3 white wool".
+// A step in chat words: "mine 4 raw iron", "smelt 4 iron", "craft compass", "shear 3 white wool", "build hut (5x5x3) in
+// front of you" (a blueprint step carries its title and where it goes).
 const LEGACY_GATHER = { raw_iron: 'mine', cobblestone: 'mine', coal: 'mine', diamond: 'mine', flint: 'mine', obsidian: 'mine', iron_ingot: 'smelt',
   planks: 'craft', stick: 'craft', sticks: 'craft' }
 const itemWord = item => humanize(String(item).replace(/_ingot$/, ''))
-export function stepText({ kind, arg, count, from } = {}) {
+export function stepText({ kind, arg, count, from, title, where } = {}) {
   const n = count != null ? `${count} ` : ''
+  if ((kind === 'build' || kind === 'dig') && title) return `${kind} ${title}${where ? ` ${where}` : ''}`   // a blueprint step (the runner's title)
   switch (kind) {
     case 'gather': {
       const verb = LEGACY_GATHER[arg] || (MINE[arg] ? 'mine' : /_planks$/.test(arg) ? 'craft' : 'gather')

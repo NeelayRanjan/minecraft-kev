@@ -3,6 +3,21 @@
 // node:http only; the page has inline CSS and JS and loads nothing else. getState() is the runner's (a throw answers 500).
 import http from 'node:http'
 
+// The active blueprint (state.blueprint: agent/blueprint_plans.js blueprintGrid plus a progress line) as HTML: the
+// title, the progress and segment, a legend, then one small table per layer, the top layer first. Self-contained: the
+// page embeds this function by its source, so it may use nothing outside itself but its esc argument.
+export function gridHtml (g, esc) {
+  if (!g) return '<span class="dim">no blueprint</span>'
+  const CLS = { '#': 'placed', o: 'missing', x: 'wrong', '!': 'blocked', s: 'scaffold', '.': 'todig', _: 'dug', ' ': 'none' }
+  const NAMES = [['placed', 'placed'], ['missing', 'missing'], ['wrong', 'wrong'], ['blocked', 'blocked'], ['scaffold', 'scaffold'], ['todig', 'to dig'], ['dug', 'dug']]
+  const head = '<div class="plan-title">' + esc(g.title) + (g.id ? ' <span class="dim">(' + esc(g.id) + ', ' + esc(g.kind) + ')</span>' : '') + '</div>' +
+    '<div class="dim">' + (g.segments > 1 ? 'segment ' + g.segment + ' of ' + g.segments + (g.progress ? ', ' : '') : '') + esc(g.progress || '') + '</div>'
+  const legend = '<div class="legend">' + NAMES.map(n => '<span><i class="c-' + n[0] + '"></i>' + n[1] + '</span>').join(' ') + '</div>'
+  const layers = (g.layers || []).slice().reverse().map(l => '<div class="bp-layer"><div class="dim">layer ' + l.layer + '</div><table class="bp">' +
+    l.rows.map(r => '<tr>' + Array.from(r).map(ch => '<td class="c-' + (CLS[ch] || 'none') + '"></td>').join('') + '</tr>').join('') + '</table></div>').join('')
+  return head + legend + '<div class="bp-layers">' + layers + '</div>'
+}
+
 const PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>kev status</title>
@@ -27,11 +42,18 @@ const PAGE = `<!doctype html>
   td { padding: 2px 6px 2px 0; vertical-align: top; overflow-wrap: anywhere; }
   td.num { text-align: right; white-space: nowrap; color: var(--dim); }
   #err { color: var(--bad); }
+  .bp-layers { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+  table.bp { width: auto; border-collapse: separate; border-spacing: 1px; }
+  table.bp td, .legend i { width: 12px; height: 12px; padding: 0; border-radius: 2px; }
+  .legend { margin-top: 4px; color: var(--dim); font-size: 12px; }
+  .legend i { display: inline-block; vertical-align: middle; margin: 0 3px 0 6px; }
+  .c-placed { background: var(--ok); } .c-missing { background: #3a3f48; border: 1px solid var(--dim); } .c-wrong { background: #b07a3a; }
+  .c-blocked { background: var(--bad); } .c-scaffold { background: #8a6a4a; } .c-todig { background: #6a7fb0; } .c-dug { background: #262a31; } .c-none { background: transparent; }
 </style></head>
 <body>
 <h1>kev <small id="clock">connecting...</small> <small id="err"></small></h1>
 <div class="grid">
-  <section><h2>Plans</h2><div id="plans"></div></section>
+  <section><h2>Plans</h2><div id="plans"></div><h2 style="margin-top:12px">Blueprint</h2><div id="blueprint"></div></section>
   <section><h2>Goal stack</h2><div id="stack"></div></section>
   <section><h2>Current subtask</h2><div id="current"></div><h2 style="margin-top:12px">kev forecasts</h2><div id="forecasts"></div></section>
   <section><h2>Chat</h2><ul id="chat"></ul></section>
@@ -42,6 +64,7 @@ const PAGE = `<!doctype html>
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const ts = t => t == null ? '' : 't=' + Math.round(t) + 's';
+${gridHtml.toString()}
 const MARK = { done: '\\u2713', running: '\\u25b6', pending: '\\u00b7', blocked: '\\u2717', skipped: '\\u21b7' };
 function stepText(s) { return [s.kind, s.arg, s.count != null ? 'x' + s.count : null, s.from ? 'from ' + s.from : null].filter(x => x != null).join(' ').replace(/_/g, ' '); }
 function stepState(p, i) {
@@ -59,6 +82,7 @@ function render(s) {
     (p.reason ? ': ' + esc(p.reason) : '') + (p.source ? ', ' + esc(p.source) : '') + ')</span></div><ul>' +
     p.steps.map((st, i) => { const k = stepState(p, i); return '<li class="' + k + '"><span class="st">' + MARK[k] + '</span>' + (i + 1) + '. ' + esc(stepText(st)) + '</li>'; }).join('') +
     '</ul></div>').join('') : '<span class="dim">no plans</span>';
+  $('blueprint').innerHTML = gridHtml(s.blueprint, esc);
   const st = s.stack || {};
   $('stack').innerHTML = '<ul>' + (st.pushed || []).map(g => '<li><b>#' + g.id + '</b> ' + esc(stepText(g)) + ' <span class="dim">' + esc(g.source) +
     (g.plan_id != null ? ', plan #' + g.plan_id + ' step ' + (g.step_index + 1) : '') + '</span><br><span class="dim">' + esc(g.progress) + '</span></li>').join('') +

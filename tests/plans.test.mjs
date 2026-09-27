@@ -229,3 +229,11 @@ test('leaderLines: render() plus the plans blocked within 10 minutes', () => {
   assert.deepEqual(b.leaderLines(40), [...b.render(), 'blocked #1 compass (30 s ago): stuck'])
   assert.deepEqual(b.leaderLines(700), b.render())
 })
+
+import { stepText } from '../agent/plans.js'
+test('stepText: a blueprint step with its title and where it goes; without a title the id as before', () => {
+  assert.equal(stepText({ kind: 'build', arg: 'bp1', count: null, title: 'hut (5x5x3)', where: 'in front of you' }), 'build hut (5x5x3) in front of you')
+  assert.equal(stepText({ kind: 'dig', arg: 'bp2', title: 'room (3x3x2)', where: 'here' }), 'dig room (3x3x2) here')
+  assert.equal(stepText({ kind: 'dig', arg: null, title: 'strip mine (len 32)', where: 'at y -58' }), 'dig strip mine (len 32) at y -58')
+  assert.equal(stepText({ kind: 'build', arg: 'bp1' }), 'build bp1')
+})
