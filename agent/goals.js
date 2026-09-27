@@ -10,7 +10,7 @@ import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
   NIGHT_REFUGES, LOW_AIR, stuckOn, shelteredLow, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 // A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
-import { MINE, SMELT, HUNT, producerOf, isItem, expandItem, expandMaterials } from './recipes.js'
+import { MINE, SMELT, HUNT, producerOf, isItem, expandItem, expandMaterials, hasCraftRecipe } from './recipes.js'
 
 // Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
 // args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
@@ -543,7 +543,7 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
     case 'craft_item':
       if (RECIPES[arg]) return { ok: true }
       if (!isItem(arg)) return { ok: false, reason: `unknown item ${arg}` }
-      if (producerOf(arg)?.kind !== 'craft_item') return { ok: false, reason: `cannot craft ${humanize(arg)}` }
+      if (producerOf(arg)?.kind !== 'craft_item' && !hasCraftRecipe(arg)) return { ok: false, reason: `cannot craft ${humanize(arg)}` }
       return count == null || countOk(count) ? { ok: true } : BAD_COUNT
     case 'gather': {
       if (!PRODUCERS[arg] && producerOf(arg)?.kind !== 'gather') return { ok: false, reason: `cannot gather ${arg}` }

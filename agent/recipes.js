@@ -114,6 +114,10 @@ function collapseWoods(recipes) {
   return out
 }
 
+// A minecraft-data crafting recipe makes the item (redstone from a redstone block, an ingot from its block or nuggets):
+// such an item can be a craft_item goal even when its producer is another kind (live retry session: the unpack step).
+export const hasCraftRecipe = item => isItem(item) && mdRecipes(item).length > 0
+
 export function producerOf(item) {
   if (typeof item !== 'string') return null
   if (GENERIC[item]) return { kind: 'gather', item: GENERIC[item] }

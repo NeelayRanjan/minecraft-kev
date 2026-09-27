@@ -141,3 +141,6 @@ test('item 11: a materials plan refreshes against its materials, is titled "mate
   assert.equal(guardPlanAnswer(ask(true), b, 2).duplicate, 1)
   assert.equal(guardPlanAnswer(ask(false), b, 2).duplicate, undefined, 'crafting the helmet is another plan')
 })
+test('item 12: the goals prompt says storage blocks unpack into 9 of their item', () => {
+  assert.match(leaderSystemGoals(), /Storage blocks unpack into 9 of their item \(1 redstone block = 9 redstone/)
+})

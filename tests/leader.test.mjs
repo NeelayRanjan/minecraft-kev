@@ -952,6 +952,7 @@ export const LIVE2_EDITS = [
   ['- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};', '- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...}; add "materials_only": true to the item to gather its materials without crafting it;'],
   ['Examples: "make me a compass" -> plan_item compass count 1;', 'Examples: "make me a compass" -> plan_item compass count 1; "enough leather for a leather helmet, don\'t craft it" -> plan_item leather_helmet count 1 materials_only true;'],
   ['"item": {"name": "<item>", "count": <integer>} (plan_item only)', '"item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only)'],
+  ['Never answer cannot for an item without trying plan_item first. plan_steps only', 'Never answer cannot for an item without trying plan_item first. Storage blocks unpack into 9 of their item (1 redstone block = 9 redstone, 1 iron block = 9 iron ingots; coal, gold, diamond, emerald and lapis blocks too): a held or offered storage block helps, and the code unpacks it when a plan needs the item. plan_steps only'],
   ['(edit only), "text": "<line>" (say only), "why": "<one sentence>"}', '(edit only), "text": "<line>" (say only), "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}'],
 ]
 export const USER2_EDITS = [

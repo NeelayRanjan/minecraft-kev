@@ -894,3 +894,23 @@ test('stay: validate, never done or stuck, filter keeps only the hold, eat, wait
   assert.match(h.step(o).text, /^Staying here until you say I can go/)
   withProvider(['stay(Steve)', 'stay(here)'], () => assert.equal(h.teacher({ ...o, nearestHostile: null, food: 18 }), 'stay(here)'))
 })
+
+// Live retry session: the unpack step "craft redstone" (from a held redstone block) failed validation ("cannot craft
+// redstone"): redstone is mined, so producerOf calls it a gather. Any item with a crafting recipe may be a craft_item
+// goal; every step the expander emits for a held storage block validates.
+import { expandItem as expandItem2 } from '../agent/recipes.js'
+test('validateGoal: unpacking crafts from storage blocks validate; every expander step for a held block is accepted', () => {
+  assert.deepEqual(validateGoal({ kind: 'craft_item', arg: 'redstone', count: 9 }), { ok: true })
+  assert.deepEqual(validateGoal({ kind: 'craft_item', arg: 'iron_ingot', count: 9 }), { ok: true })
+  assert.equal(validateGoal({ kind: 'craft_item', arg: 'dirt', count: 1 }).ok, false, 'no recipe makes dirt')
+  for (const [block, item] of [['redstone_block', 'redstone'], ['iron_block', 'iron_ingot'], ['coal_block', 'coal'], ['gold_block', 'gold_ingot'],
+    ['diamond_block', 'diamond'], ['lapis_block', 'lapis_lazuli'], ['emerald_block', 'emerald'], ['copper_block', 'copper_ingot']]) {
+    const inv = { [block]: 2, crafting_table: 1 }
+    const ex = expandItem2(item, 9, inv)
+    assert.equal(ex.missing.length, 0, `${item}: ${ex.missing}`)
+    assert.ok(ex.steps.some(s => s.kind === 'craft_item' && s.arg === item), `${item}: unpacked (${JSON.stringify(ex.steps)})`)
+    assert.equal(checkPlanGates(ex.steps, chain({ inventory: inv })), null, `${item}: every step validates`)
+  }
+  const compass = expandItem2('compass', 1, { redstone_block: 2, iron_ingot: 4, crafting_table: 1 })
+  assert.equal(checkPlanGates(compass.steps, chain({ inventory: { redstone_block: 2, iron_ingot: 4, crafting_table: 1 } })), null)
+})
