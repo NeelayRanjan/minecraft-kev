@@ -23,7 +23,7 @@ import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
 import { stageOf, describeChain, needs } from './stages.js'
 import { counts, REPEAT_WINDOW } from './subtasks.js'
-import { chooseAction, interruptFor } from './policy.js'
+import { chooseAction, interruptFor, goalGuard } from './policy.js'
 import { EpisodeLog, oneHot, fromKev, onceEvery } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
@@ -381,6 +381,13 @@ async function decide(obs, t) {
       if (source === 'kev_error' && policy === 'kev') chosen = 'wait'
       else ({ id: chosen, source } = chooseAction({ policy, qs, labels, answers, rng, epsAction }))
       if (source === 'fallback') elog.event({ t, kind: 'fallback', wanted: policy === 'kev' ? answers.next_subtask?.choice : labels.next_subtask })
+      // The goal guard (policy.goalGuard): under a pushed goal the teacher's plugin pick replaces kev's untrained one;
+      // kev's pick and distribution stay in the decision log (answers), its forecasts are untouched.
+      if (source === 'kev') {
+        const g = goalGuard({ kevPick: chosen, teacherPick: labels.next_subtask ?? null, offered: Object.keys(qs.next_subtask.criteria), depth: goalStack.depth(),
+          plugins: new Set(registry.list().filter(p => p.enabled).map(p => p.id)) })
+        if (g) { elog.event({ t, kind: 'goal_guard', kev: chosen, to: g }); why = `goal guard: kev picked ${chosen}`; chosen = g; source = 'goal_guard' }
+      }
     }
     if (answers.next_subtask) answers.next_subtask.label = labels.next_subtask ?? null
     elog.decision({ t, state_text: text, decision, qs, labels, answers, chosen, source, latency_ms: latency, teacher_label: teacherLabel, why, planner_latency_ms: plannerLatency,

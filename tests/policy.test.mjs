@@ -81,3 +81,18 @@ test('a threat crossing on the same tick as low air is not lost; drowning fires 
   assert.equal(interruptFor({ hostileDist: 10, prevHostileDist: 10, current: cur, healthDrop: 0, dead: false, oxygen: 8 }), 'drowning')
   assert.equal(interruptFor({ hostileDist: 10, prevHostileDist: 30, current: cur, healthDrop: 0, dead: true, oxygen: 8 }), 'died')
 })
+
+import { goalGuard } from '../agent/policy.js'
+test('goalGuard: under a pushed goal the teacher\'s plugin pick replaces kev\'s; threat, eat and the same id keep kev\'s; none at depth 0', () => {
+  const plugins = new Set(['build_blueprint', 'dig_blueprint', 'mine', 'craft_item'])
+  const offered = ['build_blueprint(bp1)', 'explore_toward(surface)', 'eat', 'flee(threat)', 'fight(threat)', 'pillar_up', 'mine_stone', 'wait']
+  const g = (kevPick, teacherPick, depth = 1) => goalGuard({ kevPick, teacherPick, offered, depth, plugins })
+  assert.equal(g('explore_toward(surface)', 'build_blueprint(bp1)'), 'build_blueprint(bp1)')
+  assert.equal(g('wait', 'build_blueprint(bp1)'), 'build_blueprint(bp1)')
+  for (const k of ['flee(threat)', 'fight(threat)', 'pillar_up', 'eat']) assert.equal(g(k, 'build_blueprint(bp1)'), null, k)
+  assert.equal(g('build_blueprint(bp1)', 'build_blueprint(bp1)'), null, 'kev already picked it')
+  assert.equal(g('explore_toward(surface)', 'build_blueprint(bp1)', 0), null, 'no guard at depth 0')
+  assert.equal(g('explore_toward(surface)', 'mine_stone'), null, 'a legacy option is not guarded')
+  assert.equal(g('explore_toward(surface)', 'dig_blueprint(bp9)'), null, 'not offered')
+  assert.equal(g('explore_toward(surface)', null), null)
+})

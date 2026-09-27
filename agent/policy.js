@@ -37,3 +37,16 @@ export function interruptFor({ hostileDist, prevHostileDist, current, healthDrop
   if (oxygen != null && oxygen <= DROWNING_OXYGEN && !escapes(current)) return 'drowning'
   return null
 }
+
+// The goal guard (Task 7 fix round 1): kev was never trained on the plugin executors and, under a pushed goal, keeps
+// picking moves over them (blueprint smoke: explore_toward(surface) p 0.45 vs build_blueprint 0.20, 34 times). Under a
+// pushed goal (depth > 0) whose teacher picks an offered plugin option (its name in `plugins`), that pick replaces
+// kev's, unless kev picked a threat response, eat, or the same id. Returns the id to start instead, or null (kev's
+// pick stands). At depth 0 never fires, so experiment-1 and chain runs are unchanged.
+export function goalGuard({ kevPick, teacherPick, offered, depth, plugins }) {
+  if (!(depth > 0) || !teacherPick || !kevPick || kevPick === teacherPick) return null
+  const name = id => String(id).split('(')[0]
+  if (THREAT_SUBTASKS.has(name(kevPick)) || kevPick === 'eat') return null
+  if (!plugins.has(name(teacherPick)) || !offered.includes(teacherPick)) return null
+  return teacherPick
+}
