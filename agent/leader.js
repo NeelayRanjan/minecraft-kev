@@ -67,11 +67,12 @@ export function pickEvent(events, mode = null) {
 // What an answer does, judged against what is running now. askedCurrentId is the subtask the leader was shown (or, when
 // asked while idle, the one kev started right after); if that has ended, the answer is about a situation that is gone.
 // Two guards (run 1: prompt rules alone did not hold) turn an otherwise valid override into 'blocked':
-// - threat: the bot is in a threat response (fight, flee, pillar_up) with a hostile near (threatNear) and the answer
+// - threat: the bot is in a threat response (fight, flee, pillar_up, build_shelter) with a hostile near (threatNear) and the answer
 //   is not itself a threat response; switching into or between threat responses stays allowed;
 // - recent_failure: the answer's id failed to path (or timed out) in one of its last two attempts (recentResults: the
 //   runner's last subtask completions {id, result}, oldest first).
-export const THREAT_RESPONSES = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
+// build_shelter too (live stress session: at 1 hp the guard refused flee -> build_shelter and the bot died)
+export const THREAT_RESPONSES = new Set(['fight(threat)', 'flee(threat)', 'pillar_up', 'build_shelter'])
 export const PATH_FAILURES = new Set(['no_path', 'target_gone', 'timeout', 'not_found'])
 
 // The failing result among the last two attempts of id in recentResults, or null.

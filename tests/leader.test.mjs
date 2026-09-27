@@ -81,6 +81,15 @@ test('applyAnswer pins stale: once the subtask the leader judged has ended, any 
 })
 
 // ---- guards -------------------------------------------------------------------------------------------------------
+
+// Live stress session: at 1 hp the leader ordered build_shelter while flee ran; the guard blocked it as leaving a threat
+// response and the bot died. build_shelter is a threat response: switching into it, or between it and the others, is allowed.
+test('threat guard: build_shelter counts as a threat response', () => {
+  const offered = [{ id: 'flee(threat)' }, { id: 'build_shelter' }, { id: 'mine_iron' }]
+  assert.deepEqual(applyAnswer({ answer: { action: 'build_shelter' }, currentId: 'flee(threat)', askedCurrentId: 'flee(threat)', offered, threatNear: true }), { kind: 'override', id: 'build_shelter' })
+  assert.deepEqual(applyAnswer({ answer: { action: 'flee(threat)' }, currentId: 'build_shelter', askedCurrentId: 'build_shelter', offered, threatNear: true }), { kind: 'override', id: 'flee(threat)' })
+  assert.deepEqual(applyAnswer({ answer: { action: 'mine_iron' }, currentId: 'build_shelter', askedCurrentId: 'build_shelter', offered, threatNear: true }), { kind: 'blocked', id: 'mine_iron', reason: 'threat' })
+})
 const guardOffered = [{ id: 'mine_iron' }, { id: 'mine_stone' }, { id: 'flee(threat)' }, { id: 'fight(threat)' }, { id: 'pillar_up' }, { id: 'explore_toward(down)' }]
 
 test('threat guard: no override away from fight, flee or pillar_up while a hostile is near', () => {
