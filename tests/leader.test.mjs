@@ -937,6 +937,9 @@ export const LIVE_EDITS = [
   ['- gather, arg one of: ', '- gather (push_goal only), arg one of: '],
   ['so never list the steps yourself.', 'so never list the steps yourself. plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first.'],
   ['cannot only for things outside every list.', 'cannot only for things that are neither an item nor a goal above.'],
+  ['Steve says "come here" -> push_goal go_to, arg player:Steve;', '"go to y 12" -> push_goal go_to, arg y:12; Steve says "come here" -> push_goal go_to, arg player:Steve;'],
+  ['Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.', 'Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.\nAudience requests always come before the default goal chain; the chain resumes afterwards.'],
+  ['push it in the morning or answer cannot.', 'push it in the morning or answer cannot. The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.'],
 ]
 function liveEdits(text) {
   for (const [a, b] of LIVE_EDITS) { assert.equal(text.split(a).length, 2, `edit anchor once: ${a}`); text = text.replace(a, b) }
@@ -1039,4 +1042,14 @@ test('goals prompt: plan_item takes any item; the legacy lists are the push_goal
   assert.match(s, /push_goal goal kinds and their arguments/)
   assert.match(s, /- craft_item \(push_goal only\), arg one of: /)
   assert.match(s, /- gather \(push_goal only\), arg one of: /)
+})
+
+// Live stress session: the leader invented "the goal chain must be completed first" and refused "go to y 12" at night
+// citing the night protocol.
+test('goals prompt: audience requests come before the chain; the night rule is surface-only; go to y 12 example', () => {
+  const s = leaderSystemGoals()
+  assert.ok(s.includes('Audience requests always come before the default goal chain; the chain resumes afterwards.'))
+  assert.ok(s.includes('The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.'))
+  assert.ok(s.includes('"go to y 12" -> push_goal go_to, arg y:12'))
+  assert.ok(leaderSystemGoals({ blueprints: true }).includes('Audience requests always come before the default goal chain'))
 })
