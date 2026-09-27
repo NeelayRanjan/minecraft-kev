@@ -18,7 +18,8 @@
 //             blocks take (build only)
 //   layerNeeds the same restricted to the working layer
 //   scaffoldLeft (build only) scaffold blocks of this build still standing; finished stays false while any is
-import { diff, foundation, isLiquidBlock, itemForBlock, liquidBlocked } from './blueprints.js'
+//   tier      the pickaxe tier (blueprints.toolTierFor) the solid cells still to dig need, present only when above 0
+import { diff, foundation, isLiquidBlock, itemForBlock, liquidBlocked, toolTierFor } from './blueprints.js'
 import { nextSegment } from './templates.js'
 
 const key = p => `${p.x},${p.y},${p.z}`
@@ -77,6 +78,9 @@ export class BlueprintBook {
       segment: (bp.segment ?? 0) + 1, segments: bp.segments ?? 1,
       finished: work.length === 0 && d.blocked.length === 0 && nextSegment(bp) === null,
     }
+    // the pickaxe tier the solid cells still to dig need (a dig's work, a build's wrong cells); only when above 0
+    const tier = Math.max(0, ...(build ? d.wrong.filter(c => !liquidSet.has(c)) : work).map(c => toolTierFor(blockAt(c.pos)?.name)))
+    if (tier > 0) out.tier = tier
     if (!build) return out
     // scaffold blocks still standing (an entry whose block is gone or changed no longer counts)
     const scaffoldLeft = (this.scaffolds.get(id) ?? []).filter(p => blockAt(p)?.name === p.item).length

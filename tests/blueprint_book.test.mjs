@@ -75,7 +75,7 @@ test('dig progress: solid cells are the work, liquid cells are blocked and never
   const b = new BlueprintBook(), w = world({ above: 'stone', below: 'stone' })
   const id = b.add(makeBlueprint('room', { w: 3, d: 3, h: 2 }, null, { anchor, facing: 'north' }))
   let p = b.progress(id, w.blockAt)
-  assert.deepEqual(p, { kind: 'dig', name: 'room', done: 0, total: 18, missing: 18, blocked: 0, layer: 2, layers: 2, segment: 1, segments: 1, finished: false })
+  assert.deepEqual(p, { kind: 'dig', name: 'room', done: 0, total: 18, missing: 18, blocked: 0, layer: 2, layers: 2, segment: 1, segments: 1, finished: false, tier: 1 })
   const cs = cells(b.get(id))
   w.set(cs[0].pos, 'water')
   for (const c of cs.slice(1)) w.set(c.pos, 'air')
@@ -171,4 +171,20 @@ test('a build is not finished while its scaffold stands; the line says removing 
   p = b.progress(id, w.blockAt)
   assert.deepEqual([p.finished, p.scaffoldLeft], [true, 0])
   assert.doesNotMatch(b.line(id, w.blockAt, {}), /scaffold/)
+})
+
+// Task 7 fix round 1: the pickaxe tier the remaining dig work needs (present only when above 0).
+import { toolTierFor } from '../agent/blueprints.js'
+test('toolTierFor and progress().tier: the pickaxe tier the solid cells still to dig need', () => {
+  assert.deepEqual(['dirt', 'stone', 'deepslate', 'iron_ore', 'diamond_ore', 'obsidian', 'air', 'nope'].map(toolTierFor), [0, 1, 1, 2, 3, 4, 0, 0])
+  const b = new BlueprintBook(), id = b.add(makeBlueprint('room', {}, null, { anchor, facing: 'north' }))
+  const w = world({ below: 'stone', above: 'dirt' })
+  assert.equal(b.progress(id, w.blockAt).tier, undefined, 'dirt only: no tier')
+  const c = cells(b.get(id))
+  w.set(c[0].pos, 'stone'); w.set(c[1].pos, 'iron_ore')
+  assert.equal(b.progress(id, w.blockAt).tier, 2)
+  const hb = b.add(hut()), hw = world()
+  const inside = cells(b.get(hb)).find(x => x.layer === 0 && x.want === 'air' && x.row === 2)
+  hw.set(inside.pos, 'stone')
+  assert.equal(b.progress(hb, hw.blockAt).tier, 1, 'a build\'s wrong cells count too')
 })

@@ -40,6 +40,16 @@ const LIQUID = new Set(['water', 'lava', 'bubble_column'])
 // Blocks that are water as far as digging next to them goes: underwater plants, and any waterlogged block (glow lichen,
 // pointed dripstone, slabs, stairs, fences in an aquifer) release water into a newly dug neighbour.
 const WATER_PLANTS = new Set(['kelp', 'kelp_plant', 'seagrass', 'tall_seagrass'])
+// The pickaxe tier (wood 1, stone 2, iron 3, diamond 4) digging a block by name needs: the lowest tier among the
+// pickaxes minecraft-data lists as its harvest tools; 0 when nothing is required (dirt, sand) or the name is unknown.
+const PICK_TIER = { wooden_pickaxe: 1, golden_pickaxe: 1, stone_pickaxe: 2, iron_pickaxe: 3, diamond_pickaxe: 4, netherite_pickaxe: 4 }
+export function toolTierFor (name) {
+  const tools = md.blocksByName[name]?.harvestTools
+  if (!tools) return 0
+  const tiers = Object.keys(tools).map(i => PICK_TIER[md.items[i]?.name]).filter(t => t != null)
+  return tiers.length ? Math.min(...tiers) : 0
+}
+
 export function isLiquidBlock (b) {
   if (!b) return false
   if (LIQUID.has(b.name) || WATER_PLANTS.has(b.name)) return true

@@ -10,7 +10,7 @@ import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
   NIGHT_REFUGES, LOW_AIR, stuckOn, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 // A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
-import { MINE, SMELT, HUNT, producerOf, isItem, expandItem } from './recipes.js'
+import { MINE, SMELT, HUNT, producerOf, isItem, expandItem, tierHeld } from './recipes.js'
 
 // Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
 // args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
@@ -126,9 +126,19 @@ function bpStep(obs, id, verb) {
   const within = p.total ? Math.floor(10 * p.done / p.total) : 0
   return { index: Math.min(of, 1 + 10 * ((p.segment || 1) - 1) + within), of, text }
 }
+// The pickaxe a blueprint's remaining dig work needs and the bot lacks (progress().tier, at most a stone pickaxe: the
+// legacy chain wood -> planks -> sticks -> table -> wooden -> cobblestone -> stone), else null. Its goal then offers
+// that chain and its teacher walks it (Task 7 fix round 1: the smoke's stairs ended on needs_tool with a worn pickaxe).
+const TOPUP_PICK = { 1: 'wooden_pickaxe', 2: 'stone_pickaxe' }
+function pickaxeTopUp(obs, p) {
+  const t = Math.min(2, p?.tier ?? 0)
+  return t > 0 && tierHeld(obs.inventory) < t ? TOPUP_PICK[t] : null
+}
 function buildFilter(obs, id, opts, g) {
   const p = bpProgress(id, obs)
   const legacy = new Set(moves(opts)), plugin = new Set()
+  const pick = pickaxeTopUp(obs, p)
+  if (pick) wanted(obs, pick, 1, legacy)
   for (const [item, n] of shortOf(obs, p?.needs)) materialIds(obs, item, n, legacy, plugin)
   const mine = !bpNight(obs, id) ? `build_blueprint(${id})` : null
   return keepWithPlugins(obs, goalOf('build', id, null, g), opts, legacy, x => x === mine || plugin.has(x))
@@ -136,6 +146,8 @@ function buildFilter(obs, id, opts, g) {
 function buildTeacher(obs, id, g) {
   const p = bpProgress(id, obs)
   if (!p || bpNight(obs, id)) return null
+  const pick = pickaxeTopUp(obs, p)
+  if (pick) return acquire(obs, pick)
   const short = shortOf(obs, p.layerNeeds)
   if (!short.length) return `build_blueprint(${id})`
   const [item] = short[0]
@@ -421,10 +433,18 @@ export const GOAL_KINDS = {
     done: (obs, id) => !!bpProgress(id, obs)?.finished,
     filter: (obs, id, opts, count, g) => {
       const mine = !bpNight(obs, id) ? `dig_blueprint(${id})` : null
-      return keepWithPlugins(obs, goalOf('dig', id, null, g), opts, new Set(moves(opts)), x => x === mine)
+      const legacy = new Set(moves(opts))
+      const pick = pickaxeTopUp(obs, bpProgress(id, obs))
+      if (pick) wanted(obs, pick, 1, legacy)
+      return keepWithPlugins(obs, goalOf('dig', id, null, g), opts, legacy, x => x === mine)
     },
     step: (obs, id) => bpStep(obs, id, 'dig'),
-    teacher: (obs, id) => bpProgress(id, obs) && !bpNight(obs, id) ? `dig_blueprint(${id})` : null,
+    teacher: (obs, id) => {
+      const p = bpProgress(id, obs)
+      if (!p || bpNight(obs, id)) return null
+      const pick = pickaxeTopUp(obs, p)
+      return pick ? acquire(obs, pick) : `dig_blueprint(${id})`
+    },
     describe: (obs, id) => `dig ${bpName(id)}`,
     paused: (obs, id) => bpNight(obs, id),
     stuckS: 300,

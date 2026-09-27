@@ -806,3 +806,40 @@ test('planStepGoal: a capped gather step aims at held + min(need, cap); the plan
   assert.equal(planStepGoal({ kind: 'gather', arg: 'cobblestone', count: 28 }, chain({ inventory: { stone_pickaxe: 1, cobblestone: 32 } })).count, 60)
   assert.deepEqual(checkPlanGates([{ kind: 'gather', arg: 'cobblestone', count: 8 }], o), null, 'the gate accepts a target above 64')
 })
+
+// Task 7 fix round 1: a dig (or a build's dig cells) needing a pickaxe tier the bot lacks offers the legacy pickaxe
+// chain (at most a stone pickaxe) and the teacher picks its next step; with the tool held, the executor again.
+test('dig(bp5) / build(bp4) pickaxe top-up: the legacy pickaxe options, the teacher\'s next step, the executor once held', () => {
+  withBlueprints(() => {
+    const s = new GoalStack({ goal: 'nether' })
+    s.push({ kind: 'dig', arg: 'bp5', source: 'leader', t: 0 })
+    withProvider(['dig_blueprint(bp5)'], () => {
+      // no pickaxe, logs in view, stone needs tier 1: wood first
+      const bare = bpObs({ bp5: prog({ surface: false, tier: 1 }) }, { inventory: {} })
+      const kept = s.filter(bare, options(bare)).map(x => x.id)
+      assert.ok(kept.includes('gather_wood') && kept.includes('dig_blueprint(bp5)'), kept.join(' '))
+      assert.equal(s.teacher(bare), 'gather_wood')
+      // planks and sticks held, a table near: craft the wooden pickaxe
+      const wood = bpObs({ bp5: prog({ surface: false, tier: 1 }) }, { inventory: { oak_planks: 3, stick: 2 }, base: { crafting_table: { dist: 3 } } })
+      assert.equal(s.teacher(wood), 'craft(wooden_pickaxe)')
+      assert.ok(s.filter(wood, options(wood)).some(x => x.id === 'craft(wooden_pickaxe)'))
+      // iron ore needs a stone pickaxe: a wooden one held, cobblestone and sticks: craft it
+      const ore = bpObs({ bp5: prog({ surface: false, tier: 2 }) }, { inventory: { wooden_pickaxe: 1, cobblestone: 3, stick: 2 }, base: { crafting_table: { dist: 3 } } })
+      assert.equal(s.teacher(ore), 'craft(stone_pickaxe)')
+      // diamond ore (tier 3) asks no more than a stone pickaxe
+      const deep = bpObs({ bp5: prog({ surface: false, tier: 3 }) }, { inventory: { stone_pickaxe: 1 } })
+      assert.equal(s.teacher(deep), 'dig_blueprint(bp5)')
+      // held: the executor, and no pickaxe options added
+      const held = bpObs({ bp5: prog({ surface: false, tier: 1 }) })
+      assert.equal(s.teacher(held), 'dig_blueprint(bp5)')
+      assert.ok(!s.filter(held, options(held)).some(x => x.id === 'gather_wood'))
+    })
+    const b = new GoalStack({ goal: 'nether' })
+    b.push({ kind: 'build', arg: 'bp4', source: 'leader', t: 0 })
+    withProvider(['build_blueprint(bp4)'], () => {
+      const o = bpObs({ bp4: prog({ tier: 1, layerNeeds: {} }) }, { inventory: { cobblestone: 80 } })
+      assert.equal(b.teacher(o), 'gather_wood')
+      assert.ok(b.filter(o, options(o)).some(x => x.id === 'gather_wood'))
+    })
+  })
+})
