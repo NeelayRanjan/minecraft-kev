@@ -252,7 +252,8 @@ function applyPlanAnswer(action, answer, why, obs) {
     if (!isItem(name)) return bad(`unknown item ${it.name}`)
     const count = it.count ?? 1
     if (!Number.isInteger(count) || count < 1) return bad(`bad count ${count}`)
-    return { kind: 'plan_item', id: null, item: name, count: Math.min(64, count), why }   // the expander's cap: the title matches the plan
+    // the expander's cap: the title matches the plan; materials_only: the ingredients without the final craft
+    return { kind: 'plan_item', id: null, item: name, count: Math.min(64, count), why, ...(it.materials_only === true ? { materials_only: true } : {}) }
   }
   if (action === 'plan_steps') {
     const raw = answer.steps
@@ -367,7 +368,7 @@ export const leaderSchema = (options, { goals = false, blueprints = false, reque
   properties: {
     action: { type: 'string', enum: ['continue', ...goalActionsFor({ blueprints }).filter(a => a !== 'say' || hasQuestion(requests)), ...options.map(o => o.id)] },
     goal: STEP_SCHEMA,
-    item: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' } }, required: ['name'] },
+    item: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' }, materials_only: { type: 'boolean' } }, required: ['name'] },
     title: { type: 'string' },
     steps: { type: 'array', items: STEP_SCHEMA, minItems: 1, maxItems: MAX_PLAN_STEPS },
     edit: { type: 'object', properties: { op: { type: 'string', enum: EDIT_OPS }, plan_id: { type: 'integer' } }, required: ['op'] },
@@ -404,7 +405,8 @@ export function parseLeaderAnswer(text, options, { goals = false, blueprints = f
   const out = { action: ok ? a : null, why, goal, reply: typeof obj.reply === 'string' ? obj.reply : null }
   if (!ok) return out
   const o = x => x && typeof x === 'object' && !Array.isArray(x) ? x : null
-  if (a === 'plan_item') out.item = o(obj.item) && { name: typeof obj.item.name === 'string' ? obj.item.name : null, count: Number.isInteger(obj.item.count) ? obj.item.count : null }
+  if (a === 'plan_item') out.item = o(obj.item) && { name: typeof obj.item.name === 'string' ? obj.item.name : null, count: Number.isInteger(obj.item.count) ? obj.item.count : null,
+    ...(obj.item.materials_only === true ? { materials_only: true } : {}) }
   if (a === 'plan_steps') { out.title = typeof obj.title === 'string' ? obj.title : ''; out.steps = Array.isArray(obj.steps) ? obj.steps.map(s => o(s) ? parsedGoal(s) : null) : null }
   if (a === 'edit') out.edit = o(obj.edit) && { op: typeof obj.edit.op === 'string' ? obj.edit.op : null, plan_id: Number.isInteger(obj.edit.plan_id) ? obj.edit.plan_id : null }
   if (a === 'say') out.text = typeof obj.text === 'string' ? obj.text : ''
@@ -480,7 +482,7 @@ export function leaderSystemGoals({ blueprints = false } = {}) {
   return `${LEADER_RULES}
 
 Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and on top any goals pushed by you or asked for by the audience (players chatting with the bot). kev works on the top goal until it is done or stuck, then the one below resumes. Plans: the PLANS section lists the bot's plans, ordered goal steps it works through one at a time, the front plan first (numbered #1, #2, ...), then any plan blocked in the last 10 minutes ("blocked #n ...: reason"; the code refuses to plan it again until a new request asks). Besides "continue" and a subtask id you can answer:
-- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};
+- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...}; add "materials_only": true to the item to gather its materials without crafting it;
 - plan_steps with a title and 1 to 8 goal steps: {"action": "plan_steps", "title": "stone from home", "steps": [{"kind": "go_to", "arg": "base"}, {"kind": "gather", "arg": "cobblestone", "count": 8}], "why": ...};
 - edit with an op (skip, drop, move_front, clear) and, for drop and move_front, the plan number from PLANS: {"action": "edit", "edit": {"op": "drop", "plan_id": 3}, "why": ...};
 - say with a line the audience reads, only for conversation (a question with nothing to do); when a request can be acted on, act and answer in reply: {"action": "say", "text": "...", "why": ...};
@@ -498,14 +500,14 @@ push_goal goal kinds and their arguments (these lists are for push_goal only; pl
 - stay, arg player:<name> or here: wait at that spot (picks up drops, eats, fights back) until you pop it;
 - survive_night, return_to_base: no arg.
 For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse: act with a goal or a plan, or answer cannot. cannot only for things that are neither an item nor a goal above.
-The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; "go to y 12" -> push_goal go_to, arg y:12; Steve says "come here" -> push_goal go_to, arg player:Steve; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve; Steve says "wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I'll wait here"; "you're free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply.
+The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "enough leather for a leather helmet, don't craft it" -> plan_item leather_helmet count 1 materials_only true; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; "go to y 12" -> push_goal go_to, arg y:12; Steve says "come here" -> push_goal go_to, arg player:Steve; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve; Steve says "wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I'll wait here"; "you're free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply.
 ${blueprints ? BLUEPRINT_RULES : ''}Answer every audience request with exactly one of plan_item, plan_steps${bpActions}, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
 Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
 Audience requests always come before the default goal chain; the chain resumes afterwards.
 Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot. The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.
 "continue" remains the default when there is no request and the goals make progress.
 
-Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}`
+Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}`
 }
 export const LEADER_SYSTEM_GOALS = leaderSystemGoals({ blueprints: true })
 

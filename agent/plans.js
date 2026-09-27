@@ -15,6 +15,8 @@ const live = p => ACTIVE.has(p.status) && p.cursor < p.steps.length
 export function planTitle(item, count = 1) {
   return count > 1 ? `${count} ${humanize(item)}` : humanize(item)
 }
+// An item plan's title: planTitle, or "materials for <title>" for a materials_only plan.
+export const itemPlanTitle = (item, count = 1, materialsOnly = false) => `${materialsOnly ? 'materials for ' : ''}${planTitle(item, count)}`
 
 // A step in chat words: "mine 4 raw iron", "smelt 4 iron", "craft compass", "shear 3 white wool".
 const LEGACY_GATHER = { raw_iron: 'mine', cobblestone: 'mine', coal: 'mine', diamond: 'mine', flint: 'mine', obsidian: 'mine', iron_ingot: 'smelt',
@@ -147,6 +149,23 @@ export class PlanBook {
     const lines = this.render(), bl = this.blockedLines(t)
     return bl.length ? [...(this.active().length ? lines : []), ...bl] : lines
   }
+  // A running or pending item plan for this item (materials_only plans apart), else null.
+  activeByItem(item, materialsOnly = false) {
+    return this.plans.find(p => ACTIVE.has(p.status) && p.item === item && !!p.materials_only === !!materialsOnly) ?? null
+  }
+  // A larger count for an active item plan (live retry session: "two white beds total"): the count and title change and
+  // the steps after the cursor are replaced by `steps` (the runner's fresh expansion against the inventory now). The
+  // reply line, or null when there is no such active plan.
+  raise(id, count, steps, t = null) {
+    const p = this.plans.find(q => q.id === id)
+    if (!p || !ACTIVE.has(p.status) || !p.item) return null
+    p.count = count
+    p.title = itemPlanTitle(p.item, count, p.materials_only)
+    p.steps = [...p.steps.slice(0, p.cursor), ...steps.map(s => ({ ...s }))]
+    p.raised_t = t
+    if (p.cursor >= p.steps.length) { p.status = 'done'; p.end_t = t }
+    return `updated plan #${p.id}: ${p.title}`
+  }
   // A running or pending plan with this title (a duplicate request adds nothing), else null.
   activeByTitle(title) {
     const key = normTitle(title)
@@ -157,6 +176,7 @@ export class PlanBook {
 }
 
 // The code guards on a plan answer (plan_item or plan_steps), before the runner acts on it (pure):
+// - its item is an active item plan's (plan_item): a larger count is {raise: <plan id>}, else {duplicate: <plan id>};
 // - its title equals a running or pending plan's: marked {duplicate: <plan id>} (the runner replies "Already on it"
 //   and adds nothing);
 // - its title equals a plan blocked within BLOCKED_WINDOW_S and no request in `requests` ({t}) arrived after the block:
@@ -165,7 +185,10 @@ export class PlanBook {
 // Any other answer is returned unchanged.
 export function guardPlanAnswer(res, book, t, requests = []) {
   if (res?.kind !== 'plan_item' && res?.kind !== 'plan_steps') return res
-  const title = res.kind === 'plan_item' ? planTitle(res.item, res.count) : res.title
+  // the same item as an active item plan: a larger count raises it ({raise: id}), else a duplicate
+  const same = res.kind === 'plan_item' ? book.activeByItem(res.item, !!res.materials_only) : null
+  if (same) return res.count > (same.count ?? 1) ? { ...res, raise: same.id } : { ...res, duplicate: same.id }
+  const title = res.kind === 'plan_item' ? itemPlanTitle(res.item, res.count, res.materials_only) : res.title
   const dup = book.activeByTitle(title)
   if (dup) return { ...res, duplicate: dup.id }
   const b = book.stillBlocked(title, t, requests)

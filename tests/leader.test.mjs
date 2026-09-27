@@ -949,6 +949,9 @@ export const LIVE2_EDITS = [
     '- cannot: decline an audience request; write one short friendly sentence saying why in reply (or in "why").\nEvery answer may also carry "reply": one short line the player reads in chat. Add a short reply for the player whenever you act on a request ("on my way!", "sure, making it now").'],
   ['- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);', '- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);\n- stay, arg player:<name> or here: wait at that spot (picks up drops, eats, fights back) until you pop it;'],
   ['Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.', 'Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve; Steve says "wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I\'ll wait here"; "you\'re free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply.'],
+  ['- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};', '- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...}; add "materials_only": true to the item to gather its materials without crafting it;'],
+  ['Examples: "make me a compass" -> plan_item compass count 1;', 'Examples: "make me a compass" -> plan_item compass count 1; "enough leather for a leather helmet, don\'t craft it" -> plan_item leather_helmet count 1 materials_only true;'],
+  ['"item": {"name": "<item>", "count": <integer>} (plan_item only)', '"item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only)'],
   ['(edit only), "text": "<line>" (say only), "why": "<one sentence>"}', '(edit only), "text": "<line>" (say only), "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}'],
 ]
 export const USER2_EDITS = [
@@ -966,6 +969,7 @@ function schema2(json) {
   const kinds = e => e.flatMap(k => k === 'receive' ? [...NEW_KINDS, k] : [k])
   o.properties.goal.properties.kind.enum = kinds(o.properties.goal.properties.kind.enum)
   o.properties.steps.items.properties.kind.enum = kinds(o.properties.steps.items.properties.kind.enum)
+  o.properties.item.properties.materials_only = { type: 'boolean' }
   for (const [k, v] of Object.entries(o.properties)) { if (k === 'why') props.reply = { type: 'string' }; props[k] = v }
   o.properties = props
   return JSON.stringify(o, null, 1) + '\n'

@@ -10,7 +10,7 @@ import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
   NIGHT_REFUGES, LOW_AIR, stuckOn, shelteredLow, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 // A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
-import { MINE, SMELT, HUNT, producerOf, isItem, expandItem } from './recipes.js'
+import { MINE, SMELT, HUNT, producerOf, isItem, expandItem, expandMaterials } from './recipes.js'
 
 // Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
 // args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
@@ -633,7 +633,7 @@ export function refreshPlanStep(step, plan, obs) {
   if (!plan?.item || !COUNTED_KINDS.has(step?.kind) || !Number.isInteger(step.count)) return step
   const inv = { ...(obs?.inventory || {}) }
   if (plan.more) inv[plan.item] = Math.max(0, (inv[plan.item] || 0) - (plan.base ?? inv[plan.item] ?? 0))
-  const ex = expandItem(plan.item, plan.count ?? 1, inv, { placed: placedStations(obs) })
+  const ex = (plan.materials_only ? expandMaterials : expandItem)(plan.item, plan.count ?? 1, inv, { placed: placedStations(obs) })
   if (ex.missing.length) return step
   const fresh = ex.steps.find(s => s.kind === step.kind && s.arg === step.arg)
   return fresh ? { ...step, count: fresh.count } : { ...step, count: 0, skip: true }

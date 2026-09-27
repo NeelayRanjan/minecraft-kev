@@ -170,6 +170,28 @@ export function expandItem(item, count, inventory = {}, { placed = { crafting_ta
   return walk([[item, want]], inventory, placed)
 }
 
+// The materials of `count` of an item without the final craft (live retry session: "enough leather for a leather
+// helmet, don't craft it" planned 1 leather): the ingredients of its recipe (legacy table, else the minecraft-data
+// recipe that uses the most held ingredients), times the crafts, expanded net of the inventory as expandItem does; a
+// smelted item's input; any other item (mined, hunted, gathered) is its own material (expandItem). No station for the
+// final craft is planned. -> { steps, missing, tree }
+export function expandMaterials(item, count, inventory = {}, { placed = { crafting_table: false, furnace: false } } = {}) {
+  const p = producerOf(item)
+  const n = Math.min(MAX_COUNT, Math.max(1, Math.floor(Number(count)) || 1))
+  if (p?.kind === 'smelt_item') return walk([[p.input, n]], inventory, placed)
+  if (p?.kind !== 'craft_item') return expandItem(item, n, inventory, { placed })
+  let recipe
+  if (p.legacy) recipe = { ingredients: Object.entries(RECIPES[item]).map(([k, q]) => [GENERIC[k] === 'stick' ? 'stick' : k, q]), yield: 1 }
+  else {
+    const usable = mdRecipes(item).filter(rc => rc.ingredients.every(([k]) => producible(k)))
+    if (!usable.length) return { steps: [], missing: [missingLeaf(item)], tree: '' }
+    const held = k => inventory[k] || 0
+    recipe = usable.reduce((best, rc) => rc.ingredients.reduce((s, [k, q]) => s + Math.min(held(k), q), 0) > best.ingredients.reduce((s, [k, q]) => s + Math.min(held(k), q), 0) ? rc : best)
+  }
+  const crafts = Math.ceil(n / (recipe.yield || 1))
+  return walk(recipe.ingredients.map(([k, q]) => [k, q * crafts]), inventory, placed)
+}
+
 // The two walks over a list of targets [[item, n]] (in order), with extra tools to hoist (a dig's pickaxe tier).
 function walk(targets, inventory, placed, extra = {}) {
   const dry = walkTree(targets, inventory, placed, null)

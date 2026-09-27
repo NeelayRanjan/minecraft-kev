@@ -107,3 +107,37 @@ test('item 9: the alias table maps generic names to real items, for plan_item an
   assert.deepEqual(itemInRequest('craft some stairs'), { item: 'oak_stairs', count: 1 })
   assert.deepEqual(itemInRequest('make a red bed'), { item: 'red_bed', count: 1 }, 'a named colour wins')
 })
+
+// 11: "enough leather for a leather helmet, don't craft it" planned 1 leather. plan_item materials_only plans the
+// ingredients of the item (net) and stops before its final craft.
+import { expandMaterials } from '../agent/recipes.js'
+test('item 11: plan_item materials_only: parsed, validated, planned without the final craft; the prompt has the example', () => {
+  const s = leaderSchema(opts, { goals: true })
+  assert.deepEqual(s.properties.item.properties.materials_only, { type: 'boolean' })
+  const raw = JSON.stringify({ action: 'plan_item', item: { name: 'leather_helmet', count: 1, materials_only: true } })
+  const parsed = parseLeaderAnswer(raw, opts, { goals: true })
+  assert.deepEqual(parsed.item, { name: 'leather_helmet', count: 1, materials_only: true })
+  assert.deepEqual(parseLeaderAnswer(JSON.stringify({ action: 'plan_item', item: { name: 'compass' } }), opts, { goals: true }).item, { name: 'compass', count: null })
+  const r = applyAnswer({ answer: parsed, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true })
+  assert.deepEqual(r, { kind: 'plan_item', id: null, item: 'leather_helmet', count: 1, why: '', materials_only: true })
+  const steps = expandMaterials('leather_helmet', 1, {}).steps
+  assert.deepEqual(steps.map(x => `${x.kind} ${x.arg} ${x.count}`), ['hunt leather 5'], 'no crafting table: only the final craft needs one')
+  assert.deepEqual(expandMaterials('leather_helmet', 1, { leather: 2 }).steps.map(x => `${x.kind} ${x.arg} ${x.count}`), ['hunt leather 3'], 'net of the inventory')
+  assert.deepEqual(expandMaterials('iron_pickaxe', 1, { stick: 2, iron_ingot: 3 }).steps, [], 'all held: nothing to do')
+  assert.deepEqual(expandMaterials('glass', 4, {}).steps.map(x => `${x.kind} ${x.arg} ${x.count}`).slice(-1), ['gather sand 4'], 'a smelted item: its input')
+  assert.match(leaderSystemGoals(), /"enough leather for a leather helmet, don't craft it" -> plan_item leather_helmet count 1 materials_only true/)
+})
+import { refreshPlanStep } from '../agent/goals.js'
+import { PlanBook, guardPlanAnswer, itemPlanTitle } from '../agent/plans.js'
+test('item 11: a materials plan refreshes against its materials, is titled "materials for", and is its own duplicate key', () => {
+  const plan = { id: 2, item: 'leather_helmet', count: 1, materials_only: true, steps: [] }
+  const hunt = { kind: 'hunt', arg: 'leather', count: 5 }
+  assert.deepEqual(refreshPlanStep(hunt, plan, baseObs({ inventory: { leather: 3 } })), { ...hunt, count: 2 })
+  assert.equal(refreshPlanStep(hunt, plan, baseObs({ inventory: { leather: 5 } })).skip, true)
+  assert.equal(itemPlanTitle('leather_helmet', 1, true), 'materials for leather helmet')
+  const b = new PlanBook()
+  b.add({ title: 'materials for leather helmet', steps: [hunt], source: 'leader', t: 1, item: 'leather_helmet', count: 1, materials_only: true })
+  const ask = mo => ({ kind: 'plan_item', id: null, item: 'leather_helmet', count: 1, why: '', ...(mo ? { materials_only: true } : {}) })
+  assert.equal(guardPlanAnswer(ask(true), b, 2).duplicate, 1)
+  assert.equal(guardPlanAnswer(ask(false), b, 2).duplicate, undefined, 'crafting the helmet is another plan')
+})

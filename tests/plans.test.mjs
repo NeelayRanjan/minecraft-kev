@@ -272,3 +272,22 @@ test('PlanBook.add keeps an item plan\'s item and count (refreshPlanStep), more/
   const more = b.add({ title: '2 iron ingot', steps: [{ kind: 'gather', arg: 'iron_ingot', count: 2 }], source: 'leader', t: 3, item: 'iron_ingot', count: 2, more: true, base: 3 })
   assert.equal(more.more, true); assert.equal(more.base, 3)
 })
+
+// Live retry session: "I want two white beds total" was refused as a duplicate of the 1-bed plan. A plan_item for an
+// item an active plan already makes: a larger count raises that plan (the runner re-expands its remaining steps), an
+// equal or smaller one is a duplicate ("Already on it").
+test('guardPlanAnswer / PlanBook.raise: a larger count raises the active plan for the item; the remaining steps are replaced', () => {
+  const b = new PlanBook()
+  const p = b.add({ title: 'white bed', steps: [{ kind: 'hunt', arg: 'white_wool', count: 3 }, { kind: 'craft_item', arg: 'white_bed', count: 1 }], source: 'audience:A', t: 1, item: 'white_bed', count: 1 })
+  const ask = count => ({ kind: 'plan_item', id: null, item: 'white_bed', count, why: '' })
+  assert.equal(guardPlanAnswer(ask(2), b, 5).raise, p.id)
+  assert.equal(guardPlanAnswer(ask(1), b, 5).duplicate, p.id)
+  assert.equal(guardPlanAnswer({ ...ask(3), item: 'red_bed' }, b, 5).raise, undefined, 'another item')
+  b.currentGoal()   // running, cursor 0
+  p.cursor = 1      // the wool is done
+  const msg = b.raise(p.id, 2, [{ kind: 'hunt', arg: 'white_wool', count: 3 }, { kind: 'craft_item', arg: 'white_bed', count: 2 }], 9)
+  assert.equal(msg, 'updated plan #1: 2 white bed')
+  assert.equal(p.count, 2); assert.equal(p.title, '2 white bed'); assert.equal(p.cursor, 1)
+  assert.deepEqual(p.steps.map(s => `${s.kind} ${s.arg} ${s.count}`), ['hunt white_wool 3', 'hunt white_wool 3', 'craft_item white_bed 2'])
+  assert.equal(b.raise(99, 2, [], 9), null)
+})

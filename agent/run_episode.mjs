@@ -35,8 +35,8 @@ import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStac
   requestStillWaiting, WAITING_FEEDBACK } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep } from './goals.js'
-import { PlanBook, planTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
-import { expandItem } from './recipes.js'
+import { PlanBook, planTitle, itemPlanTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
+import { expandItem, expandMaterials } from './recipes.js'
 import { PluginRegistry, appendRequestLog } from './plugins.js'
 import { startStatusServer } from './status_page.js'
 import { Supervisor, DEFAULTS as SUP } from './supervisor.js'
@@ -632,14 +632,16 @@ function addPlan({ title, steps, source, ...item }, t, why = null) {
 // plan a stage gate would refuse at one of its steps (goals.checkPlanGates) is refused now, with that reason.
 function planItem(res, reqs, source, t, why) {
   const o = lastObs
-  const title = planTitle(res.item, res.count)
+  const mo = !!res.materials_only   // the ingredients only, without the final craft (recipes.expandMaterials)
+  const title = itemPlanTitle(res.item, res.count, mo)
+  if (res.raise != null) { raisePlan(res, reqs, t, why); return }
   if (res.duplicate != null) {
     elog.event({ t, kind: 'plan_duplicate', plan_id: res.duplicate, title, why })
     say(`Already on it: plan #${res.duplicate}.`)
     return
   }
   const inv = { ...(o?.inventory || {}), ...(res.more ? { [res.item]: 0 } : {}) }
-  const ex = expandItem(res.item, res.count, inv, { placed: placedStations(o) })
+  const ex = (mo ? expandMaterials : expandItem)(res.item, res.count, inv, { placed: placedStations(o) })
   const gate = !ex.missing.length && ex.steps.length && o ? checkPlanGates(ex.steps, o) : null
   if (gate) {
     elog.event({ t, kind: 'plan_refused', item: res.item, count: res.count, step_index: gate.step_index, step: stepOf(gate.step), reason: gate.reason, why })
@@ -651,8 +653,31 @@ function planItem(res, reqs, source, t, why) {
     logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, missing: ex.missing, why })
   } else if (!ex.steps.length) {
     elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: [], held: true, why })
-    say(`Already have ${title}.`)
-  } else addPlan({ title, steps: ex.steps, source, item: res.item, count: res.count, more: !!res.more, base: res.more ? (o?.inventory?.[res.item] || 0) : null }, t, why)
+    say(mo ? `Already have the ${title}.` : `Already have ${title}.`)
+  } else addPlan({ title, steps: ex.steps, source, item: res.item, count: res.count, more: !!res.more, base: res.more ? (o?.inventory?.[res.item] || 0) : null, materials_only: mo }, t, why)
+}
+
+// A larger count for an active item plan (plans.guardPlanAnswer's raise): the remaining steps are expanded again for the
+// new count against the inventory now; the plan's pushed step, now stale, is popped (syncPlans pushes the fresh one).
+function raisePlan(res, reqs, t, why) {
+  const o = lastObs, p = planOf(res.raise)
+  const ex = (p?.materials_only ? expandMaterials : expandItem)(res.item, res.count, { ...(o?.inventory || {}) }, { placed: placedStations(o) })
+  if (!p || ex.missing.length) {
+    say(`Can't make ${humanItem(planTitle(res.item, res.count))} yet${ex.missing.length ? `: needs ${ex.missing.map(humanItem).join(', ')} (no way to get it)` : '.'}`)
+    logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, missing: ex.missing, why })
+    return
+  }
+  const steps = ex.steps
+  const line = planBook.raise(p.id, res.count, steps, t)
+  elog.event({ t, kind: 'plan_raised', plan_id: p.id, count: res.count, steps: steps.map(stepOf), why })
+  log(`plan #${p.id}: ${line}`)
+  const top = goalStack.top()
+  if (top.plan_id === p.id) {
+    goalStack.pop('plan_changed')
+    elog.event({ t, kind: 'goal_popped', goal: pubGoal(top), reason: 'plan_changed' })
+    closeGoal(top.id, t, 'popped')
+  }
+  say(`Updated plan #${p.id}: ${p.materials_only ? 'materials for ' : ''}${res.count} ${humanItem(res.item)}.`)
 }
 
 // edit (the leader's, or pop_goal on a plan step): skip | drop | move_front | clear; the reply is the plan book's line.
