@@ -46,6 +46,14 @@ The session's other findings ride along (section 5).
 - **Storage:** `data/waypoints/<seed>.json` persists across episodes on the same world seed. Names are lowercased, 1 to 24 characters, `[a-z0-9 _-]`.
 - **The prompt's WAYPOINTS section:** name, distance and direction from Kevin (e.g. "home: 34 m north-east"), up to 8 waypoints.
 
+## 3b. Chests (added 2026-09-27, the user: "can you grab all the iron from this chest system here")
+
+- Plugins `withdraw(<item>)` and `deposit(<item>|all)` over mineflayer containers (chest, trapped_chest, barrel; double chests count once): the containers are those within 8 m of the request's anchor (the requesting player's position and facing when the message arrived, or a waypoint: "the chests at home"); withdraw takes matching items up to the count (default all that fits, never overfilling the inventory: keep 2 free slots), deposit fills existing stacks then empty slots, "everything except tools/food" supported by a small exclude set. Results `ok (took 37 iron_ingot from 4 containers)`, `not_found (no containers)`, `nothing (no iron_ingot)`, `full`.
+- Goal kinds `withdraw(item, count, place)` and `deposit(item, count, place)`; leader answers through push_goal with examples; the reply reports what moved.
+- Chest index: every container Kevin opens is recorded per world (`data/chests/<seed>.json`: position, item counts, time seen); the leader's facts show a short summary per waypoint or area ("chests near home: 64 cobblestone, 12 iron ingot"); the index is refreshed on each open and marked stale after 30 min.
+- Planner use (if the round has room, else first next round): the expander counts indexed items as available at a place and emits `withdraw` steps before mining/smelting for them.
+- Safety: Kevin opens only containers near an explicit request's anchor or a named waypoint; never takes from containers nobody pointed it at.
+
 ## 4. Food (starvation)
 
 Kevin never ate in 24 minutes; starvation took him to exactly 1/20 health twice (Normal difficulty stops at 1). Fixes:
