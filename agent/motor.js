@@ -222,11 +222,16 @@ export class Motor {
   async run(id, obs) {
     if (this.busy) throw new Error(`motor busy with ${this.current.id}`)
     const { name, arg } = parseOption(id)
-    const exec = this.exec[name]
-    if (!exec) return fail('failed', `unknown subtask ${name}`)
+    // A built-in executor first, then a plugin from the registry (agent/plugins.js; the runner sets motor.plugins). The
+    // plugin object is taken once here: a hot reload during the run does not change the code this run executes.
+    const builtin = this.exec[name]
+    const plugin = builtin ? null : this.plugins?.get(name) ?? null
+    if (!builtin && !plugin) return fail('failed', `unknown subtask ${name}`)
+    const exec = builtin ?? function (a, o) { return plugin.run(this, a, o) }
     this.busy = true; this.interrupted = null
     const gen = ++this.gen
-    const timeoutS = name === 'wait' && this.bot.entity.isInWater ? Math.max(this.timeouts.wait, WAIT_IN_WATER_S) : (this.timeouts[name] ?? 30)
+    const timeoutS = plugin ? (plugin.timeout ?? 30)
+      : name === 'wait' && this.bot.entity.isInWater ? Math.max(this.timeouts.wait, WAIT_IN_WATER_S) : (this.timeouts[name] ?? 30)
     this.current = { id, name, arg, t0: Date.now(), y0: this.bot.entity.position.y, progress: null, gen }
     this.deadline = Date.now() + timeoutS * 1000
     const ctx = Object.create(this)   // executors run with this = ctx so check() can compare their run generation
@@ -245,7 +250,7 @@ export class Motor {
     }
     await sleep(150)   // let the pathfinder's path_stop / goal_updated events from stopAll() drain before the next goto listens
     if (this.interrupted) out = fail(INTERRUPT_RESULT[this.interrupted] || 'interrupted', this.interrupted)
-    if (['gather_wood', 'mine_stone', 'mine_coal', 'mine_iron', 'mine_diamond', 'mine_gravel', 'mine_obsidian', 'explore_toward', 'return_to_base', 'flee'].includes(name)) {
+    if (plugin?.breaker || ['gather_wood', 'mine_stone', 'mine_coal', 'mine_iron', 'mine_diamond', 'mine_gravel', 'mine_obsidian', 'explore_toward', 'return_to_base', 'flee'].includes(name)) {
       this.mem.lastPath = out.result === 'ok' ? 'ok' : ['no_path', 'timeout'].includes(out.result) ? out.result : this.mem.lastPath
     }
     this.last = { id, result: out.result }

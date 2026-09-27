@@ -232,3 +232,31 @@ test('isGravityBlock: sand, gravel, concrete powder', () => {
   for (const n of ['stone', 'sandstone', 'dirt']) assert.equal(isGravityBlock({ name: n }), false, n)
   assert.equal(isGravityBlock(null), false)
 })
+
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { PluginRegistry } from '../agent/plugins.js'
+
+test('Motor.run falls back to a registry plugin: echo(x) returns ok x; built-in executors win; unknown fails', async () => {
+  const reg = new PluginRegistry({ dir: path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'plugins') })
+  await reg.load()
+  const mem = new EpisodeMemory()
+  const motor = new Motor(fakeBot(), mcDataFor('1.20.4'), mem)
+  motor.plugins = reg
+  assert.deepEqual(await motor.run('echo(x)', {}), { result: 'ok', detail: 'x' })
+  assert.equal(mem.lastPath, 'ok')   // echo declares breaker: true, so its result feeds the livelock bookkeeping
+  assert.deepEqual(await motor.run('nothing(x)', {}), { result: 'failed', detail: 'unknown subtask nothing' })
+  motor.exec.echo = async function (arg) { return { result: 'ok', detail: `builtin ${arg}` } }
+  assert.deepEqual(await motor.run('echo(y)', {}), { result: 'ok', detail: 'builtin y' })
+})
+
+test('Motor.run uses the plugin timeout and maps a plugin throw', async () => {
+  const motor = new Motor(fakeBot(), mcDataFor('1.20.4'), new EpisodeMemory())
+  const slow = { id: 'slow', timeout: 0.05, async run(m) { await sleep(300); return { result: 'ok' } } }
+  const bad = { id: 'bad', timeout: 5, async run() { const e = new Error('no way'); e.name = 'NoPath'; throw e } }
+  motor.plugins = { get: n => ({ slow, bad })[n] ?? null }
+  const t0 = Date.now()
+  assert.equal((await motor.run('slow', {})).result, 'timeout')
+  assert.ok(Date.now() - t0 < 280)
+  assert.equal((await motor.run('bad(a)', {})).result, 'no_path')
+})
