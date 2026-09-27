@@ -241,10 +241,12 @@ function walkTree(targets, inventory, placed, hoist) {
   function need(name, n, depth) {
     if (missing) return false
     const have = Math.min(held(name), n)
-    const r = n - have
+    let r = n - have
     const pad = '  '.repeat(depth)
     if (have) take(name, have)
     if (r <= 0) { lines.push(`${pad}${name} x${n}: held`); return true }
+    r -= unpack(name, r, pad)
+    if (r <= 0) return true
     const p = producerOf(name)
     if (!p || !producible(name) || stack.has(name)) { missing = missingLeaf(name); return false }
     lines.push(`${pad}${name} x${r}${have ? ` (held ${have})` : ''} <- ${p.kind}`)
@@ -252,6 +254,26 @@ function walkTree(targets, inventory, placed, hoist) {
     const ok = produce(name, r, p, depth + 1)
     stack.delete(name)
     return ok
+  }
+  // A held item that one 2x2 recipe turns into `name` (a storage block: redstone_block -> 9 redstone, iron_block -> 9
+  // iron_ingot, coal_block -> 9 coal; live stress session: redstone blocks were offered for a compass and the plan mined
+  // redstone) is crafted first, before any producer. Wood keeps the legacy path. Returns how many of the r it made.
+  function unpack(name, r, pad) {
+    if (GENERIC[name] || isSpecies(name)) return 0
+    for (const rc of mdRecipes(name)) {
+      if (rc.table || rc.ingredients.length !== 1) continue
+      const [ing, q] = rc.ingredients[0]
+      if (GENERIC[ing] || isSpecies(ing) || ing === name || stack.has(ing)) continue
+      const crafts = Math.min(Math.floor(held(ing) / q), Math.ceil(r / rc.yield))
+      if (crafts <= 0) continue
+      const made = crafts * rc.yield, used = Math.min(r, made)
+      take(ing, crafts * q)
+      give(name, made - used)
+      lines.push(`${pad}${name} x${used} <- craft_item from ${crafts * q} held ${ing}`)
+      emit('craft_item', name, used)
+      return used
+    }
+    return 0
   }
   const hasStation = s => !!placed?.[s] || held(s) > 0
   const station = (s, depth) => { tools[s] = true; return hasStation(s) || (need(s, 1, depth) && (give(s, 1), true)) }

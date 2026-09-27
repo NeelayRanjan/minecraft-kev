@@ -245,3 +245,22 @@ test('expandBlueprint: the 150-block cap applies to free-form blueprints only', 
   const hut = makeBlueprint('hut', { w: 9, d: 9, h: 5 }, 'cobblestone', at)
   assert.deepEqual(bsteps(expandBlueprint(hut, {}, { id: 'bp7' })), ['gather(cobblestone, 239)', 'build(bp7, null)'])
 })
+
+// Live stress session: the player offered redstone blocks for a compass and the expander only mined redstone. A held
+// item that one 2x2 recipe turns into the needed item (a storage block) is crafted first, before any mining/smelting.
+test('expandItem: a held storage block is unpacked before mining or smelting', () => {
+  const c = expandItem('compass', 1, { redstone_block: 2, iron_ingot: 4, crafting_table: 1 })
+  assert.deepEqual(c.missing, [])
+  assert.ok(c.steps.some(s => s.kind === 'craft_item' && s.arg === 'redstone' && s.count === 1), JSON.stringify(c.steps))
+  assert.ok(!c.steps.some(s => s.kind === 'gather' && s.arg === 'redstone'), 'no mining when a block is held')
+  const r = expandItem('redstone', 12, { redstone_block: 1 })
+  assert.deepEqual(r.steps.filter(s => s.arg === 'redstone').map(s => [s.kind, s.count]), [['craft_item', 9], ['gather', 3]], JSON.stringify(r.steps))
+  const i = expandItem('iron_ingot', 5, { iron_block: 1 })
+  assert.deepEqual(i.steps, [{ kind: 'craft_item', arg: 'iron_ingot', count: 5 }])
+  const coal = expandItem('coal', 3, { coal_block: 1 })
+  assert.deepEqual(coal.steps, [{ kind: 'craft_item', arg: 'coal', count: 3 }])
+  const plain = expandItem('redstone', 2, {}).steps
+  assert.ok(!plain.some(s => s.kind === 'craft_item' && s.arg === 'redstone') && plain.some(s => s.kind === 'gather' && s.arg === 'redstone'), 'nothing held: mined as before')
+  // wood keeps the legacy path (logs are not unpacked into planks here)
+  assert.deepEqual(expandItem('planks', 4, { oak_log: 1 }).steps, [{ kind: 'gather', arg: 'planks', count: 4 }])
+})
