@@ -35,6 +35,15 @@ const ok = detail => ({ result: 'ok', detail })
 const fail = (result, detail) => ({ result, detail })
 
 class Abort extends Error { constructor(why) { super(why); this.name = 'Abort' } }
+// A thrown error -> a typed result (Motor.run; the plugin registry counts only the 'failed' ones as plugin bugs).
+export function mapError(e) {
+  if (e instanceof Abort) return /^(liquid|drop ahead)/.test(e.message) ? fail('failed', e.message) : fail(e.message === 'timeout' ? 'timeout' : 'interrupted', e.message)
+  const n = e?.name || ''
+  if (n === 'NoPath') return fail('no_path')
+  if (n === 'NoHarvestTool' || n === 'NoItem') return fail('no_materials', e.message)
+  if (n === 'Timeout' || n === 'PathStopped' || n === 'GoalChanged') return fail('timeout', n)
+  return fail('failed', `${n}: ${e?.message}`.slice(0, 120))
+}
 
 // The liquid ('lava' / 'water') in the cells a staircase step digs (head, feet, step-down ahead) or in the cell the bot
 // would stand on after the step, else null. Liquids have an empty bounding box, so they must be checked by name.
@@ -294,14 +303,7 @@ export class Motor {
     if (Date.now() > this.deadline) throw new Abort('timeout')
   }
 
-  mapError(e) {
-    if (e instanceof Abort) return /^(liquid|drop ahead)/.test(e.message) ? fail('failed', e.message) : fail(e.message === 'timeout' ? 'timeout' : 'interrupted', e.message)
-    const n = e?.name || ''
-    if (n === 'NoPath') return fail('no_path')
-    if (n === 'NoHarvestTool' || n === 'NoItem') return fail('no_materials', e.message)
-    if (n === 'Timeout' || n === 'PathStopped' || n === 'GoalChanged') return fail('timeout', n)
-    return fail('failed', `${n}: ${e?.message}`.slice(0, 120))
-  }
+  mapError(e) { return mapError(e) }
 
   // ---- helpers ---------------------------------------------------------------------------------------------------
   count(name) { return this.bot.inventory.items().filter(i => i.name === name).reduce((n, i) => n + i.count, 0) }

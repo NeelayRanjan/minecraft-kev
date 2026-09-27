@@ -3,13 +3,15 @@
 // written and arena-tested offline, never generated at runtime. Contract: agent/plugins/README.md.
 //
 // Motor.run uses a built-in executor first, then registry.get(name); the plugin's timeout replaces the motor's. The
-// registry never throws out of load(), the watch callbacks or optionsFor(). A plugin whose run() throws three times in
-// a row (a bug: typed fail results, timeouts and interrupts do not count) is disabled until its file changes; so is one
+// registry never throws out of load(), the watch callbacks or optionsFor(). A plugin whose run() throws a bug three times
+// in a row (an error mapError maps to 'failed'; NoPath, typed results, timeouts and interrupts do not count) is disabled
+// until its file changes; so is one
 // whose options() or preconditions() throws three times in a row.
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { optionId } from './subtasks.js'
+import { mapError } from './motor.js'
 
 export const MAX_THROWS = 3
 export const DEBOUNCE_MS = 500
@@ -110,12 +112,15 @@ export class PluginRegistry {
     if (e && e.version === version) e.throws = 0
   }
 
-  // Count a throw only for the current version and only when the run was not abandoned: an Abort, or a context whose
-  // check() throws (timed out, interrupted, superseded), means the error came from the motor stopping it.
+  // Count a throw only for the current version, only when it is a bug (mapError maps it to 'failed': a TypeError, not a
+  // NoPath -> no_path or a pathfinder Timeout; the livelock breaker handles those) and only when the run was not
+  // abandoned: an Abort (the motor's own stop or safety check), or a context whose check() throws (timed out,
+  // interrupted, superseded), means the error came from the motor, not the plugin.
   threw(id, version, err, motor) {
     const e = this.entries.get(id)
     if (!e || e.version !== version || !e.enabled) return
     if (err?.name === 'Abort') return
+    if (mapError(err).result !== 'failed') return
     try { motor?.check?.() } catch { return }
     this.strike(e, short(err))
   }

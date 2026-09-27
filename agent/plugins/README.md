@@ -19,9 +19,11 @@ export default {
 - `motor` is the Motor run context: `check()` (throws when the run was timed out, interrupted or superseded: call it
   after every await), `goto()`, `walkTo()`, `mineKind()`, `log()`, `bot`, `mem`, `md`, and the other Motor helpers.
 - Return typed results (`RESULTS` in `motor.js`: `ok`, `no_path`, `not_found`, `no_materials`, `failed`, ...). A
-  thrown error is mapped like a built-in's, but it also counts as a bug: **three throws in a row disable the plugin**
-  until its file changes (a clean run resets the count). Timeouts and interrupts never count. A throw from
-  `options()` or `preconditions()` skips the plugin for that call and counts the same way.
+  thrown error is mapped like a built-in's (`mapError`). Only a bug counts, an error `mapError` maps to `failed`
+  (a TypeError, say): **three in a row disable the plugin** until its file changes (a clean run resets the count). A
+  thrown NoPath (`no_path`), a pathfinder Timeout, a typed result, a timeout or an interrupt never counts; the livelock
+  breaker withholds an option that keeps failing. A throw from `options()` or `preconditions()` skips the plugin for
+  that call and counts as a bug.
 - A run in flight keeps the code it started with; the next run uses the reloaded file. A reload that fails to import
   keeps the previous version and shows the error in `registry.list()`. Deleting the file removes the plugin.
 - The options reach kev and the leader only through the goal filters (`goals.js` `pluginOptions`), which the runner

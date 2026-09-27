@@ -170,3 +170,17 @@ test('appendRequestLog appends JSON lines, creates the file, and never throws', 
   assert.deepEqual(rows[0].missing, ['boat'])
   assert.doesNotThrow(() => appendRequestLog(dir, { t: 3 }))   // a directory: logged, not thrown
 })
+
+test('only bugs count: three NoPath throws in a row do not disable; three TypeErrors do', async () => {
+  const dir = tempDir({
+    'nopath.mjs': plugin('nopath', `const e = new Error('no path to ore'); e.name = 'NoPath'; throw e`),
+    'typo.mjs': plugin('typo', `return undefined.x`),
+  })
+  const reg = new PluginRegistry({ dir })
+  await reg.load()
+  for (let i = 0; i < 3; i++) await assert.rejects(reg.get('nopath').run(ctx, 'a', {}), /no path/)
+  assert.equal(reg.enabled('nopath'), true)
+  for (let i = 0; i < 3; i++) await assert.rejects(reg.get('typo').run(ctx, 'a', {}), TypeError)
+  assert.equal(reg.enabled('typo'), false)
+  assert.match(reg.list().find(p => p.id === 'typo').error, /undefined/)
+})
