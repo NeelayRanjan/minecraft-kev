@@ -23,11 +23,11 @@ const PERIOD = { periodic15: 15, periodic30_interrupts: 30, subgoals: 120 }
 const EVENT_TRIGGERS = {
   events: new Set(['subtask_done', 'subtask_failed', 'subtask_error', 'death']),
   periodic30_interrupts: new Set(['interrupt', 'death']),
-  subgoals: new Set(['goal_done', 'goal_failed', 'subtask_failed', 'interrupt', 'death', 'audience_request', 'idle_wait', 'plan_blocked']),
+  subgoals: new Set(['goal_done', 'goal_failed', 'subtask_failed', 'interrupt', 'death', 'audience_request', 'request_waiting', 'idle_wait', 'plan_blocked']),
 }
 // subgoals: at most one call per SPACING s, except for these events (which also skip the FIRST_AT wait)
 const SPACING = { subgoals: 20 }
-const BYPASS = { subgoals: new Set(['death', 'interrupt', 'audience_request', 'idle_wait', 'plan_blocked']) }
+const BYPASS = { subgoals: new Set(['death', 'interrupt', 'audience_request', 'request_waiting', 'idle_wait', 'plan_blocked']) }
 const FIRST_AT = 20   // periodic modes: let the bot start before the first call
 
 // When to ask. The runner calls due() once per tick with the most important event of that tick (pickEvent) and
@@ -57,7 +57,7 @@ export class LeaderTrigger {
 
 // The most important event of a tick. With a mode, events that mode ignores are skipped, so a goal_done does not
 // shadow a subtask_done in the events mode.
-const EVENT_RANK = ['death', 'interrupt', 'audience_request', 'idle_wait', 'plan_blocked', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
+const EVENT_RANK = ['death', 'interrupt', 'audience_request', 'request_waiting', 'idle_wait', 'plan_blocked', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
 export function pickEvent(events, mode = null) {
   const cares = mode ? EVENT_TRIGGERS[mode] : null
   for (const e of EVENT_RANK) if (events.includes(e) && (!cares || cares.has(e))) return e
@@ -221,6 +221,13 @@ function guardSay(res, requests, recentSays) {
   if ((recentSays || []).slice(-SAY_MEMORY).some(t => sameText(t, res.text))) return bad('repeated reply')
   return res
 }
+// A call that showed requests and answered at subtask level (continue, override, or one that came too late or was
+// blocked) leaves them waiting (live retry session: an interrupt call overrode a subtask while "come back" waited): the
+// runner fires the next call at once (event request_waiting, which bypasses the spacing) with WAITING_FEEDBACK. After
+// RequestBook's maxShown calls they are settled as not_now as before, and nothing waits any more.
+export const WAITING_FEEDBACK = 'a player request is still waiting: answer it first'
+const SUBTASK_OUTCOMES = new Set(['continue', 'override', 'stale', 'blocked'])
+export const requestStillWaiting = (settleAs, shown = []) => SUBTASK_OUTCOMES.has(settleAs) && (shown || []).some(r => !r.answered)
 // The leader's say texts from the runner's events, the last SAY_MEMORY.
 export const recentSayTexts = events => (events || []).filter(e => e?.kind === 'leader_say' && typeof e.text === 'string').map(e => e.text).slice(-SAY_MEMORY)
 // The FEEDBACK line for the next call: a refused say with requests shown (they stay pending), else null.

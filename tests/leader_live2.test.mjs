@@ -44,3 +44,25 @@ test('item 4: a say whose line came in reply instead of text is accepted', () =>
     requests: [{ t: 1, name: 'Steve', text: 'where are you?' }], recentSays: [] })
   assert.deepEqual(r, { kind: 'say', id: null, text: 'I am 12 m east of you' })
 })
+
+// 5: an idle or interrupt call overrode a subtask while "come back" waited; the request must get a request-level answer.
+import { LeaderTrigger, pickEvent, requestStillWaiting, WAITING_FEEDBACK } from '../agent/leader.js'
+test('item 5: a continue or override leaves a shown request waiting: the next call fires at once with FEEDBACK', () => {
+  const b = new RequestBook(); const r = b.add({ t: 1, name: 'Steve', text: 'come back' })
+  const shown = [r]
+  b.shown([r.id]); b.settle([r.id], 'override', 5)
+  assert.equal(requestStillWaiting('override', shown), true)
+  assert.equal(requestStillWaiting('continue', shown), true)
+  assert.equal(requestStillWaiting('stale', shown), true)
+  assert.equal(requestStillWaiting('push_goal', shown), false)
+  assert.equal(requestStillWaiting('continue', []), false)
+  assert.equal(WAITING_FEEDBACK, 'a player request is still waiting: answer it first')
+  const tr = new LeaderTrigger('subgoals')
+  tr.asked(30)
+  assert.equal(tr.due({ t: 31, event: 'request_waiting' }), true, 'bypasses the 20 s spacing')
+  assert.equal(tr.reason, 'request_waiting')
+  assert.equal(pickEvent(['subtask_failed', 'request_waiting'], 'subgoals'), 'request_waiting')
+  // the second call that does not answer settles it as not_now (today's rule), and then nothing waits
+  b.shown([r.id]); const nn = b.settle([r.id], 'continue', 9)
+  assert.equal(nn.length, 1); assert.equal(requestStillWaiting('continue', shown), false)
+})

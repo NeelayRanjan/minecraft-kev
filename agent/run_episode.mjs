@@ -31,7 +31,8 @@ import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
-  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop } from './leader.js'
+  snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
+  requestStillWaiting, WAITING_FEEDBACK } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep } from './goals.js'
 import { PlanBook, planTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
@@ -475,6 +476,8 @@ function leaderAnswered(snap, a, err) {
   const waiting = reqs.filter(r => !r.answered)
   const notNow = requestBook.settle(reqs.map(r => r.id), settleAs, +t.toFixed(1))
   const settled = waiting.filter(r => r.answered).map(r => ({ t: r.t, name: r.name, as: r.answered.kind }))
+  // a request shown to a call that answered at subtask level is still waiting: ask again at once, with FEEDBACK
+  if (goalsOn && requestStillWaiting(settleAs, reqs)) { leaderFeedbackNext = WAITING_FEEDBACK; leaderNote('request_waiting') }
   elog.leader.push({ t_asked: snap.t, t_answered: +t.toFixed(1), trigger: snap.event, current_id: snap.currentId, current_id_at_answer: currentId,
     action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, reason: res.reason ?? null, threat_near: threatNear, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
     ...(goalsOn ? { reply: reply || null } : {}),
