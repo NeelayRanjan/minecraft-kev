@@ -247,7 +247,6 @@ bot.on('message', (jsonMsg, position) => {
         chain: lastObs ? (goal === 'nether' ? chainStep(lastObs) : { ...techStep(lastObs), stage: 'iron_pickaxe' }) : null })
     } catch (e) { lines = planBook.render(); log(`plan lines failed: ${e?.message || e}`) }
     for (const line of lines) say(line)
-    for (const line of lines) say(line)
     const bl = activeBlueprintId()
     if (bl) { try { const line = blueprintBook.line(bl, blockAtP, lastObs?.inventory ?? {}); if (line) say(line) } catch {} }
     return
@@ -316,7 +315,11 @@ function tick() {
   obs.goalText = goalStack.describe(obs)
   obs.goalStep = goalStepOf(obs)
   const topGoal = goalStack.top()   // a build/dig blueprint goal on top: its line in the state text (none otherwise)
-  obs.blueprintLine = (topGoal.kind === 'build' || topGoal.kind === 'dig') && isBlueprintId(topGoal.arg) ? blueprintBook.line(topGoal.arg, blockAtP, obs.inventory) : null
+  // guarded like statusBlueprint: an odd blueprint must cost its state line, never the episode (the tick is synchronous)
+  obs.blueprintLine = null
+  if ((topGoal.kind === 'build' || topGoal.kind === 'dig') && isBlueprintId(topGoal.arg)) {
+    try { obs.blueprintLine = blueprintBook.line(topGoal.arg, blockAtP, obs.inventory) } catch (e) { log(`blueprint line failed: ${e?.message || e}`) }
+  }
   if (lastWalkPos && Math.hypot(obs.pos.x - lastWalkPos.x, obs.pos.z - lastWalkPos.z) >= 0.5) lastWalkFacing = facingToward(lastWalkPos, obs.pos) ?? lastWalkFacing
   lastWalkPos = { x: obs.pos.x, y: obs.pos.y, z: obs.pos.z }
   const step = obs.goalStep, c = counts(obs)
