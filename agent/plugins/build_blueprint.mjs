@@ -21,7 +21,8 @@
 // goal offers this executor again until the scaffold is gone (a call interrupted during the tidy is resumed).
 //
 // Results: ok (+n placed[, m dug][, s scaffold][, r scaffold removed][, k unreachable][, j blocked][, complete]) |
-// no_materials (<item>) | unreachable (<n> cells) | no_path | failed (no blueprint).
+// no_materials (<item>) | unreachable (<n> cells; a dig cell motor.digCell refuses as 'underfoot' counts) | no_path | failed (no
+// blueprint).
 import { Vec3 } from 'vec3'
 import { cells, diff, foundation, itemForBlock, liquidBlocked } from '../blueprints.js'
 import { buildOrder, faces, key, scaffoldMaterial } from '../reach.js'
@@ -150,7 +151,7 @@ const plugin = {
     await motor.stepClear(new Set(w.work.map(c => key(c.pos))))
     const scaffoldLeft = scaffold?.length ?? 0
 
-    const unreachable = w.work.filter(c => ['unreachable', 'occupied', 'rejected', 'unbreakable', 'no_face', 'solid', 'unloaded'].includes(skip.get(key(c.pos))) ||
+    const unreachable = w.work.filter(c => ['unreachable', 'occupied', 'rejected', 'unbreakable', 'no_face', 'solid', 'unloaded', 'underfoot'].includes(skip.get(key(c.pos))) ||
       (stalled && !skip.has(key(c.pos)) && c.op !== 'dig' && !faces(c.pos, blockAt).length)).length   // floating: only once nothing else can be done
     const noPath = w.work.filter(c => skip.get(key(c.pos)) === 'no_path').length
     const liquid = w.blocked.length

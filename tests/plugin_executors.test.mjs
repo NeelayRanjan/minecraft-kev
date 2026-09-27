@@ -454,3 +454,17 @@ test('dig_blueprint run: a cell motor.digCell refuses as underfoot waits and end
   m.digCell = async () => ({ ok: false, why: 'underfoot' })
   assert.deepEqual(await dig.run(m, id), { result: 'no_path', detail: '1 cells' })
 })
+
+test('build_blueprint run: a dig cell motor.digCell refuses as underfoot is unreachable, never ok (+0 placed)', async () => {
+  const w = buildWorld(), book = new BlueprintBook(), id = book.add(hutAt())
+  for (const c of buildWork(book.get(id), w.blockAt).work) if (c.op === 'place') w.set(c.pos, c.want)
+  w.set({ x: 0, y: 64, z: -4 }, 'stone')   // interior air cell: the only work left is a dig
+  const bot = { blockAt: v => w.blockAt({ x: v.x, y: v.y, z: v.z }), inventory: { items: () => [] }, entity: { position: new Vec3(0.5, 65, -3.5) } }
+  const m = {
+    bot, blueprints: bookAccessor(book, { blockAt: w.blockAt }), current: null, reserveMs: 0,
+    check () {}, timeLeft: () => 60_000, log () {}, count: () => 0, occupied: () => new Set(),
+    settleInventory: async () => {}, stepClear: async () => {}, removeScaffold: async () => 0,
+    digCell: async () => ({ ok: false, why: 'underfoot' }), placeCell: async () => ({ ok: false, why: 'unreachable' }),
+  }
+  assert.deepEqual(await build.run(m, id), { result: 'unreachable', detail: '1 cells' })
+})
