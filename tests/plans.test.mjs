@@ -262,3 +262,13 @@ test('goalPhrase: go_to(player) and receive address the requester; the other kin
   assert.equal(goalPhrase({ kind: 'survive_night' }), 'survive the night')
   assert.equal(goalPhrase({ kind: 'hunt', arg: 'white_wool', count: 3 }), 'hunt white wool')
 })
+
+test('PlanBook.add keeps an item plan\'s item and count (refreshPlanStep), more/base only for n MORE; plain plans unchanged', () => {
+  const b = new PlanBook()
+  const plain = b.add({ title: 'trip', steps: [{ kind: 'go_to', arg: 'base' }], source: 'leader', t: 1 })
+  assert.deepEqual(Object.keys(plain).sort(), ['cursor', 'end_t', 'id', 'reason', 'source', 'status', 'steps', 't', 'title'])
+  const it = b.add({ title: 'shears', steps: [{ kind: 'craft_item', arg: 'shears', count: 1 }], source: 'leader', t: 2, item: 'shears', count: 1 })
+  assert.equal(it.item, 'shears'); assert.equal(it.count, 1); assert.equal(it.more, undefined)
+  const more = b.add({ title: '2 iron ingot', steps: [{ kind: 'gather', arg: 'iron_ingot', count: 2 }], source: 'leader', t: 3, item: 'iron_ingot', count: 2, more: true, base: 3 })
+  assert.equal(more.more, true); assert.equal(more.base, 3)
+})

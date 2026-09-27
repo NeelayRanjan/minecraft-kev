@@ -575,6 +575,22 @@ export function planStepGoal(step, obs) {
   return goal
 }
 
+// A plan step's need recomputed when it is pushed (live retry session: "smelt 2 iron" with 3 held asked for 5): an item
+// plan ({item, count[, more, base]}) is expanded again against the inventory now, and the step's count becomes the need of the
+// matching step (same kind and arg) of that fresh expansion; a step the fresh expansion no longer has is {count: 0,
+// skip: true} (the runner advances past it). Plans without an item (plan_steps), uncounted kinds and an expansion with
+// a missing leaf keep the step as it is. A plan for n MORE (more: a routed push_goal) counts only what was gained since
+// it was made (base: the item held then). Pure.
+export function refreshPlanStep(step, plan, obs) {
+  if (!plan?.item || !COUNTED_KINDS.has(step?.kind) || !Number.isInteger(step.count)) return step
+  const inv = { ...(obs?.inventory || {}) }
+  if (plan.more) inv[plan.item] = Math.max(0, (inv[plan.item] || 0) - (plan.base ?? inv[plan.item] ?? 0))
+  const ex = expandItem(plan.item, plan.count ?? 1, inv, { placed: placedStations(obs) })
+  if (ex.missing.length) return step
+  const fresh = ex.steps.find(s => s.kind === step.kind && s.arg === step.arg)
+  return fresh ? { ...step, count: fresh.count } : { ...step, count: 0, skip: true }
+}
+
 // The stations a plan may count as placed: a remembered crafting table or furnace within 32 m (the motor walks to a
 // remembered station only that far, findStation), so a far base table does not drop the table step. Pure.
 export const STATION_WALK_M = 32

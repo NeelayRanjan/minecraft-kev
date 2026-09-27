@@ -795,3 +795,28 @@ test('sheltered at night at health <= 6: no plugin options under a pushed goal',
     assert.ok(s.filter({ ...o, health: 12 }, options({ ...o, health: 12 })).map(x => x.id).includes('go_to_player(Steve)'))
   })
 })
+
+// Live retry session (2026-09-27): a step's target was the inventory at push time plus the need computed when the plan
+// was made, so "smelt 2 iron" with 3 held asked for 5 and the white bed plan redid work. refreshPlanStep recomputes a
+// step's need with the expander against the inventory now (the plan's item and count); a step no longer needed skips.
+import { refreshPlanStep } from '../agent/goals.js'
+test('refreshPlanStep: a plan step\'s need is recomputed from the inventory when it is pushed', () => {
+  const plan = { id: 3, item: 'shears', count: 1, steps: [] }
+  const smelt = { kind: 'gather', arg: 'iron_ingot', count: 2 }
+  const table = { kind: 'craft_item', arg: 'crafting_table', count: 1 }
+  // 3 ingots held: shears need 2, nothing to smelt
+  assert.deepEqual(refreshPlanStep(smelt, plan, baseObs({ inventory: { iron_ingot: 3, crafting_table: 1 } })), { ...smelt, count: 0, skip: true })
+  // 1 held with a stone pickaxe: 1 more
+  assert.deepEqual(refreshPlanStep(smelt, plan, baseObs({ inventory: { iron_ingot: 1, stone_pickaxe: 1, crafting_table: 1 } })), { ...smelt, count: 1 })
+  // a crafting table held: the table step is skipped
+  assert.equal(refreshPlanStep(table, plan, baseObs({ inventory: { iron_ingot: 1, crafting_table: 1, stone_pickaxe: 1 } })).skip, true)
+  // plans without an item (plan_steps) and uncounted kinds are unchanged
+  assert.deepEqual(refreshPlanStep(smelt, { id: 1, title: 'x', steps: [] }, baseObs({ inventory: { iron_ingot: 3 } })), smelt)
+  const go = { kind: 'go_to', arg: 'base', count: null }
+  assert.deepEqual(refreshPlanStep(go, plan, baseObs({ inventory: {} })), go)
+  // a push routed as n MORE (plan.more): the held ones of the plan's own item do not count
+  const more = { id: 4, item: 'iron_ingot', count: 2, more: true, base: 3, steps: [] }
+  const kit = { raw_iron: 2, stone_pickaxe: 1, furnace: 1, coal: 2 }
+  assert.deepEqual(refreshPlanStep(smelt, more, baseObs({ inventory: { iron_ingot: 3, ...kit } })), { ...smelt, count: 2 })
+  assert.deepEqual(refreshPlanStep(smelt, more, baseObs({ inventory: { iron_ingot: 4, ...kit } })), { ...smelt, count: 1 }, 'one gained since')
+})

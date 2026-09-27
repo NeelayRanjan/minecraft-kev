@@ -33,7 +33,7 @@ import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
-import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
+import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep } from './goals.js'
 import { PlanBook, planTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
 import { expandItem } from './recipes.js'
 import { PluginRegistry, appendRequestLog } from './plugins.js'
@@ -571,7 +571,7 @@ function onPlanEvent(ev, t) {
 function syncPlans(obs, t) {
   const top = goalStack.top()
   if (goalStack.depth() > 0 && top.plan_id == null) return
-  const want = planBook.currentGoal()
+  let want = planBook.currentGoal()
   if (want && top.plan_id === want.plan_id && top.step_index === want.step_index) return
   if (top.plan_id != null) {
     goalStack.pop('plan_changed')
@@ -579,7 +579,17 @@ function syncPlans(obs, t) {
     closeGoal(top.id, t, 'popped')
   }
   if (!want) return
-  const p = planOf(want.plan_id), goal = planStepGoal(want, obs)
+  // the step's need recomputed from the inventory now (goals.refreshPlanStep); a step no longer needed is passed over
+  let p = planOf(want.plan_id), fresh = refreshPlanStep(want, p, obs)
+  for (let guard = 0; fresh.skip && guard < 16; guard++) {
+    elog.event({ t, kind: 'plan_step_skipped', plan_id: p.id, step_index: want.step_index, step: stepOf(want), reason: 'not needed any more' })
+    log(`plan #${p.id} ${p.title}: step ${want.step_index + 1}/${p.steps.length} ${stepText(want)} not needed any more`)
+    for (const ev of planBook.advance({ kind: 'goal_done', plan_id: want.plan_id, step_index: want.step_index }, t)) onPlanEvent(ev, t)
+    want = planBook.currentGoal()
+    if (!want) return
+    p = planOf(want.plan_id); fresh = refreshPlanStep(want, p, obs)
+  }
+  const goal = planStepGoal(fresh, obs)
   let g
   try { g = goalStack.push({ ...goal, source: p.source, t: +t.toFixed(1), obs, plan_id: want.plan_id, step_index: want.step_index }) }
   catch (e) {
@@ -594,8 +604,8 @@ function syncPlans(obs, t) {
   say(`Step ${want.step_index + 1}/${p.steps.length}: ${stepText(want)}`)
 }
 
-function addPlan({ title, steps, source }, t, why = null) {
-  const p = planBook.add({ title, steps, source, t: +t.toFixed(1) })
+function addPlan({ title, steps, source, ...item }, t, why = null) {
+  const p = planBook.add({ title, steps, source, t: +t.toFixed(1), ...item })
   elog.event({ t, kind: 'plan_added', plan: { id: p.id, title: p.title, source: p.source, steps: p.steps.map(stepOf) }, why })
   log(`plan #${p.id} ${p.title}: ${p.steps.map(stepText).join(', ')}`)
   say(`Plan #${p.id} ${p.title}: ${p.steps.map((s, i) => `${i + 1}) ${stepText(s)}`).join(' ')}`)
@@ -629,7 +639,7 @@ function planItem(res, reqs, source, t, why) {
   } else if (!ex.steps.length) {
     elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: [], held: true, why })
     say(`Already have ${title}.`)
-  } else addPlan({ title, steps: ex.steps, source }, t, why)
+  } else addPlan({ title, steps: ex.steps, source, item: res.item, count: res.count, more: !!res.more, base: res.more ? (o?.inventory?.[res.item] || 0) : null }, t, why)
 }
 
 // edit (the leader's, or pop_goal on a plan step): skip | drop | move_front | clear; the reply is the plan book's line.

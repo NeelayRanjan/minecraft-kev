@@ -44,8 +44,11 @@ export class PlanBook {
     b.nextId = 1 + b.plans.reduce((m, p) => Math.max(m, p.id), 0)
     return b
   }
-  add({ title, steps, source, t = null }) {
-    const plan = { id: this.nextId++, title, source, steps: steps.map(s => ({ ...s })), cursor: 0, status: 'pending', t, end_t: null, reason: null }
+  // item/count (an item plan: goals.refreshPlanStep re-expands it when a step is pushed), more/base (n MORE of it) and
+  // materials_only are kept only when given.
+  add({ title, steps, source, t = null, item = null, count = null, more = false, base = null, materials_only = false }) {
+    const plan = { id: this.nextId++, title, source, steps: steps.map(s => ({ ...s })), cursor: 0, status: 'pending', t, end_t: null, reason: null,
+      ...(item ? { item, count: count ?? 1 } : {}), ...(item && more ? { more: true, base: base ?? 0 } : {}), ...(item && materials_only ? { materials_only: true } : {}) }
     if (!plan.steps.length) { plan.status = 'done'; plan.end_t = t }
     this.plans.push(plan)
     return plan
