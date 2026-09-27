@@ -126,7 +126,9 @@ test('staircase_up(6): 6 steps + 5 supports, headroom above each step, connected
     if (k >= 1) assert.equal(at(k - 1).want, 'cobblestone', `support ${k}`)
     assert.equal(at(k + 1).want, 'air')
     assert.equal(at(k + 2).want, 'air')
+    assert.equal(at(k + 3).want, 'air')
   }
+  assert.equal(airCells(bp).length, 18)
   assert.deepEqual(validate(bp), { ok: true, reason: null })
   assert.equal(nextSegment(bp), null)
   const wide = makeBlueprint('staircase_up', { height: 4, width: 3 }, 'cobblestone', { anchor: A, facing: 'north' })
@@ -146,10 +148,16 @@ test('staircase_down(5): steps hang from the anchor\'s standing block (a ground 
   }
   const airAt = new Set(airCells(bp).map(c => key(c.pos)))
   for (let k = 1; k <= 5; k++) {
-    assert.ok(airAt.has(key({ x: 100, y: 64 - k + 1, z: 200 + k })) && airAt.has(key({ x: 100, y: 64 - k + 2, z: 200 + k })))
+    for (let dy = 1; dy <= 3; dy++) assert.ok(airAt.has(key({ x: 100, y: 64 - k + dy, z: 200 + k })), `headroom ${k} ${dy}`)
   }
+  assert.equal(airCells(bp).length, 15)
   assert.deepEqual(validate(bp), { ok: true, reason: null })
   assert.match(validate({ ...bp, ground: [] }).reason, /floating/)
+  // wider: only the centre column's standing block is ground; the side columns hang from step 1
+  const wide = makeBlueprint('staircase_down', { depth: 5, width: 3 }, 'cobblestone', { anchor: A, facing: 'south' })
+  assert.deepEqual(wide.ground.map(g => toWorld(wide, g)), [{ x: 100, y: 63, z: 200 }])
+  assert.equal(placedCells(wide).length, 27)
+  assert.deepEqual(validate(wide), { ok: true, reason: null })
 })
 
 test('dig templates: room at the feet, pit below the feet, veins flags', () => {
@@ -293,6 +301,22 @@ test('turnSegment: the same segment turned 90 degrees right from its start; the 
   const next = nextSegment(r)
   assert.deepEqual(next.anchor, { x: 108, y: 56, z: 200 })
   assert.equal(next.facing, 'east')
+  // a turned dig stair stays continuous: the turn is about the anchor, i.e. the previous segment's last step
+  const s1 = nextSegment(bp)
+  const turned = [bp, turnSegment(s1, 'right')]
+  for (let s = nextSegment(turned[1]); s; s = nextSegment(s)) turned.push(s)
+  assert.equal(turned.length, 3)
+  const last = cells(bp).filter(c => c.row === 8).map(c => c.pos)
+  const first = cells(turned[1]).filter(c => c.row === 1).map(c => c.pos)
+  assert.ok(last.some(p => first.some(q => manhattan(p, q) === 1)))
+  assert.equal(Math.min(...cells(turned[2]).map(c => c.pos.y)), 40)
+  // builds refuse to turn: their ground cells would point into air
+  for (const [name, p] of [['staircase_up', { height: 16 }], ['staircase_down', { depth: 16 }], ['hut', {}], ['wall', {}]]) {
+    const b = makeBlueprint(name, p, 'cobblestone', { anchor: A, facing: 'north' })
+    assert.equal(turnSegment(b, 'right'), null, name)
+    if (b.segments > 1) assert.equal(turnSegment(nextSegment(b), 'left'), null, name)
+  }
+  assert.equal(turnSegment(makeBlueprint('tunnel', { len: 20 }, null, { anchor: A, facing: 'north' }), 'right').facing, 'east')
 })
 
 test('checkParams: defaults, clamping, rounding, rejections', () => {
@@ -308,6 +332,9 @@ test('checkParams: defaults, clamping, rounding, rejections', () => {
   no(checkParams('stairs_down_to', { y: 70 }, { anchorY: 64 }), /below/)
   no(checkParams('stairs_down_to', { y: 64 }, { anchorY: 64 }), /below/)
   no(checkParams('stairs_up_to', { y: 12 }, { anchorY: 64 }), /above/)
+  no(checkParams('stairs_down_to', { y: 400 }, { anchorY: 64 }), /^y 400 is not below the start \(y 64\)$/)
+  no(checkParams('stairs_up_to', { y: -100 }, { anchorY: 64 }), /^y -100 is not above/)
+  assert.deepEqual(checkParams('stairs_down_to', { y: -100 }, { anchorY: 64 }).params, { y: -58 })
   no(checkParams('hut', { w: 'big' }), /w must be a number/)
   no(checkParams('wall', { material: 'oak_door' }), /oak_door is not a placeable block/)
   assert.equal(checkParams('stairs_down_to', { y: 12 }, { anchorY: 64 }).ok, true)

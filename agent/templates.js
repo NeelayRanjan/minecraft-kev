@@ -8,7 +8,8 @@
 // Long shapes are streamed in segments of at most SEGMENT steps / blocks of main tunnel. A streamed blueprint carries
 // { template, params, segment, segments, material }; nextSegment(bp) returns the next one, anchored so the band
 // continues seamlessly (tunnel / strip_mine: forward SEGMENT; the staircases: forward SEGMENT and down/up SEGMENT).
-// turnSegment(bp, 'right') re-orients a segment 90 degrees from its start (the executor's liquid turn).
+// turnSegment(bp, 'right') re-orients a dig segment 90 degrees from its start (the executor's liquid turn); null for
+// builds.
 import { isPlaceable } from './blueprints.js'
 
 export const SEGMENT = 8
@@ -98,7 +99,7 @@ function bridge ({ len }, material) {
 }
 
 // Step k (local 0..n-1) at row k, layer k; a support beneath every step but the very first of the staircase;
-// headroom '.' at layers k+1 and k+2. Later segments rest on the previous segment's last step (row -1, layer -1).
+// a 3-high clear column above it (layers k+1..k+3, so walkable both ways under an overhang). Later segments rest on the previous segment's last step (row -1, layer -1).
 function staircaseUp ({ height, width }, i, material) {
   const n = Math.min(SEGMENT, height - SEGMENT * i)
   const list = []
@@ -106,16 +107,17 @@ function staircaseUp ({ height, width }, i, material) {
     for (let k = 0; k < n; k++) {
       list.push({ col, row: k, layer: k, ch: '#' })
       if (k >= 1 || i >= 1) list.push({ col, row: k, layer: k - 1, ch: '#' })
-      list.push({ col, row: k, layer: k + 1, ch: '.' }, { col, row: k, layer: k + 2, ch: '.' })
+      for (let dy = 1; dy <= 3; dy++) list.push({ col, row: k, layer: k + dy, ch: '.' })
     }
   }
   const ground = i >= 1 ? cols(width).map(col => ({ col, row: -1, layer: -1 })) : []
   return body('build', list, { width, material, ground })
 }
 
-// Step k (local 1..n) at row k, layer -k; its connector at row k-1, layer -k (under the previous step); headroom '.'
-// at layers -k+1 and -k+2. Segment 0's first connector is the block the anchor stands on (a ground cell); a later
-// segment's anchor is the previous segment's last step, which is its ground cell.
+// Step k (local 1..n) at row k, layer -k; its connector at row k-1, layer -k (under the previous step); a 3-high
+// clear column above it (layers -k+1..-k+3). Segment 0's first connector is the block the anchor stands on (a ground
+// cell, the centre column's only: side columns connect through step 1); a later segment's anchor is the previous
+// segment's last step, which is its ground cell in every column.
 function staircaseDown ({ depth, width }, i, material) {
   const n = Math.min(SEGMENT, depth - SEGMENT * i)
   const list = []
@@ -123,10 +125,10 @@ function staircaseDown ({ depth, width }, i, material) {
     for (let k = 1; k <= n; k++) {
       list.push({ col, row: k, layer: -k, ch: '#' })
       if (k >= 2 || i >= 1) list.push({ col, row: k - 1, layer: -k, ch: '#' })
-      list.push({ col, row: k, layer: -k + 1, ch: '.' }, { col, row: k, layer: -k + 2, ch: '.' })
+      for (let dy = 1; dy <= 3; dy++) list.push({ col, row: k, layer: -k + dy, ch: '.' })
     }
   }
-  const ground = cols(width).map(col => (i === 0 ? { col, row: 0, layer: -1 } : { col, row: 0, layer: 0 }))
+  const ground = i === 0 ? [{ col: Math.floor(width / 2), row: 0, layer: -1 }] : cols(width).map(col => ({ col, row: 0, layer: 0 }))
   return body('build', list, { width, material, offset: 0, ground })
 }
 
@@ -235,6 +237,7 @@ export function checkParams (name, params = {}, { anchorY } = {}) {
   const t = Object.hasOwn(TEMPLATES, name) ? TEMPLATES[name] : null
   if (!t) return no(`unknown template ${name}`)
   const out = {}
+  const raw = {}
   for (const [k, spec] of Object.entries(t.params)) {
     const v = params?.[k]
     if (v == null || v === '') {
@@ -244,7 +247,8 @@ export function checkParams (name, params = {}, { anchorY } = {}) {
     }
     const n = Number(v)
     if (typeof v === 'boolean' || !Number.isFinite(n)) return no(`${k} must be a number`)
-    out[k] = Math.min(spec.max, Math.max(spec.min, Math.round(n)))
+    raw[k] = Math.round(n)
+    out[k] = Math.min(spec.max, Math.max(spec.min, raw[k]))
   }
   if (t.material) {
     const m = params?.material ?? DEFAULT_MATERIAL
@@ -252,8 +256,9 @@ export function checkParams (name, params = {}, { anchorY } = {}) {
     out.material = m
   }
   if (t.needsAnchor && anchorY != null) {
-    if (t.needsAnchor === 'below' && out.y >= anchorY) return no(`y ${out.y} is not below the start (y ${anchorY})`)
-    if (t.needsAnchor === 'above' && out.y <= anchorY) return no(`y ${out.y} is not above the start (y ${anchorY})`)
+    const y = raw.y ?? out.y   // the requested y, before clamping, so the message names it
+    if (t.needsAnchor === 'below' && y >= anchorY) return no(`y ${y} is not below the start (y ${anchorY})`)
+    if (t.needsAnchor === 'above' && y <= anchorY) return no(`y ${y} is not above the start (y ${anchorY})`)
   }
   return ok(out)
 }
@@ -294,7 +299,10 @@ export function nextSegment (bp) {
 }
 
 // The same segment turned 90 degrees ('right' or 'left') about its anchor; the stream continues in the new facing.
+// Dig streams only (tunnel, strip_mine, stairs_down_to, stairs_up_to, shaft_down): a build segment's ground cells
+// point at the previous segment's blocks, which a turn would move into air, so builds are refused with null.
 export function turnSegment (bp, dir = 'right') {
+  if (bp.kind === 'build' || (bp.template && TEMPLATES[bp.template]?.kind === 'build')) return null
   const to = TURN[dir]?.[bp.facing]
   if (!to) throw new Error(`cannot turn ${dir} from facing ${bp.facing}`)
   return { ...bp, facing: to }
