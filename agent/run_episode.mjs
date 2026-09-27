@@ -32,7 +32,7 @@ import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS, blueprintsRelevant, outgoingChatLines, chatSafeLine,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
-  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect, replyFor } from './leader.js'
+  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect, replyFor, holdsPlans } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep, registerBlueprintAccessor, isBlueprintId } from './goals.js'
 import { PlanBook, planTitle, itemPlanTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase, planAnnouncement, stepStartText, BLOCKED_WINDOW_S } from './plans.js'
@@ -525,7 +525,14 @@ function leaderAnswered(snap, a, err) {
   const replyOk = !!reply && !['invalid', 'stale', 'blocked', 'error'].includes(res.kind)
   // the reply goes out only when the leader's own action took effect (leader.replyFor): never beside a code message
   // that overruled it; for a plan answer only after its plan was added (planItem / addPlan / planBlueprint's onAdded)
-  const sendReply = r => { if (!r) return; elog.event({ t: now(), kind: 'leader_reply', text: r.text, action: a?.action ?? null }); say(r.text) }
+  const sendReply = r => {
+    if (!r) return
+    if (r.from === 'code') { elog.event({ t: now(), kind: 'plan_held', reason: 'stay', text: r.text, reply: reply || null }); log('plan waits under a stay goal') }
+    else elog.event({ t: now(), kind: 'leader_reply', text: r.text, action: a?.action ?? null })
+    say(r.text)
+  }
+  // a new plan while a stay holds the plans (leader.holdsPlans): it is added and waits; the player is told so
+  const planOutcome = added => ({ planAdded: !!added, held: holdsPlans(goalStack.stack) })
   // an invalid push or plan answer is replied to below ("Can't do that yet: <reason>"), so it answers the requests like cannot
   // A refused free-form blueprint: the first refusal goes back to the leader with the reason (BLUEPRINT FEEDBACK in the
   // next prompt; the requests stay open and the next call comes at once); a second one is answered cannot.
@@ -583,20 +590,20 @@ function leaderAnswered(snap, a, err) {
       : res.guard ? `Can't do ${res.title} again yet (plan #${res.plan_id}), ${res.why}.` : `Can't do that yet${whyTail(reply || a.why) || '.'}`)
     logRequests(reqs, t, { kind: 'cannot', why, missing: null })
   } else if (res.kind === 'plan_item') {
-    sendReply(replyFor(res, reply, { planAdded: planItem(res, reqs, src, t, a.why ?? null) }))
+    sendReply(replyFor(res, reply, planOutcome(planItem(res, reqs, src, t, a.why ?? null))))
   } else if (res.kind === 'plan_steps' && res.duplicate != null) {
     elog.event({ t, kind: 'plan_duplicate', plan_id: res.duplicate, title: res.title, why: a.why ?? null })
     say(`Already on it: plan #${res.duplicate}.`)
   } else if (res.kind === 'plan_steps') {
     addPlan({ title: res.title, steps: res.steps, source: src }, t, a.why ?? null)
-    sendReply(replyFor(res, reply, { planAdded: true }))
+    sendReply(replyFor(res, reply, planOutcome(true)))
   } else if (res.kind === 'edit') {
     editPlans({ op: res.op, plan_id: res.plan_id, why: a.why ?? null }, t)
   } else if (res.kind === 'say') {
     elog.event({ t, kind: 'leader_say', text: res.text, why: a.why ?? null })
     say(res.text)
   } else if (res.kind === 'plan_build' || res.kind === 'plan_dig' || res.kind === 'plan_blueprint') {
-    planBlueprint(res, reqs, src, a.why ?? null, { onAdded: () => sendReply(replyFor(res, reply, { planAdded: true })) }).catch(e => {
+    planBlueprint(res, reqs, src, a.why ?? null, { onAdded: () => sendReply(replyFor(res, reply, planOutcome(true))) }).catch(e => {
       log(`blueprint plan failed: ${e?.stack || e}`)
       try { elog.event({ t: now(), kind: 'blueprint_error', error: String(e?.message || e).slice(0, 200) }); say(`Can't plan that: ${sanitizeChat(e?.message || e, 120)}`) } catch {}
     })

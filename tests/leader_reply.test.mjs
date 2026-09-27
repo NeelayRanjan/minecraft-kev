@@ -32,3 +32,32 @@ test('replyFor: push_goal, pop_goal, edit, continue and override reply at once; 
   assert.equal(replyFor({ kind: 'push_goal' }, ''), null)
   assert.equal(replyFor({ kind: 'push_goal' }, null), null)
 })
+
+// Important 4: "stay here" then a new plan: the plan is created but waits under the stay; the code tells the player so
+// (instead of the leader's "On it!"), and the stay continues. A new request ends protect, build and dig answers too.
+import { STAY_HOLD_TEXT, holdsPlans, endsProtect } from '../agent/leader.js'
+test('holdsPlans: a leader-pushed stay anywhere on the stack holds the plans; a plan step or no stay does not', () => {
+  const chain = { id: 0, kind: 'chain' }
+  assert.equal(holdsPlans([chain]), false)
+  assert.equal(holdsPlans([chain, { id: 1, kind: 'stay', arg: 'player:Steve' }]), true)
+  assert.equal(holdsPlans([chain, { id: 1, kind: 'stay', arg: 'here' }, { id: 2, kind: 'go_to', arg: 'player:Steve' }]), true)
+  assert.equal(holdsPlans([chain, { id: 1, kind: 'gather', arg: 'log', count: 8 }]), false)
+  assert.equal(holdsPlans([chain, { id: 1, kind: 'stay', arg: 'here', plan_id: 3, step_index: 0 }]), false)
+})
+
+test('replyFor: a plan added while a stay holds the plans gets the code message, not the reply', () => {
+  assert.equal(STAY_HOLD_TEXT, "I'll do that when you say I can go")
+  for (const kind of ['plan_item', 'plan_steps', 'plan_build', 'plan_dig', 'plan_blueprint']) {
+    assert.deepEqual(replyFor({ kind }, 'On it!', { planAdded: true, held: true }), { text: STAY_HOLD_TEXT, from: 'code' }, kind)
+    assert.deepEqual(replyFor({ kind }, '', { planAdded: true, held: true }), { text: STAY_HOLD_TEXT, from: 'code' }, `${kind} without a reply`)
+    assert.equal(replyFor({ kind }, 'On it!', { planAdded: false, held: true }), null, `${kind} refused`)
+  }
+  assert.deepEqual(replyFor({ kind: 'push_goal' }, 'On my way!', { held: true }), { text: 'On my way!', from: 'leader' }, 'a push runs on top of the stay')
+})
+
+test('endsProtect: a protect on top ends at any new goal or plan answer, including build and dig; stay is not ended', () => {
+  const protect = { kind: 'protect', arg: 'player:Steve' }
+  for (const kind of ['push_goal', 'plan_item', 'plan_steps', 'plan_build', 'plan_dig', 'plan_blueprint']) assert.equal(endsProtect({ kind }, protect), true, kind)
+  for (const kind of ['continue', 'override', 'say', 'cannot', 'edit', 'invalid']) assert.equal(endsProtect({ kind }, protect), false, kind)
+  assert.equal(endsProtect({ kind: 'plan_build' }, { kind: 'stay', arg: 'here' }), false)
+})

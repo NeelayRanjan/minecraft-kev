@@ -278,15 +278,23 @@ export const statementsToThank = (settleAs, shown = [], botName = null) => settl
 // {text, from: 'leader'} or null.
 const REPLY_NEVER = new Set(['invalid', 'stale', 'blocked', 'error', 'say', 'cannot'])
 const PLAN_KINDS = new Set(['plan_item', 'plan_steps', 'plan_build', 'plan_dig', 'plan_blueprint'])
+// outcome.held: a stay holds the plans (holdsPlans): the new plan waits, and the code says so instead of the reply.
+export const STAY_HOLD_TEXT = "I'll do that when you say I can go"
 export function replyFor(res, reply, outcome = {}) {
   if (!res || REPLY_NEVER.has(res.kind) || res.night || res.guard || res.via === 'cannot' || res.duplicate != null) return null
   if (PLAN_KINDS.has(res.kind) && outcome.planAdded !== true) return null
+  if (PLAN_KINDS.has(res.kind) && outcome.held) return { text: STAY_HOLD_TEXT, from: 'code' }
   const text = typeof reply === 'string' ? reply.trim() : ''
   return text ? { text, from: 'leader' } : null
 }
-// A protect goal on top ends at a new request the leader acts on (a pushed goal or a new plan): the runner pops it
-// before acting (the brief: protect lasts 120 s or until "stop" or a new request).
-export const endsProtect = (res, top) => top?.kind === 'protect' && ['push_goal', 'plan_item', 'plan_steps'].includes(res?.kind)
+// A protect goal on top ends at a new request the leader acts on (a pushed goal or any new plan, build and dig plans
+// included): the runner pops it before acting (the brief: protect lasts 120 s or until "stop" or a new request). A
+// stay is never ended this way: it holds until the player says "you can go" (pop_goal); a pushed goal runs on top of
+// it and new plans wait under it (holdsPlans), which the player is told (STAY_HOLD_TEXT). Final review, Important 4.
+export const endsProtect = (res, top) => top?.kind === 'protect' && ['push_goal', 'plan_item', 'plan_steps', 'plan_build', 'plan_dig', 'plan_blueprint'].includes(res?.kind)
+// The runner's syncPlans starts no plan step while a leader-pushed goal (no plan_id) is on top; a stay never ends by
+// itself, so a stay anywhere among the pushed goals holds every plan until it is popped.
+export const holdsPlans = stack => (stack || []).some(g => g?.kind === 'stay' && g.plan_id == null)
 // The leader's say texts from the runner's events, the last SAY_MEMORY.
 export const recentSayTexts = events => (events || []).filter(e => e?.kind === 'leader_say' && typeof e.text === 'string').map(e => e.text).slice(-SAY_MEMORY)
 // The leader's own cannot texts (the reply it sent, else why; not the code's night or blocked-plan refusals), the last SAY_MEMORY.
