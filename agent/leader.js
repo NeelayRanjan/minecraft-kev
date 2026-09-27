@@ -270,6 +270,20 @@ export function isStatement(text, botName = null) {
   return words.length > 0 && !words.some(w => REQUEST_WORDS.has(w))
 }
 export const statementsToThank = (settleAs, shown = [], botName = null) => settleAs === 'continue' ? (shown || []).filter(r => !r.answered && isStatement(r.text, botName)) : []
+// The leader's reply ("reply", any action) goes out only when the action it chose is the one that took effect (final
+// review, Important 3: "Not until morning" then "On my way!"). When the code changed the outcome (the night rule, the
+// blocked-plan guard, a cannot the backstop turned into a plan) its own message stands alone; an answer that did
+// nothing sends nothing; a say's text and the leader's own cannot already carry the reply. A plan answer replies only
+// once its plan exists (outcome.planAdded, after the plan's announcement), never after a refusal or a duplicate.
+// {text, from: 'leader'} or null.
+const REPLY_NEVER = new Set(['invalid', 'stale', 'blocked', 'error', 'say', 'cannot'])
+const PLAN_KINDS = new Set(['plan_item', 'plan_steps', 'plan_build', 'plan_dig', 'plan_blueprint'])
+export function replyFor(res, reply, outcome = {}) {
+  if (!res || REPLY_NEVER.has(res.kind) || res.night || res.guard || res.via === 'cannot' || res.duplicate != null) return null
+  if (PLAN_KINDS.has(res.kind) && outcome.planAdded !== true) return null
+  const text = typeof reply === 'string' ? reply.trim() : ''
+  return text ? { text, from: 'leader' } : null
+}
 // A protect goal on top ends at a new request the leader acts on (a pushed goal or a new plan): the runner pops it
 // before acting (the brief: protect lasts 120 s or until "stop" or a new request).
 export const endsProtect = (res, top) => top?.kind === 'protect' && ['push_goal', 'plan_item', 'plan_steps'].includes(res?.kind)

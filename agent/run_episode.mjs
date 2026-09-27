@@ -32,7 +32,7 @@ import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS, blueprintsRelevant, outgoingChatLines, chatSafeLine,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
-  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect } from './leader.js'
+  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect, replyFor } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep, registerBlueprintAccessor, isBlueprintId } from './goals.js'
 import { PlanBook, planTitle, itemPlanTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase, planAnnouncement, stepStartText, BLOCKED_WINDOW_S } from './plans.js'
@@ -523,6 +523,9 @@ function leaderAnswered(snap, a, err) {
   // nothing (invalid, stale, blocked, error). A continue or override with a reply answers the shown requests.
   const reply = goalsOn && typeof a?.reply === 'string' ? sanitizeChat(a.reply, 300).trim() : ''
   const replyOk = !!reply && !['invalid', 'stale', 'blocked', 'error'].includes(res.kind)
+  // the reply goes out only when the leader's own action took effect (leader.replyFor): never beside a code message
+  // that overruled it; for a plan answer only after its plan was added (planItem / addPlan / planBlueprint's onAdded)
+  const sendReply = r => { if (!r) return; elog.event({ t: now(), kind: 'leader_reply', text: r.text, action: a?.action ?? null }); say(r.text) }
   // an invalid push or plan answer is replied to below ("Can't do that yet: <reason>"), so it answers the requests like cannot
   // A refused free-form blueprint: the first refusal goes back to the leader with the reason (BLUEPRINT FEEDBACK in the
   // next prompt; the requests stay open and the next call comes at once); a second one is answered cannot.
@@ -580,19 +583,20 @@ function leaderAnswered(snap, a, err) {
       : res.guard ? `Can't do ${res.title} again yet (plan #${res.plan_id}), ${res.why}.` : `Can't do that yet${whyTail(reply || a.why) || '.'}`)
     logRequests(reqs, t, { kind: 'cannot', why, missing: null })
   } else if (res.kind === 'plan_item') {
-    planItem(res, reqs, src, t, a.why ?? null)
+    sendReply(replyFor(res, reply, { planAdded: planItem(res, reqs, src, t, a.why ?? null) }))
   } else if (res.kind === 'plan_steps' && res.duplicate != null) {
     elog.event({ t, kind: 'plan_duplicate', plan_id: res.duplicate, title: res.title, why: a.why ?? null })
     say(`Already on it: plan #${res.duplicate}.`)
   } else if (res.kind === 'plan_steps') {
     addPlan({ title: res.title, steps: res.steps, source: src }, t, a.why ?? null)
+    sendReply(replyFor(res, reply, { planAdded: true }))
   } else if (res.kind === 'edit') {
     editPlans({ op: res.op, plan_id: res.plan_id, why: a.why ?? null }, t)
   } else if (res.kind === 'say') {
     elog.event({ t, kind: 'leader_say', text: res.text, why: a.why ?? null })
     say(res.text)
   } else if (res.kind === 'plan_build' || res.kind === 'plan_dig' || res.kind === 'plan_blueprint') {
-    planBlueprint(res, reqs, src, a.why ?? null).catch(e => {
+    planBlueprint(res, reqs, src, a.why ?? null, { onAdded: () => sendReply(replyFor(res, reply, { planAdded: true })) }).catch(e => {
       log(`blueprint plan failed: ${e?.stack || e}`)
       try { elog.event({ t: now(), kind: 'blueprint_error', error: String(e?.message || e).slice(0, 200) }); say(`Can't plan that: ${sanitizeChat(e?.message || e, 120)}`) } catch {}
     })
@@ -604,11 +608,9 @@ function leaderAnswered(snap, a, err) {
     // a request answered with a goal outside the vocabulary still gets a reply: the validator's reason
     if (res.kind === 'invalid' && settleAs === 'cannot') { say(`Can't do that yet${whyTail(res.reason) || '.'}`); logRequests(reqs, t, { kind: 'cannot', answer: res.id, reason: res.reason ?? null, missing: null }) }
   }
-  // the reply goes out after the code's announcement (a cannot's reply is already its reason; a say's text is its reply)
-  if (replyOk && res.kind !== 'say' && !(res.kind === 'cannot' && !res.night && !res.guard)) {
-    elog.event({ t, kind: 'leader_reply', text: reply, action: a?.action ?? null })
-    say(reply)
-  }
+  // the reply goes out after the code's announcement (replyFor: none for a cannot, a say, an overruled or idle answer;
+  // plan answers sent theirs above once the plan existed)
+  if (!['plan_item', 'plan_steps', 'plan_build', 'plan_dig', 'plan_blueprint'].includes(res.kind)) sendReply(replyFor(res, reply))
   if (notNow.length) {   // shown to two calls that did not answer them: tell the players the bot is busy
     let busy = 'the current goal'
     try { if (lastObs) busy = goalStack.step(lastObs).text || busy } catch {}
@@ -720,11 +722,11 @@ function planItem(res, reqs, source, t, why) {
   const o = lastObs
   const mo = !!res.materials_only   // the ingredients only, without the final craft (recipes.expandMaterials)
   const title = itemPlanTitle(res.item, res.count, mo)
-  if (res.raise != null) { raisePlan(res, reqs, t, why); return }
+  if (res.raise != null) return raisePlan(res, reqs, t, why)
   if (res.duplicate != null) {
     elog.event({ t, kind: 'plan_duplicate', plan_id: res.duplicate, title, why })
     say(`Already on it: plan #${res.duplicate}.`)
-    return
+    return false
   }
   const inv = { ...(o?.inventory || {}), ...(res.more ? { [res.item]: 0 } : {}) }
   const ex = (mo ? expandMaterials : expandItem)(res.item, res.count, inv, { placed: placedStations(o) })
@@ -733,14 +735,19 @@ function planItem(res, reqs, source, t, why) {
     elog.event({ t, kind: 'plan_refused', item: res.item, count: res.count, step_index: gate.step_index, step: stepOf(gate.step), reason: gate.reason, why })
     say(`Can't make ${humanItem(title)} yet: ${gate.reason}.`)
     logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, refused: gate.reason, missing: null, why })
+    return false
   } else if (ex.missing.length) {
     elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: ex.missing, why })
     say(`Can't make ${humanItem(title)} yet: needs ${ex.missing.map(humanItem).join(', ')} (no way to get it)`)
     logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, missing: ex.missing, why })
+    return false
   } else if (!ex.steps.length) {
     elog.event({ t, kind: 'plan_missing', item: res.item, count: res.count, missing: [], held: true, why })
     say(mo ? `Already have the ${title}.` : `Already have ${title}.`)
-  } else addPlan({ title, steps: ex.steps, source, item: res.item, count: res.count, more: !!res.more, base: res.more ? (o?.inventory?.[res.item] || 0) : null, materials_only: mo }, t, why)
+    return false
+  }
+  addPlan({ title, steps: ex.steps, source, item: res.item, count: res.count, more: !!res.more, base: res.more ? (o?.inventory?.[res.item] || 0) : null, materials_only: mo }, t, why)
+  return true
 }
 
 // A larger count for an active item plan (plans.guardPlanAnswer's raise): the remaining steps are expanded again for the
@@ -751,7 +758,7 @@ function raisePlan(res, reqs, t, why) {
   if (!p || ex.missing.length) {
     say(`Can't make ${humanItem(planTitle(res.item, res.count))} yet${ex.missing.length ? `: needs ${ex.missing.map(humanItem).join(', ')} (no way to get it)` : '.'}`)
     logRequests(reqs, t, { kind: 'plan_item', item: res.item, count: res.count, missing: ex.missing, why })
-    return
+    return false
   }
   const steps = ex.steps
   const line = planBook.raise(p.id, res.count, steps, t)
@@ -764,6 +771,7 @@ function raisePlan(res, reqs, t, why) {
     closeGoal(top.id, t, 'popped')
   }
   say(`Updated plan #${p.id}: ${p.materials_only ? 'materials for ' : ''}${res.count} ${humanItem(res.item)}.`)
+  return true
 }
 
 // ---- blueprint plans (plan_build / plan_dig / plan_blueprint) ------------------------------------------------------
@@ -802,7 +810,7 @@ const verbOf = res => res.kind === 'plan_build' || res.blueprint?.kind === 'buil
 // A template or free-form answer -> a blueprint anchored now (or, with at_y, made on arrival) -> priced by the recipe
 // expander (gather steps split at the goal caps) -> a plan titled "<template> (<dims>)". Refusals are a chat reply and
 // a motor-backlog line; a duplicate of an active plan asked by nobody adds nothing.
-async function planBlueprint(res, reqs, source, why) {
+async function planBlueprint(res, reqs, source, why, { onAdded = null } = {}) {
   const name = reqs[0]?.name ?? null
   const place = await anchorForRequest(name)
   if (finished) return
@@ -840,6 +848,7 @@ async function planBlueprint(res, reqs, source, why) {
   const bpStep = { kind: probe.kind, arg: id, count: null, title, where, ...(lazy ? { lazy: { template: res.template, params: res.params }, at_y: res.at_y } : {}) }
   const steps = [...splitGatherSteps(mats), ...(lazy ? [{ kind: 'go_to', arg: `y:${res.at_y}`, count: null }] : []), bpStep]
   const p = addPlan({ title, steps, source }, t, why)
+  if (onAdded) onAdded(p)   // the leader's reply, after the plan's announcement
   const pp = place.playerPos ? { x: +place.playerPos.x.toFixed(2), y: +place.playerPos.y.toFixed(2), z: +place.playerPos.z.toFixed(2) } : null
   elog.event({ t, kind: 'blueprint_plan', plan_id: p.id, id, title, bp_kind: probe.kind, template: res.template ?? null, from: place.from, player: name, player_pos: pp,
     anchor: lazy ? null : place.anchor, facing: lazy ? null : place.facing, at_y: lazy ? res.at_y : null })
