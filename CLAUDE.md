@@ -2,6 +2,8 @@
 
 ## What this is
 
+**Names (2026-09-27):** the whole chat-steered bot (LLM leader + kev + scripted motor + plans and plugins, the bot players talk to in game) is **Kevin**; **kev** means only the 0.8b typed-decision model. Say "Kevin" for system behaviour (memory, replies, plans) and "kev" for the model's choices and forecasts.
+
 **minecraft-kev**: a Minecraft survival agent where a scripted Mineflayer motor layer acts, **kev** (a 0.8b typed-decision model: Qwen3.5 base + LoRA + pointer head, upstream https://github.com/jaredpalmer/kev) picks the next subtask from a declared list and forecasts outcomes with calibrated probabilities, and a planner above it sets goals. Sister project of `overcooked-kev` (Overcooked and air-combat tracks); the lessons and recipe carry over from there.
 
 The acceptance criterion: **every decision comes with a calibrated probability that can be displayed and checked.** Playing well is secondary. If a change makes the agent stronger but the probabilities less legible or less calibrated, it is the wrong change. New here: the probabilities are meant to be *used*, a planner replans when kev forecasts failure (milestone 2).
