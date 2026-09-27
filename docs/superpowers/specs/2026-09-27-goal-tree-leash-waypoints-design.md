@@ -67,11 +67,16 @@ Kevin never ate in 24 minutes; starvation took him to exactly 1/20 health twice 
 10. **Compound requests** ("where is your table; if none, make one"): the leader may answer with an action plus a reply. The prompt gets an example for "question + instruction", showing the action with the answer in the reply.
 11. **Placed stations:** log where Kevin places a crafting table or furnace, and give the leader "crafting table: 12 m west" as a fact. The table is also a waypoint candidate ("base").
 
+## 5b. Larger blueprints (added 2026-09-27, the user)
+
+Templates accept up to 15x15 footprints (hut, wall, floor, room, pit); free-form blueprints up to 12x12x8 and 400 placed blocks. The leader's cut shows only the current layer within 9 cells of Kevin (15x15 would triple the prompt). build_check gains a 13x13x4 hut case.
+
 ## 6. Out of scope
 
 - Single-block placement (bed, torches, chest, table at a spot) with candidate spots and the leader choosing A, B or C: the next round.
 - A terrain height-map view for the leader.
 - Retraining kev (DAgger with the tree's node labels): after this round.
+- The rounds after this one, in order: (1) single-block placement with code-found candidate spots (bed, torches, chest, table, doors, panes) and the leader choosing A/B/C; (2) composite houses (rooms, shared walls, door and window gaps, pitched full-block roofs, then facing blocks via (1)); (3) structure edits against remembered structures ("knock down this wall and make another room": the wall resolved from the player's position and facing when the message arrives, a dig blueprint for the wall cells plus an extension blueprint sharing the wall line; leader answers extend / remove_part / open_doorway over the structure's floor plan in ASCII).
 
 ## 7. Testing and acceptance
 
