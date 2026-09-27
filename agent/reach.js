@@ -15,11 +15,10 @@
 //              the face centre crosses no solid block; spots with a seen face rank first, a spot whose faces are all
 //              hidden (placing through a block, which the 1.20.4 server accepts) only after every seen one
 //   ranking    by a path estimate from the bot's feet: horizontal distance + 2 per block up + 1 per block down
-import { isPlaceable } from './blueprints.js'
+import { isLiquidBlock, isPlaceable } from './blueprints.js'
 
 export const REACH = 4.5
 export const EYE = 1.62
-const LIQUID = new Set(['water', 'lava', 'bubble_column'])
 const GRAVITY = /^(sand|red_sand|gravel|suspicious_sand|suspicious_gravel)$|_concrete_powder$/
 // Full cubes that are stations, containers or valuables: never spent as scaffolding.
 const SCAFFOLD_DENY = /^(crafting_table|furnace|blast_furnace|smoker|barrel|chest|trapped_chest|jukebox|note_block|tnt|obsidian|crying_obsidian|bookshelf|dispenser|dropper|observer|piston|sticky_piston|target|spawner)$|_ore$|^(raw_)?(iron|gold|diamond|emerald|copper|lapis|redstone|netherite|coal)_block$|shulker_box$/
@@ -29,8 +28,8 @@ export const FACES = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], 
 export const key = p => `${p.x},${p.y},${p.z}`
 export const at = (p, dx, dy, dz) => ({ x: p.x + dx, y: p.y + dy, z: p.z + dz })
 export const isSolid = b => !!b && b.boundingBox === 'block'
-export const isLiquid = b => !!b && LIQUID.has(b.name)
-const isClear = b => !!b && b.boundingBox !== 'block' && !LIQUID.has(b.name)
+export const isLiquid = isLiquidBlock   // water, lava, bubble columns, underwater plants, waterlogged blocks
+const isClear = b => !!b && b.boundingBox !== 'block' && !isLiquidBlock(b)
 export const eyeOf = feet => ({ x: feet.x + 0.5, y: feet.y + EYE, z: feet.z + 0.5 })
 const centre = p => ({ x: p.x + 0.5, y: p.y + 0.5, z: p.z + 0.5 })
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
@@ -124,6 +123,25 @@ export function reachSpots (target, blockAt, { from = null, avoid = new Set(), m
   }
   out.sort((a, b) => (b.seen - a.seen) || (a.cost - b.cost) || (a.d - b.d))
   return out.map(({ d, ...s }) => s)
+}
+
+// The cells a body at `pos` (feet, fractional) rests on: the blocks under its footprint (half-width `half`) one level
+// below the feet (y - 0.01 floored: a body on a slab stands in the slab's own cell). [{ x, y, z }].
+export function supportCells (pos, { half = 0.3 } = {}) {
+  const out = [], eps = 1e-6, y = Math.floor(pos.y - 0.01)
+  for (let x = Math.floor(pos.x - half); x <= Math.floor(pos.x + half - eps); x++) {
+    for (let z = Math.floor(pos.z - half); z <= Math.floor(pos.z + half - eps); z++) out.push({ x, y, z })
+  }
+  return out
+}
+
+// True when digging `target` could drop a body standing at `pos`: the target is the cell straight under its feet, or
+// the last solid cell its footprint rests on. Pure.
+export function standsOn (pos, target, blockAt) {
+  const tk = key(target)
+  if (key({ x: Math.floor(pos.x), y: Math.floor(pos.y) - 1, z: Math.floor(pos.z) }) === tk) return true
+  const under = supportCells(pos)
+  return under.some(c => key(c) === tk) && !under.some(c => key(c) !== tk && isSolid(blockAt(c)))
 }
 
 // The block cells a body occupies: an axis-aligned box of half-width `half` and `height` at `pos` (feet, fractional).

@@ -12,7 +12,7 @@ import hunt, { huntDrop, huntable, isSheared, MOBS } from '../agent/plugins/hunt
 import goToPlayer, { playerEntity } from '../agent/plugins/go_to_player.mjs'
 import receive, { droppedName, giverName } from '../agent/plugins/receive.mjs'
 import build, { buildWork, MAX_PLACEMENTS } from '../agent/plugins/build_blueprint.mjs'
-import dig, { digWork, digOrder, liquidExposure, harvestable, veinTargets, isOre, MAX_DIGS, TURNABLE } from '../agent/plugins/dig_blueprint.mjs'
+import dig, { digWork, digOrder, liquidExposure, harvestable, veinTargets, isOre, dropUnder, MAX_DIGS, MAX_DROP, TURNABLE } from '../agent/plugins/dig_blueprint.mjs'
 import { loadBlueprint, inventoryOf } from '../agent/blueprint_exec.js'
 import { turnSegment } from '../agent/templates.js'
 import { Vec3 } from 'vec3'
@@ -227,7 +227,9 @@ function digWorld () {
   const blockAt = p => {
     const n = m.has(wk(p)) ? m.get(wk(p)) : (p.y < 70 ? 'stone' : 'air')
     if (n == null) return null
-    return { name: n, boundingBox: ['air', 'cave_air', 'water', 'lava'].includes(n) ? 'empty' : 'block' }
+    if (n === 'waterlogged_glow_lichen') return { name: 'glow_lichen', boundingBox: 'empty', getProperties: () => ({ waterlogged: true }) }
+    if (n === 'dry_glow_lichen') return { name: 'glow_lichen', boundingBox: 'empty', getProperties: () => ({ waterlogged: false }) }
+    return { name: n, boundingBox: ['air', 'cave_air', 'water', 'lava', 'kelp', 'seagrass'].includes(n) ? 'empty' : 'block' }
   }
   return { blockAt, set: (p, n) => m.set(wk(p), n) }
 }
@@ -403,4 +405,52 @@ test('dig_blueprint run: a streamed tunnel advances segments within one call, at
   const r = await dig.run(m, id)
   assert.equal(r.result, 'ok'); assert.equal(m.dug.length, 40)
   assert.match(r.detail, /^\+40 dug, segment 3\/4$/)
+})
+
+test('liquidExposure: underwater plants and waterlogged blocks count as water; a waterlogged neighbour stops the dig', async () => {
+  const c = { x: 0, y: 64, z: -1 }
+  for (const n of ['kelp', 'seagrass', 'waterlogged_glow_lichen']) {
+    const w = digWorld(); w.set({ x: -1, y: 64, z: -1 }, n)
+    assert.deepEqual(liquidExposure(c, w.blockAt), { x: -1, y: 64, z: -1 }, n)
+  }
+  const dry = digWorld(); dry.set({ x: -1, y: 64, z: -1 }, 'dry_glow_lichen')
+  assert.equal(liquidExposure(c, dry.blockAt), null)
+  // a room with waterlogged glow lichen beside its middle row: that cell is never dug, hit_liquid names the lichen
+  const w = digWorld(), book = new BlueprintBook()
+  const id = book.add(roomAt())
+  w.set({ x: -2, y: 64, z: -1 }, 'waterlogged_glow_lichen')
+  const m = fakeMotor(book, w)
+  const r = await dig.run(m, id)
+  assert.equal(r.result, 'hit_liquid'); assert.match(r.detail, /^-2, 64, -1: glow_lichen/)
+  assert.ok(!m.dug.includes('-1,64,-1'))
+  // the book agrees: a waterlogged block in a dig cell is liquid, never work
+  const w2 = digWorld()
+  w2.set({ x: 0, y: 64, z: 0 }, 'waterlogged_glow_lichen')
+  assert.equal(digWork(roomAt(), w2.blockAt).liquid.length, 1)
+})
+
+test('dropUnder: a dig cell over a void deeper than MAX_DROP is never dug; the result says so', async () => {
+  const w0 = digWorld()
+  assert.equal(dropUnder({ x: 0, y: 64, z: 0 }, w0.blockAt), 0)
+  for (let y = 61; y <= 63; y++) w0.set({ x: 0, y, z: 0 }, 'air')
+  assert.equal(dropUnder({ x: 0, y: 64, z: 0 }, w0.blockAt), MAX_DROP)
+  w0.set({ x: 0, y: 60, z: 0 }, 'air')
+  assert.equal(dropUnder({ x: 0, y: 64, z: 0 }, w0.blockAt), MAX_DROP + 1)
+  // a room cell over a cave 4 deep: skipped (the cell above it is dug: its drop is 0 while the lower one stays)
+  const w = digWorld(), book = new BlueprintBook(), id = book.add(roomAt())
+  for (let y = 60; y <= 63; y++) w.set({ x: 1, y, z: -2 }, 'air')
+  const m = fakeMotor(book, w)
+  let r = await dig.run(m, id)
+  assert.ok(!m.dug.includes('1,64,-2')); assert.ok(m.dug.includes('1,65,-2'))
+  assert.equal(r.result, 'ok'); assert.match(r.detail, /\+17 dug, 1 over a drop/)
+  r = await dig.run(fakeMotor(book, w), id)
+  assert.deepEqual(r, { result: 'unreachable', detail: '1 cells over a drop' })
+})
+
+test('dig_blueprint run: a cell motor.digCell refuses as underfoot waits and ends as no_path', async () => {
+  const pit = makeBlueprint('pit', { w: 1, d: 1, depth: 1 }, null, { anchor: { x: 0, y: 64, z: 0 }, facing: 'north' })
+  const w = digWorld(), book = new BlueprintBook(), id = book.add(pit)
+  const m = fakeMotor(book, w)
+  m.digCell = async () => ({ ok: false, why: 'underfoot' })
+  assert.deepEqual(await dig.run(m, id), { result: 'no_path', detail: '1 cells' })
 })

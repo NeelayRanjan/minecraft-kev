@@ -37,6 +37,15 @@ export function facingFromYaw (yaw) {
 
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const LIQUID = new Set(['water', 'lava', 'bubble_column'])
+// Blocks that are water as far as digging next to them goes: underwater plants, and any waterlogged block (glow lichen,
+// pointed dripstone, slabs, stairs, fences in an aquifer) release water into a newly dug neighbour.
+const WATER_PLANTS = new Set(['kelp', 'kelp_plant', 'seagrass', 'tall_seagrass'])
+export function isLiquidBlock (b) {
+  if (!b) return false
+  if (LIQUID.has(b.name) || WATER_PLANTS.has(b.name)) return true
+  const w = b.waterlogged ?? (typeof b.getProperties === 'function' ? b.getProperties()?.waterlogged : undefined)
+  return w === true || w === 'true'
+}
 
 function offsetOf (bp) { return bp.offset ?? (bp.kind === 'build' ? 2 : 0) }
 function widthOf (bp) {
@@ -110,7 +119,7 @@ function classify (c, b) {
   if (!b) return 'blocked'
   if (c.want === 'air') {
     if (AIR.has(b.name)) return 'done'
-    if (b.boundingBox !== 'block' && !LIQUID.has(b.name)) return 'done'
+    if (b.boundingBox !== 'block' && !isLiquidBlock(b)) return 'done'
     return 'wrong'
   }
   if (b.name === c.want) return 'done'
@@ -136,7 +145,7 @@ export function diff (bp, blockAt) {
 const FACE_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
 export function liquidBlocked (c, blockAt) {
   const b = blockAt(c.pos)
-  if (!b || !LIQUID.has(b.name)) return false
+  if (!isLiquidBlock(b)) return false
   if (c.want === 'air') return true
   return !FACE_DIRS.some(([dx, dy, dz]) => blockAt({ x: c.pos.x + dx, y: c.pos.y + dy, z: c.pos.z + dz })?.boundingBox === 'block')
 }

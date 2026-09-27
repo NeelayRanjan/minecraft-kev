@@ -340,3 +340,59 @@ test('planksLog: the most-held log, unless the top goal wants one species and it
   assert.equal(planksLog({}, null), undefined)
 })
 
+
+import { standsOn, supportCells } from '../agent/reach.js'
+
+test('supportCells / standsOn: the cell under the feet, or the last solid cell under the footprint', () => {
+  const solid = new Set(['0,63,0', '1,63,0'])
+  const blockAt = p => ({ name: solid.has(`${p.x},${p.y},${p.z}`) ? 'stone' : 'air', boundingBox: solid.has(`${p.x},${p.y},${p.z}`) ? 'block' : 'empty' })
+  assert.deepEqual(supportCells({ x: 0.5, y: 64, z: 0.5 }), [{ x: 0, y: 63, z: 0 }])
+  assert.deepEqual(supportCells({ x: 0.9, y: 64.5, z: 0.5 }), [{ x: 0, y: 64, z: 0 }, { x: 1, y: 64, z: 0 }])   // on a slab
+  assert.equal(standsOn({ x: 0.5, y: 64, z: 0.5 }, { x: 0, y: 63, z: 0 }, blockAt), true)
+  assert.equal(standsOn({ x: 0.5, y: 64, z: 0.5 }, { x: 1, y: 63, z: 0 }, blockAt), false)
+  // straddling two blocks: either may go while the other holds; once one is gone the other is the last support
+  assert.equal(standsOn({ x: 1.1, y: 64, z: 0.5 }, { x: 0, y: 63, z: 0 }, blockAt), false)
+  solid.delete('1,63,0')
+  assert.equal(standsOn({ x: 0.95, y: 64, z: 0.5 }, { x: 0, y: 63, z: 0 }, blockAt), true)
+  solid.add('1,63,0'); solid.delete('0,63,0')
+  assert.equal(standsOn({ x: 0.95, y: 64, z: 0.5 }, { x: 1, y: 63, z: 0 }, blockAt), true)   // centre over air, footprint on 1,63,0
+})
+
+// A motor over a fake world for digCell: digSafe turns the block to air; reachSpot moves the bot to `spot` (or fails).
+function digMotor (spot) {
+  const solid = new Set()
+  for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) for (let y = 55; y <= 63; y++) solid.add(`${x},${y},${z}`)
+  const blockAt = v => { const s = solid.has(`${v.x},${v.y},${v.z}`); return { name: s ? 'stone' : 'air', boundingBox: s ? 'block' : 'empty', hardness: 1.5, position: v } }
+  const bot = { ...fakeBot(), blockAt, digTime: () => 400 }
+  bot.entity = { position: new Vec3(0.5, 64, 0.5) }
+  const motor = new Motor(bot, mcDataFor('1.20.4'), new EpisodeMemory())
+  motor.deadline = Date.now() + 60_000
+  motor.reached = []
+  motor.reachSpot = async function (pos, opts) {
+    this.reached.push(opts.mode)
+    if (!spot) { this.lastReach = 'no_path'; return null }
+    bot.entity.position = new Vec3(spot.x + 0.5, spot.y, spot.z + 0.5)
+    return { feet: spot }
+  }
+  motor.digSafe = async b => { solid.delete(`${b.position.x},${b.position.y},${b.position.z}`) }
+  return { motor, solid, bot }
+}
+
+test('digCell: never the block the bot stands on; it steps to a dig reach spot first, else underfoot', async () => {
+  // in reach and in sight, but underfoot: walks off first, then digs
+  let { motor, solid, bot } = digMotor({ x: 1, y: 64, z: 0 })
+  assert.deepEqual(await motor.digCell({ x: 0, y: 63, z: 0 }), { ok: true })
+  assert.deepEqual(motor.reached, ['dig']); assert.ok(!solid.has('0,63,0')); assert.equal(bot.entity.position.x, 1.5)
+  // no spot reached: nothing dug
+  ;({ motor, solid } = digMotor(null))
+  assert.deepEqual(await motor.digCell({ x: 0, y: 63, z: 0 }), { ok: false, why: 'no_path' })
+  assert.ok(solid.has('0,63,0'))
+  // a spot that still leaves the bot on it (a stand-in reachSpot returning the bot's own cell): refused
+  ;({ motor, solid } = digMotor({ x: 0, y: 64, z: 0 }))
+  assert.deepEqual(await motor.digCell({ x: 0, y: 63, z: 0 }), { ok: false, why: 'underfoot' })
+  assert.ok(solid.has('0,63,0'))
+  // a neighbour in reach and in sight: dug from where the bot stands, no walk
+  ;({ motor, solid } = digMotor(null))
+  assert.deepEqual(await motor.digCell({ x: 1, y: 63, z: 0 }), { ok: true })
+  assert.deepEqual(motor.reached, []); assert.ok(!solid.has('1,63,0'))
+})

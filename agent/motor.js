@@ -4,7 +4,7 @@ import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import { parseOption, FOOD, TABLE_ITEMS, counts } from './subtasks.js'
 import { portalLayout } from './stages.js'
-import { reachSpots, faces, bestFace, scaffoldPlan, occupiedCells, clearSpots, lineOfSight, isSolid, key as cellKey, at as cellAt, REACH, EYE } from './reach.js'
+import { reachSpots, faces, bestFace, scaffoldPlan, occupiedCells, clearSpots, lineOfSight, isSolid, standsOn, key as cellKey, at as cellAt, REACH, EYE } from './reach.js'
 
 const { Movements, goals } = pathfinderPkg
 export const TIMEOUTS = { gather_wood: 60, mine_stone: 45, mine_coal: 60, mine_iron: 90, craft: 20, smelt: 90, explore_toward: 40,
@@ -1576,7 +1576,10 @@ export class Motor {
   }
 
   // Dig the solid block at `pos` from a reach spot. { ok } | { ok: false, why: 'unbreakable'|'unreachable'|'no_path'|
-  // 'no_time'|'rejected' }. Not started when the dig itself would not fit the budget.
+  // 'no_time'|'rejected'|'underfoot' }. Not started when the dig itself would not fit the budget. Never the block the
+  // bot stands on (reach.js standsOn: the cell under its feet, or the last solid cell under its footprint): it walks to
+  // a dig reach spot first (reachSpots mode 'dig' never stands on the target), and 'underfoot' when it is still on it.
+  // So a dig never leaves the bot's standing cell over a drop.
   async digCell(pos, { avoid = new Set(), bad } = {}) {
     let blk = this.blockAtP(pos)
     if (!isSolid(blk)) return { ok: true }
@@ -1584,8 +1587,10 @@ export class Motor {
     const digMs = () => { try { return this.bot.digTime(this.blockAtP(pos)) } catch { return 1000 } }
     if (this.timeLeft() < MIN_STEP_MS + digMs()) return { ok: false, why: 'no_time' }
     const e = this.eyeP(), c = { x: pos.x + 0.5, y: pos.y + 0.5, z: pos.z + 0.5 }
-    const near = Math.hypot(e.x - c.x, e.y - c.y, e.z - c.z) <= REACH && lineOfSight(p => this.blockAtP(p), e, c, new Set([cellKey(pos)]))
+    const onIt = () => standsOn(this.bot.entity.position, pos, p => this.blockAtP(p))
+    const near = !onIt() && Math.hypot(e.x - c.x, e.y - c.y, e.z - c.z) <= REACH && lineOfSight(p => this.blockAtP(p), e, c, new Set([cellKey(pos)]))
     if (!near && !(await this.reachSpot(pos, { avoid, mode: 'dig', bad }))) return { ok: false, why: this.lastReach }
+    if (onIt()) return { ok: false, why: 'underfoot' }
     blk = this.blockAtP(pos)
     if (!isSolid(blk)) return { ok: true }
     if (this.timeLeft() < 500 + digMs()) return { ok: false, why: 'no_time' }

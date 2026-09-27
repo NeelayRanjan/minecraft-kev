@@ -8,7 +8,8 @@
 //   order     near rows first; within a row the centre column, then the left side outward, then the right side
 //             outward; within a column the top layer first (a tunnel is dug face by face, a staircase step by step, a
 //             strip-mine branch from the main tunnel outward)
-//   liquid    before a cell is dug, liquidExposure: the cell, a face neighbour (source or flowing water/lava) or a
+//   liquid    before a cell is dug, liquidExposure: the cell, a face neighbour (source or flowing water/lava, an
+//             underwater plant or a waterlogged block: blueprints.isLiquidBlock) or a
 //             liquid resting on a column of sand/gravel above it. A cell that would expose a liquid is never dug. The
 //             streamed digs (TURNABLE) turn their segment 90 degrees right once (templates.turnSegment, replaced in the
 //             book with accessor.update, marked bp.turned = segment) when the turned segment's first cell is dry, and
@@ -25,8 +26,14 @@
 //             plan, not next to a liquid, harvestable with a held pickaxe) are dug, then the ores adjacent to those
 //             (up to VEIN_MAX per vein); their drops are walked to at the end of the call.
 //
-// Results: ok (+n dug[, v ore mined][, k drops][, j liquid][, t needs_tool][, turned right], segment i/n[, complete]) |
-// hit_liquid (x, y, z: <liquid>, +n dug) | needs_tool (<block>) | no_path (<n> cells) | failed (no blueprint).
+//   footing  never the block the bot stands on: motor.digCell walks to a dig reach spot first (reach.js standsOn,
+//             reachSpots mode 'dig') and answers 'underfoot' when it cannot step off; such a cell is retried after the
+//             next dig. A cell with more than MAX_DROP non-solid cells straight below it is never dug (dropUnder:
+//             whoever stands in it afterwards falls into the cave or shaft under it).
+//
+// Results: ok (+n dug[, v ore mined][, k drops][, j liquid][, t needs_tool][, d over a drop][, turned right], segment i/n[, complete]) |
+// hit_liquid (x, y, z: <liquid>, +n dug) | needs_tool (<block>) | no_path (<n> cells) | unreachable (<n> cells over a
+// drop) | failed (no blueprint).
 import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import { diff } from '../blueprints.js'
@@ -39,6 +46,7 @@ const { goals } = pathfinderPkg
 
 export const MAX_DIGS = 40
 export const VEIN_MAX = 16
+export const MAX_DROP = 3
 export const TURNABLE = new Set(['stairs_down_to', 'stairs_up_to', 'shaft_down', 'tunnel', 'strip_mine'])
 const GRAVITY = /^(sand|red_sand|gravel|suspicious_sand|suspicious_gravel)$|_concrete_powder$/
 const LEGACY_ORES = ['coal', 'iron', 'copper', 'gold', 'redstone', 'lapis', 'diamond', 'emerald']
@@ -83,6 +91,16 @@ export function liquidExposure (pos, blockAt) {
     }
   }
   return null
+}
+
+// The number of non-solid cells straight below `pos` (air, plants, liquids), counted up to `max` + 1. Pure.
+export function dropUnder (pos, blockAt, max = MAX_DROP) {
+  let n = 0
+  for (let y = pos.y - 1; n <= max; y--, n++) {
+    const b = blockAt({ x: pos.x, y, z: pos.z })
+    if (!b || b.boundingBox === 'block') break
+  }
+  return n
 }
 
 // True when a held item (or the hand) harvests `block`: no harvest tool needed, or one held. Never bedrock or blocks
@@ -132,6 +150,7 @@ const plugin = {
     motor.reserveMs = MARGIN_MS
 
     const budget = () => dug + ores < MAX_DIGS && motor.timeLeft() >= 2000
+    const overDrop = pos => dropUnder(pos, blockAt) > MAX_DROP
     const afterDig = async (pos) => {
       if (!GRAVITY.test(blockAt(at(pos, 0, 1, 0))?.name ?? '')) return
       await bot.waitForTicks(12); motor.check()
@@ -148,6 +167,7 @@ const plugin = {
         if (!isOre(blk?.name) || !harvestable(blk, bot.inventory.items()) || liquidExposure(p, blockAt)) continue
         const eye = bot.entity.position.offset(0, 1.62, 0)
         if (eye.distanceTo(new Vec3(p.x + 0.5, p.y + 0.5, p.z + 0.5)) > REACH + 2) continue
+        if (overDrop(p)) continue
         const r = await motor.digCell(p, { avoid: plan, bad })
         if (!r.ok) { if (r.why === 'no_time') break; continue }
         n++; ores++; mined.push(p)
@@ -194,10 +214,11 @@ const plugin = {
         }
         const blk = blockAt(c.pos)
         if (!harvestable(blk, bot.inventory.items())) { skip.set(k, 'needs_tool'); continue }
+        if (overDrop(c.pos)) { skip.set(k, 'drop'); continue }
         const r = await motor.digCell(c.pos, { avoid: plan, bad })
         if (r.ok) {
           dug++; acted = true
-          for (const [sk, why] of skip) if (why !== 'needs_tool') skip.delete(sk)
+          for (const [sk, why] of skip) if (why !== 'needs_tool' && why !== 'drop') skip.delete(sk)
           bad.clear()
           if (motor.current) motor.current.progress = Math.min(1, (dug + ores) / MAX_DIGS)
           await afterDig(c.pos)
@@ -219,7 +240,8 @@ const plugin = {
     bp = acc.get(arg)
     const w = digWork(bp, blockAt)
     const toolless = w.work.filter(c => skip.get(key(c.pos)) === 'needs_tool')
-    const unreached = w.work.filter(c => ['unreachable', 'no_path', 'rejected', 'unbreakable'].includes(skip.get(key(c.pos))))
+    const deep = w.work.filter(c => skip.get(key(c.pos)) === 'drop')
+    const unreached = w.work.filter(c => ['unreachable', 'no_path', 'rejected', 'unbreakable', 'underfoot'].includes(skip.get(key(c.pos))))
     if (hit) {
       const name = blockAt(hit)?.name ?? 'liquid'
       return { result: 'hit_liquid', detail: `${hit.x}, ${hit.y}, ${hit.z}: ${name}, +${dug} dug${ores ? `, ${ores} ore mined` : ''}${turned ? ', turned right' : ''}` }
@@ -230,12 +252,14 @@ const plugin = {
       if (drops > 0) parts.push(`${drops} drops`)
       if (w.liquid.length) parts.push(`${w.liquid.length} liquid`)
       if (toolless.length) parts.push(`${toolless.length} needs_tool`)
+      if (deep.length) parts.push(`${deep.length} over a drop`)
       if (turned) parts.push('turned right')
       const seg = segText(bp)
       return { result: 'ok', detail: parts.join(', ') + (seg ? `, ${seg}` : '') + (complete ? ', complete' : '') }
     }
     if (stalled && toolless.length && toolless.length === w.work.length) return { result: 'needs_tool', detail: blockAt(toolless[0].pos)?.name ?? 'block' }
     if (stalled && unreached.length) return { result: 'no_path', detail: `${unreached.length} cells` }
+    if (stalled && deep.length) return { result: 'unreachable', detail: `${deep.length} cells over a drop` }
     if (stalled && toolless.length) return { result: 'needs_tool', detail: blockAt(toolless[0].pos)?.name ?? 'block' }
     return { result: 'ok', detail: `+0 dug${segText(bp) ? `, ${segText(bp)}` : ''}` }   // out of time before any step
   },

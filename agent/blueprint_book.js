@@ -18,10 +18,9 @@
 //             blocks take (build only)
 //   layerNeeds the same restricted to the working layer
 //   scaffoldLeft (build only) scaffold blocks of this build still standing; finished stays false while any is
-import { diff, foundation, itemForBlock, liquidBlocked } from './blueprints.js'
+import { diff, foundation, isLiquidBlock, itemForBlock, liquidBlocked } from './blueprints.js'
 import { nextSegment } from './templates.js'
 
-const LIQUID = new Set(['water', 'lava', 'bubble_column'])
 const key = p => `${p.x},${p.y},${p.z}`
 const pretty = s => String(s).replace(/_/g, ' ')
 const add = (m, item, n = 1) => { m[item] = (m[item] ?? 0) + n }
@@ -66,7 +65,7 @@ export class BlueprintBook {
     if (!bp) return null
     const d = diff(bp, blockAt)
     const build = bp.kind === 'build'
-    const liquid = build ? [...d.missing, ...d.wrong].filter(c => liquidBlocked(c, blockAt)) : d.wrong.filter(c => LIQUID.has(blockAt(c.pos)?.name))
+    const liquid = build ? [...d.missing, ...d.wrong].filter(c => liquidBlocked(c, blockAt)) : d.wrong.filter(c => isLiquidBlock(blockAt(c.pos)))
     const liquidSet = new Set(liquid)
     const work = (build ? [...d.missing, ...d.wrong] : d.wrong).filter(c => !liquidSet.has(c))
     const layers = bp.layers.length
