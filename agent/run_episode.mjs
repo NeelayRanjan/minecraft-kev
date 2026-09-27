@@ -30,7 +30,7 @@ import { EpisodeLog, oneHot, fromKev, onceEvery } from './logger.js'
 import { ask } from './kev_client.js'
 import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
-import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
+import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS, blueprintsRelevant,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
   requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S, endsProtect } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
@@ -437,14 +437,19 @@ function leaderTick(obs, t) {
     leaderAsk = snap
     first = leaderCalls++ === 0
     const forecasts = Object.fromEntries(Object.entries(forecastHist).map(([q, h]) => [q, h[h.length - 1]]))
+    // the BUILDING AND DIGGING rules and the blueprint answers only when a shown request, a blueprint goal or a refused
+    // blueprint's feedback makes them relevant (leader.blueprintsRelevant; they cost ~1,600 prompt tokens)
+    const bpCut = goalsOn ? blueprintCutFor(t) : null
+    const bpOn = goalsOn && blueprintsRelevant({ requests: shownReqs, blueprintGoal: bpCut != null || activeBlueprintId() != null, blueprintFeedback: bpFeedback })
+    snap.blueprints = bpOn
     ctx = {
       stateText: serialize(obs), chainText: describeChain(obs), need: needs(obs), options: opts,
       current: currentId ? { id: currentId, elapsedS: motor.elapsedS(), progress: motor.progress(), lastResult } : { id: null, lastResult },
       history: elog.events.slice(-300), forecasts, forecastTrend: forecastHist, kevPick, subtaskStats: subtaskStats(elog.events),
       ownHistory: elog.leader.slice(-5).map(l => ({ t: l.t_asked, action: l.action, kind: l.kind, why: l.why })),
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
-      ...(goalsOn ? { goals: true, blueprints: true, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })),
-        blueprintCut: blueprintCutFor(t), blueprintFeedback: bpFeedback ? { title: bpFeedback.title, reason: bpFeedback.reason } : null,
+      ...(goalsOn ? { goals: true, blueprints: bpOn, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })),
+        blueprintCut: bpCut, blueprintFeedback: bpFeedback ? { title: bpFeedback.title, reason: bpFeedback.reason } : null,
         feedback: leaderFeedbackNext, conversation: chatLines.slice(-8), inventory: { ...(obs.inventory || {}) }, botName: me, players: { ...(obs.players || {}) } } : {}),
     }
     if (bpFeedback) bpFeedback.shown = true
@@ -539,6 +544,7 @@ function leaderAnswered(snap, a, err) {
   elog.leader.push({ t_asked: snap.t, t_answered: +t.toFixed(1), trigger: snap.event, current_id: snap.currentId, current_id_at_answer: currentId,
     action: a?.action ?? null, truncated: a?.truncated ?? null, kind: res.kind, id: res.id, reason: res.reason ?? null, threat_near: threatNear, why: a?.why ?? null, thinking: a?.thinking ?? '', raw: a?.raw ?? null,
     ...(goalsOn ? { reply: reply || null } : {}),
+    ...(goalsOn ? { blueprints: !!snap.blueprints } : {}), ...(a?.near_ctx_limit ? { near_ctx_limit: true } : {}),
     latency_ms: a?.latency_ms ?? null, tokens: a?.tokens ?? null, prompt_tokens: a?.prompt_tokens ?? null, tps: a?.tps != null ? +a.tps.toFixed(1) : null,
     prompt_chars: a?.prompt_chars ?? null, prompt_hash: a?.prompt_hash ?? null, offered: snap.offered.map(o => o.id), think: leaderThink,
     error: err ? String(err.message || err).slice(0, 200) : null,

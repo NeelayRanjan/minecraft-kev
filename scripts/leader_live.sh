@@ -25,9 +25,9 @@ node scripts/warm_kev.mjs | tail -1
 say "checking the leader URL $LEADER_URL for $LEADER_MODEL"
 curl -s -m 10 "$LEADER_URL/api/tags" | grep -q "$LEADER_MODEL" || { say "leader URL $LEADER_URL does not answer with $LEADER_MODEL"; exit 1; }
 
-# Preload the leader model (with askLeader's num_ctx, 6144, so the first call does not reload it) before the run so the first call never spends the 300 s first-call budget on a cold load.
+# Preload the leader model (with askLeader's num_ctx, 8192, so the first call does not reload it) before the run so the first call never spends the 300 s first-call budget on a cold load.
 t_load=$(date +%s)
-curl -s -m 600 "$LEADER_URL/api/generate" -d "{\"model\":\"$LEADER_MODEL\",\"prompt\":\"ok\",\"stream\":false,\"think\":false,\"options\":{\"num_ctx\":6144,\"num_predict\":2},\"keep_alive\":\"90m\"}" > /dev/null
+curl -s -m 600 "$LEADER_URL/api/generate" -d "{\"model\":\"$LEADER_MODEL\",\"prompt\":\"ok\",\"stream\":false,\"think\":false,\"options\":{\"num_ctx\":8192,\"num_predict\":2},\"keep_alive\":\"90m\"}" > /dev/null
 say "leader model $LEADER_MODEL preloaded in $(( $(date +%s) - t_load )) s"
 
 name="live_s${seed}_$(date '+%H%M')"

@@ -809,8 +809,8 @@ function renderForecasts(forecasts = {}, trend = {}, kevPick = null) {
   return out
 }
 
-function renderStats(stats = {}) {
-  return Object.entries(stats).sort((a, b) => b[1].attempts - a[1].attempts).slice(0, 20).map(([id, s]) => {
+function renderStats(stats = {}, max = 20) {
+  return Object.entries(stats).sort((a, b) => b[1].attempts - a[1].attempts).slice(0, max).map(([id, s]) => {
     const worst = Object.entries(s.fails || {}).sort((a, b) => b[1] - a[1])[0]
     return `${id}: ${s.attempts} attempts, ${s.ok} ok${worst ? `, most common failure ${worst[0]} (${worst[1]})` : ''}`
   })
@@ -829,12 +829,25 @@ function renderBlueprint(cut, feedback) {
   return out
 }
 
+// Prompt budget (goals mode; num_ctx 8192 in planner.js askLeader): the merged goals prompt reached ~6,600 tokens on the
+// live-retry calls against a 6,144 context (final review, Critical 1). Goals mode shows the last 20 events and the 8
+// most-tried subtasks (chain mode keeps 30 and 20), and the BUILDING AND DIGGING block only when blueprintsRelevant.
+export const MAX_SHOWN_EVENTS_GOALS = 20
+export const MAX_SHOWN_STATS_GOALS = 8
+// The blueprint rules and answers (plan_build / plan_dig / plan_blueprint) are worth their ~1,600 tokens only when a
+// pending request talks about building or digging, a blueprint goal exists (active, queued in a plan or blocked), or a
+// refused blueprint's feedback is pending. A cheap word check; a miss costs one call (the leader answers cannot or a
+// plan_steps and the player asks again with a building word).
+const BLUEPRINT_WORDS = /\b(?:build\w*|house\w*|huts?|walls?|towers?|stair\w*|dig\w*|mine|mining|caves?|tunnel\w*|rooms?|pits?|strip\w*)\b|\bmake an? /i
+export const blueprintsRelevant = ({ requests = [], blueprintGoal = false, blueprintFeedback = null } = {}) =>
+  !!blueprintGoal || !!blueprintFeedback || (requests || []).slice(0, MAX_REQUESTS).some(r => BLUEPRINT_WORDS.test(String(r?.text ?? '')))
+
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
   subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null,
   blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null, conversation = [], inventory = null, botName = null, players = null }) {
   const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
-  const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
+  const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(goals ? -MAX_SHOWN_EVENTS_GOALS : -30).map(renderEvent)
   const own = ownHistory.slice(-5).map(h => `${T(h.t)} ${h.action ?? '(no answer)'}${h.kind && h.kind !== h.action ? ` (${h.kind})` : ''}${h.why ? `: ${h.why}` : ''}`)
   // INVENTORY (exact): the state text names tools without counts; with chat to answer, the leader gets every stack total
   const chat = goals && inventory && (requests.length > 0 || conversation?.length > 0)
@@ -848,7 +861,7 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
     ...renderBlueprint(blueprintCut, blueprintFeedback),
     'CURRENT SUBTASK', ...renderCurrent(current), '',
     'RECENT EVENTS (oldest first)', none(events), '',
-    'SUBTASK STATS THIS EPISODE', none(renderStats(stats)), '',
+    'SUBTASK STATS THIS EPISODE', none(renderStats(stats, goals ? MAX_SHOWN_STATS_GOALS : 20)), '',
     'KEV FORECASTS', none(renderForecasts(forecasts, forecastTrend, kevPick)), '',
     'YOUR PREVIOUS DECISIONS', none(own), '',
     'TIME', `${minutesLeft != null ? minutesLeft.toFixed(1) : '?'} minutes left in the episode; deaths so far: ${deaths}`, '',

@@ -1,0 +1,682 @@
+{
+ "source": "out/live_retry.json leader call t_asked=1623.5 (prompt_tokens 4962 at 06f3a82), reconstructed",
+ "ctx": {
+  "stateText": "Minecraft survival, day 1. Goal from the audience (Spacers_Choice): gather 5 iron ingot (have 3). Then: Goal chain: iron tools, iron armor, diamond tools, lit nether portal. Current stage: iron pickaxe, step 7 of 47: craft the iron pickaxe.\ntime: afternoon, dusk in 3 min 53 s. weather clear. biome: plains.\nyou: health 1/20, food 0/20, standing on dirt at y 81, underground, light 0.\ninventory: stone pickaxe (worn 77%), wooden pickaxe (worn 37%), crafting table, bone, 55 cobblestone, 2 oak log, 3 planks, 3 coal, 14 dirt, 3 iron ingot, 2 arrow.\nholding: dirt.\nbase: crafting table and furnace 133 m east, 11 m below you. bed: none.\nmemory: iron ore seen 0 s ago 21 m north, 21 m below you; lava seen 44 s ago 121 m east, 21 m below you; water seen 54 s ago 166 m south-east, 27 m below you; path last tried: ok. died: 1 time.\nnearby blocks: exposed stone 4 m south-east, 2 m above you, reachable; coal ore 13 m south-east, 4 m above you; iron ore 21 m north, 21 m below you; tree 26 m south-west, reachable.\nnearby creatures: zombie 30 m east (hostile); skeleton 31 m south-east (hostile); villager 32 m south-west (passive); nearest hostile: zombie 30 m east.\ncurrent subtask: explore toward surface, 6 s so far. last subtask result: explore toward(surface) ok.",
+  "chainText": "Goal chain: iron tools, iron armor, diamond tools, lit nether portal. Current stage: iron pickaxe, step 7 of 47: craft the iron pickaxe.",
+  "need": {
+   "ingots": 3,
+   "diamonds": 3,
+   "sticks": 2,
+   "obsidian": 10,
+   "flint": 1,
+   "missing": [
+    "iron_pickaxe",
+    "iron_sword",
+    "iron_axe"
+   ]
+  },
+  "options": [
+   {
+    "id": "mine_coal",
+    "desc": "walk to the nearest coal ore and mine it"
+   },
+   {
+    "id": "mine_iron",
+    "desc": "walk to the nearest known iron ore and mine it"
+   },
+   {
+    "id": "craft(furnace)",
+    "desc": "craft a furnace at a crafting table (8 cobblestone)"
+   },
+   {
+    "id": "explore_toward(down)",
+    "desc": "dig a staircase down toward iron level and tunnel there"
+   },
+   {
+    "id": "explore_toward(surface)",
+    "desc": "walk across the surface looking for trees, stone or caves"
+   },
+   {
+    "id": "return_to_base",
+    "desc": "walk back to the crafting table"
+   },
+   {
+    "id": "wait",
+    "desc": "stand still for a few seconds"
+   }
+  ],
+  "current": {
+   "id": "explore_toward(surface)",
+   "elapsedS": 12,
+   "progress": 0.3,
+   "lastResult": {
+    "id": "mine_coal",
+    "result": "ok",
+    "repeats": 1
+   }
+  },
+  "history": [
+   {
+    "t": 1210.538,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1216.148,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1222.263,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1227.829,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1233.188,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1239.405,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1245.7,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1252.201,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1279.033,
+    "kind": "leader_cannot",
+    "action": "cannot",
+    "current": "explore_toward(down)",
+    "why": "I can't write Python code, but I can craft items, gather materials, or head to a spot for you."
+   },
+   {
+    "t": 1293.336,
+    "kind": "subtask_done",
+    "id": "explore_toward(down)",
+    "result": "timeout",
+    "detail": null
+   },
+   {
+    "t": 1332.166,
+    "kind": "leader_cannot",
+    "action": "cannot",
+    "current": "explore_toward(down)",
+    "why": "I can't ignore my survival instructions, but I can craft items, gather materials, or head to a spot for you."
+   },
+   {
+    "t": 1334.229,
+    "kind": "goal_failed",
+    "goal": {
+     "kind": "gather",
+     "arg": "iron_ingot",
+     "count": 7,
+     "source": "audience:Spacers_Choice",
+     "id": 7,
+     "plan_id": 1,
+     "step_index": 2,
+     "from": null
+    },
+    "reason": "stuck"
+   },
+   {
+    "t": 1334.229,
+    "kind": "plan_blocked",
+    "plan_id": 1,
+    "title": "compass",
+    "step_index": 2,
+    "step": {
+     "kind": "gather",
+     "arg": "iron_ingot",
+     "count": 7
+    },
+    "reason": "stuck"
+   },
+   {
+    "t": 1334.229,
+    "kind": "plan_step",
+    "plan_id": 3,
+    "step_index": 0,
+    "of": 5,
+    "step": {
+     "kind": "craft_item",
+     "arg": "crafting_table",
+     "count": 1
+    },
+    "goal_id": 9,
+    "target": 2
+   },
+   {
+    "t": 1334.667,
+    "kind": "subtask_done",
+    "id": "explore_toward(down)",
+    "result": "timeout",
+    "detail": null
+   },
+   {
+    "t": 1335.229,
+    "kind": "goal_done",
+    "goal": {
+     "kind": "craft_item",
+     "arg": "crafting_table",
+     "count": 2,
+     "source": "audience:Spacers_Choice",
+     "id": 9,
+     "plan_id": 3,
+     "step_index": 0,
+     "from": null
+    }
+   },
+   {
+    "t": 1335.229,
+    "kind": "plan_step",
+    "plan_id": 3,
+    "step_index": 1,
+    "of": 5,
+    "step": {
+     "kind": "gather",
+     "arg": "iron_ingot",
+     "count": 2
+    },
+    "goal_id": 10,
+    "target": 5
+   },
+   {
+    "t": 1337.927,
+    "kind": "leader_stale",
+    "action": "craft(planks)",
+    "current": "explore_toward(surface)",
+    "why": "The bot has 3 planks and 2 logs, so crafting planks is the cheapest way to finish the crafting table and the iron pickaxe without more digging."
+   },
+   {
+    "t": 1349.684,
+    "kind": "leader_say",
+    "text": "I can't run into lava on purpose, but I can still craft items, gather materials, or head to a spot for you.",
+    "why": "The player is asking why the bot refused to run into lava, so I answer directly."
+   },
+   {
+    "t": 1375.695,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "timeout",
+    "detail": null
+   },
+   {
+    "t": 1380.052,
+    "kind": "leader_override",
+    "from": "explore_toward(surface)",
+    "to": "mine_iron",
+    "why": "The bot has 3 iron ingots and needs 2 more to complete the audience goal, and iron ore is known 22 m north and 21 m below, so mining it is the cheapest next step."
+   },
+   {
+    "t": 1380.202,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "interrupted",
+    "detail": "leader"
+   },
+   {
+    "t": 1393.974,
+    "kind": "leader_cannot",
+    "action": "cannot",
+    "current": "mine_iron",
+    "why": "I can't fight a skeleton for you, but I can craft items, gather materials, or head to a spot for you."
+   },
+   {
+    "t": 1418.474,
+    "kind": "leader_say",
+    "text": "I'm heading to the iron ore first, then I'll come straight to you.",
+    "why": "The player is asking if the bot is coming to them, so I answer directly."
+   },
+   {
+    "t": 1453.024,
+    "kind": "leader_say",
+    "text": "I'm right here by the water, heading to the iron ore 22 m north and 22 m below me.",
+    "why": "The player is asking where the bot is, so I answer directly."
+   },
+   {
+    "t": 1470.716,
+    "kind": "subtask_done",
+    "id": "mine_iron",
+    "result": "timeout",
+    "detail": null
+   },
+   {
+    "t": 1475.22,
+    "kind": "leader_override",
+    "from": "explore_toward(surface)",
+    "to": "mine_coal",
+    "why": "The bot is in water at 1/20 health with no food, so it needs to mine the reachable coal ore to smelt iron and eat, rather than risk another timeout on the iron ore."
+   },
+   {
+    "t": 1475.371,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "interrupted",
+    "detail": "leader"
+   },
+   {
+    "t": 1506.539,
+    "kind": "goal_pushed",
+    "goal": {
+     "id": 11,
+     "kind": "go_to",
+     "arg": "base",
+     "count": null,
+     "source": "audience:Spacers_Choice"
+    },
+    "why": "The player is asking the bot to head home, so I push a return-to-base goal before it resumes mining."
+   },
+   {
+    "t": 1536.429,
+    "kind": "subtask_done",
+    "id": "mine_coal",
+    "result": "timeout",
+    "detail": null
+   },
+   {
+    "t": 1540.497,
+    "kind": "leader_override",
+    "from": "explore_toward(surface)",
+    "to": "return_to_base",
+    "why": "The player asked to go back home right now, so the bot should walk back to the crafting table before resuming mining."
+   },
+   {
+    "t": 1540.649,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "interrupted",
+    "detail": "leader"
+   },
+   {
+    "t": 1582.431,
+    "kind": "goal_done",
+    "goal": {
+     "kind": "go_to",
+     "arg": "base",
+     "count": null,
+     "source": "audience:Spacers_Choice",
+     "id": 11
+    }
+   },
+   {
+    "t": 1582.76,
+    "kind": "subtask_done",
+    "id": "return_to_base",
+    "result": "ok",
+    "detail": null
+   },
+   {
+    "t": 1586.176,
+    "kind": "leader_stale",
+    "action": "continue",
+    "current": "explore_toward(surface)",
+    "why": "The bot is already returning to base as the player asked, so let it finish the walk before resuming mining."
+   },
+   {
+    "t": 1588.278,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1594.032,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1604.972,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1611.13,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   },
+   {
+    "t": 1617.234,
+    "kind": "subtask_done",
+    "id": "explore_toward(surface)",
+    "result": "ok",
+    "detail": "walked 24 m"
+   }
+  ],
+  "forecasts": {
+   "subgoal_succeeds_60s": 0.41,
+   "damage_major_or_death": 0.05,
+   "survive_until_morning": 0.6
+  },
+  "forecastTrend": {
+   "subgoal_succeeds_60s": [
+    0.6,
+    0.5,
+    0.41,
+    0.4,
+    0.41
+   ],
+   "damage_major_or_death": [
+    0.1,
+    0.05,
+    0.05,
+    0.04,
+    0.05
+   ],
+   "survive_until_morning": [
+    0.6,
+    0.6,
+    0.6,
+    0.6,
+    0.6
+   ]
+  },
+  "kevPick": {
+   "t": 1621.5,
+   "top": [
+    [
+     "mine_coal",
+     0.8
+    ],
+    [
+     "wait",
+     0.1
+    ],
+    [
+     "mine_iron",
+     0.05
+    ]
+   ]
+  },
+  "subtaskStats": {
+   "gather_wood": {
+    "attempts": 6,
+    "ok": 3,
+    "fails": {
+     "no_path": 2,
+     "interrupted": 1
+    }
+   },
+   "craft(planks)": {
+    "attempts": 4,
+    "ok": 4,
+    "fails": {}
+   },
+   "craft(crafting_table)": {
+    "attempts": 4,
+    "ok": 4,
+    "fails": {}
+   },
+   "craft(sticks)": {
+    "attempts": 2,
+    "ok": 2,
+    "fails": {}
+   },
+   "craft(wooden_pickaxe)": {
+    "attempts": 2,
+    "ok": 2,
+    "fails": {}
+   },
+   "mine_stone": {
+    "attempts": 3,
+    "ok": 3,
+    "fails": {}
+   },
+   "go_to_player(Spacers_Choice)": {
+    "attempts": 3,
+    "ok": 3,
+    "fails": {}
+   },
+   "explore_toward(down)": {
+    "attempts": 6,
+    "ok": 4,
+    "fails": {
+     "timeout": 2
+    }
+   },
+   "explore_toward(surface)": {
+    "attempts": 73,
+    "ok": 64,
+    "fails": {
+     "interrupted": 7,
+     "timeout": 2
+    }
+   },
+   "fight(threat)": {
+    "attempts": 5,
+    "ok": 1,
+    "fails": {
+     "took_damage": 4
+    }
+   },
+   "flee(threat)": {
+    "attempts": 6,
+    "ok": 6,
+    "fails": {}
+   },
+   "craft(stone_pickaxe)": {
+    "attempts": 3,
+    "ok": 2,
+    "fails": {
+     "no_materials": 1
+    }
+   },
+   "mine_iron": {
+    "attempts": 7,
+    "ok": 2,
+    "fails": {
+     "interrupted": 3,
+     "no_path": 1,
+     "timeout": 1
+    }
+   },
+   "explore_toward(cave)": {
+    "attempts": 7,
+    "ok": 7,
+    "fails": {}
+   },
+   "wait": {
+    "attempts": 11,
+    "ok": 9,
+    "fails": {
+     "interrupted": 2
+    }
+   },
+   "build_shelter": {
+    "attempts": 2,
+    "ok": 1,
+    "fails": {
+     "died": 1
+    }
+   },
+   "return_to_base": {
+    "attempts": 2,
+    "ok": 2,
+    "fails": {}
+   },
+   "mine_coal": {
+    "attempts": 2,
+    "ok": 1,
+    "fails": {
+     "timeout": 1
+    }
+   },
+   "craft(furnace)": {
+    "attempts": 1,
+    "ok": 1,
+    "fails": {}
+   },
+   "smelt(iron_ingot)": {
+    "attempts": 1,
+    "ok": 1,
+    "fails": {}
+   }
+  },
+  "ownHistory": [
+   {
+    "t": 1448.7,
+    "action": "say",
+    "kind": "say",
+    "why": "The player is asking where the bot is, so I answer directly."
+   },
+   {
+    "t": 1471,
+    "action": "mine_coal",
+    "kind": "override",
+    "why": "The bot is in water at 1/20 health with no food, so it needs to mine the reachable coal ore to smelt iron and eat, rather than risk another timeout on the iron ore."
+   },
+   {
+    "t": 1502.4,
+    "action": "push_goal",
+    "kind": "push_goal",
+    "why": "The player is asking the bot to head home, so I push a return-to-base goal before it resumes mining."
+   },
+   {
+    "t": 1536.7,
+    "action": "return_to_base",
+    "kind": "override",
+    "why": "The player asked to go back home right now, so the bot should walk back to the crafting table before resuming mining."
+   },
+   {
+    "t": 1582.4,
+    "action": "continue",
+    "kind": "stale",
+    "why": "The bot is already returning to base as the player asked, so let it finish the walk before resuming mining."
+   }
+  ],
+  "minutesLeft": 60,
+  "deaths": 1,
+  "recentResults": [],
+  "goalStack": {
+   "text": "Minecraft survival, day 1. Goal from the audience (Spacers_Choice): gather 5 iron ingot (have 3). Then: Goal chain: iron tools, iron armor, diamond tools, lit nether portal. Current stage: iron pickaxe, step 7 of 47: craft the iron pickaxe.",
+   "pushed": [
+    {
+     "id": 8,
+     "kind": "go_to",
+     "arg": "player:Spacers_Choice",
+     "count": null,
+     "source": "audience:Spacers_Choice",
+     "t": 870.675,
+     "progress": "go_to player:Spacers_Choice"
+    },
+    {
+     "id": 11,
+     "kind": "go_to",
+     "arg": "base",
+     "count": null,
+     "source": "audience:Spacers_Choice",
+     "t": 1506.539,
+     "progress": "go_to base"
+    }
+   ]
+  },
+  "plans": [
+   "#2 leather (1 of 1 steps): hunt leather 1",
+   "#3 white bed (1 of 5 steps): craft_item crafting_table 1, gather iron_ingot 2, craft_item shears 1, hunt white_wool 3, craft_item white_bed 1",
+   "#4 crafting table (1 of 1 steps): craft_item crafting_table 1"
+  ],
+  "requests": [
+   {
+    "t": 1623.3,
+    "name": "Spacers_Choice",
+    "text": "come here, I have a suprise gift for you"
+   }
+  ],
+  "conversation": [
+   {
+    "t": 1349.684,
+    "name": "Kevin",
+    "text": "I can't run into lava on purpose, but I can still craft items, gather materials, or head to a spot for you."
+   },
+   {
+    "t": 1389.5,
+    "name": "Spacers_Choice",
+    "text": "Im so scared, there is a skeleton next to me"
+   },
+   {
+    "t": 1413.9,
+    "name": "Spacers_Choice",
+    "text": "are you coming to me at least?"
+   },
+   {
+    "t": 1418.474,
+    "name": "Kevin",
+    "text": "I'm heading to the iron ore first, then I'll come straight to you."
+   },
+   {
+    "t": 1448.1,
+    "name": "Spacers_Choice",
+    "text": "where are you?"
+   },
+   {
+    "t": 1453.024,
+    "name": "Kevin",
+    "text": "I'm right here by the water, heading to the iron ore 22 m north and 22 m below me."
+   },
+   {
+    "t": 1501.9,
+    "name": "Spacers_Choice",
+    "text": "can you go back home right now"
+   },
+   {
+    "t": 1623.3,
+    "name": "Spacers_Choice",
+    "text": "come here, I have a suprise gift for you"
+   }
+  ],
+  "inventory": {
+   "cobblestone": 55,
+   "oak_log": 2,
+   "oak_planks": 3,
+   "coal": 3,
+   "iron_ingot": 3,
+   "stone_pickaxe": 1,
+   "wooden_pickaxe": 1,
+   "crafting_table": 1,
+   "bone": 1,
+   "arrow": 2
+  },
+  "botName": "Kevin",
+  "players": {
+   "Spacers_Choice": {
+    "dist": 12,
+    "dir": "north"
+   }
+  }
+ }
+}

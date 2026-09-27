@@ -83,7 +83,7 @@ export async function askPlanner({ url = 'http://127.0.0.1:11434', model = 'qwen
 // With think the model reasons first (Ollama returns it as message.thinking, kept up to 4000 chars for the log);
 // num_predict covers the thinking too, so it is larger. The caller sets a longer timeout for the very first call
 // (the 27B model may still be loading).
-export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'qwen38-27b-iq3xxs', think = false, numPredict = think ? 1500 : 200, numCtx = 6144,   // goal-mode prompts with plans reach ~4.1k tokens (plans_smoke: one call over 4096 failed); 8192 cost ~5 GB of KV cache on the 27B and evicted the user's other model
+export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'qwen38-27b-iq3xxs', think = false, numPredict = think ? 1500 : 200, numCtx = 8192,   // goals prompts with the blueprint rules reach ~6,300-6,600 tokens (final review of building, Critical 1: 6144 overflowed with HTTP 400); qwen38-27b-iq2s with q8_0 KV cache at 8192 measured on the desktop (see .superpowers/sdd/2026-09-26-blueprints/final-fix-report.md)
   temperature = 0.2, timeoutMs = think ? 150_000 : 45_000, goals = false, ...ctx }) {
   // goals: the subgoals leader (schema and parser accept the goal and plan answers and return `goal` and the plan payload)
   const messages = buildLeaderMessages(ctx)
@@ -99,7 +99,10 @@ export async function askLeader({ url = 'http://100.109.91.95:11434', model = 'q
   const raw = body?.message?.content ?? ''
   const { action, why, goal, ...plan } = parseLeaderAnswer(raw, ctx.options, { goals, blueprints: !!ctx.blueprints })   // plan: item | title + steps | edit | text | build | dig | blueprint
   // truncated: num_predict ran out (with thinking, usually inside the thinking, so the answer is empty -> invalid)
-  return { action, why, ...(goals ? { goal, ...plan } : {}), truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
+  // within 300 tokens of the context: the next heavier prompt may be refused (HTTP 400) or cut; say so loudly
+  const nearLimit = body?.prompt_eval_count != null && body.prompt_eval_count + 300 >= numCtx
+  if (nearLimit) console.warn(`LEADER PROMPT NEAR num_ctx: ${body.prompt_eval_count} prompt tokens of ${numCtx}`)
+  return { action, why, ...(goals ? { goal, ...plan } : {}), ...(nearLimit ? { near_ctx_limit: true } : {}), truncated: body?.done_reason === 'length', raw: raw.slice(0, 400), thinking: (body?.message?.thinking ?? '').slice(0, 4000), latency_ms: Date.now() - t0,
     tokens: body?.eval_count ?? null, prompt_tokens: body?.prompt_eval_count ?? null,
     tps: body?.eval_count && body?.eval_duration ? body.eval_count / (body.eval_duration / 1e9) : null,
     prompt_chars: promptText.length, prompt_hash: crypto.createHash('sha1').update(promptText).digest('hex').slice(0, 12) }
