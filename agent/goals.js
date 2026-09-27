@@ -8,7 +8,7 @@
 import { stageOf, chainStep, describeChain, INGOTS, DIAMONDS, STICKS } from './stages.js'
 import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
-  NIGHT_REFUGES, LOW_AIR, stuckOn, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
+  NIGHT_REFUGES, LOW_AIR, stuckOn, shelteredLow, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 // A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
 import { MINE, SMELT, HUNT, producerOf, isItem, expandItem } from './recipes.js'
 
@@ -76,6 +76,7 @@ function keepWithPlugins(obs, goal, opts, keep, relevant) {
   const own = new Set(opts.map(o => o.id))
   if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
   const kept = keepOnly(opts, new Set([...keep, ...opts.map(o => o.id).filter(relevant), ...(nightOnSurface(obs) ? NIGHT_REFUGES : [])]))
+  if (shelteredLow(obs)) return kept   // sheltered at night at low health: no plugin work leaves the shelter (subtasks.js)
   const night = nightSurface(obs)
   // the livelock breaker and the supervisor's withhold apply to plugin options as options() applies them to its own
   // (plans_smoke: go_to_player(Steve) -> player_gone 13 times in 13 s under a go_to(player:Steve) goal)

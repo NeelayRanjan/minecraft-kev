@@ -783,3 +783,15 @@ test('the portal_frame build keeps its old filter, step and describe', () => {
   const withObs = chain({ inventory: { ...allTools, water_bucket: 1, obsidian: 10, flint_and_steel: 1, cobblestone: 4 }, armor: armorKit })
   assert.ok(K.filter(withObs, 'portal_frame', options(withObs)).some(x => x.id === 'build_portal'))
 })
+
+// Live stress session (item 3): sheltered at night at low health, a pushed goal's plugin options (go_to_player,
+// mine(<block>)) would take the bot out as surely as return_to_base.
+test('sheltered at night at health <= 6: no plugin options under a pushed goal', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'go_to', arg: 'player:Steve', source: 'leader', t: 0 })
+  const o = chain({ phase: 'night', health: 3, underground: true, skyLight: 0, inventory: { iron_pickaxe: 1, cobblestone: 4 } })
+  withProvider(['go_to_player(Steve)'], () => {
+    assert.ok(!s.filter(o, options(o)).map(x => x.id).includes('go_to_player(Steve)'))
+    assert.ok(s.filter({ ...o, health: 12 }, options({ ...o, health: 12 })).map(x => x.id).includes('go_to_player(Steve)'))
+  })
+})

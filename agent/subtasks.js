@@ -24,6 +24,13 @@ export const isNight = obs => obs.phase === 'dusk' || obs.phase === 'night'
 export const nightOnSurface = obs => obs.goal === 'nether' && isNight(obs) && !obs.underground
 export const shelterSoon = obs => obs.goal === 'nether' && obs.phase === 'afternoon' && !obs.underground
   && obs.secondsToDusk != null && obs.secondsToDusk <= SHELTER_EARLY_S
+// Sheltered at low health (chain mode only; live stress session: sealed in at night with 1/20 health, kev picked
+// return_to_base and died): at dusk/night, enclosed (underground, or the last subtask sealed the bot in) and at health
+// <= SHELTER_HEALTH, only the ways to stay put are offered.
+export const SHELTER_HEALTH = 6
+const SHELTERED_KEEP = new Set(['eat', 'wait', 'fight', 'flee', 'pillar_up', 'build_shelter'])
+export const shelteredLow = obs => obs.goal === 'nether' && isNight(obs) && (obs.health ?? 20) <= SHELTER_HEALTH
+  && (!!obs.underground || (obs.last?.id === 'build_shelter' && obs.last?.result === 'ok'))
 export const LOW_AIR = 10   // of 20: policy.DROWNING_OXYGEN
 const LOW_AIR_OPTIONS = new Set(['wait', 'fight', 'flee', 'pillar_up'])   // the escapes in policy.js; eating while drowning would be interrupted at once
 export const NIGHT_REFUGES = ['build_shelter', 'explore_toward(down)', 'return_to_base']   // withhold only when one is offered
@@ -240,5 +247,6 @@ export function options(obs) {
   // standing idle all night.
   if (nightOnSurface(obs) && out.some(o => NIGHT_REFUGES.includes(o.id) && !stuck.has(o.id)))
     for (const id of NIGHT_SURFACE_WITHHELD) stuck.add(id)
+  if (shelteredLow(obs)) for (const o of out) if (!SHELTERED_KEEP.has(o.name)) stuck.add(o.id)
   return out.filter(o => !stuck.has(o.id))
 }
