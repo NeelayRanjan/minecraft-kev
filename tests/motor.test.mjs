@@ -260,3 +260,48 @@ test('Motor.run uses the plugin timeout and maps a plugin throw', async () => {
   assert.ok(Date.now() - t0 < 280)
   assert.equal((await motor.run('bad(a)', {})).result, 'no_path')
 })
+
+// Final review, Important 2: the wet check only changed mem.heading; the GoalInvert that followed ignored it and ran
+// into the water. flee now walks ~14 m along the chosen dry heading (away from the threat, or +-90 degrees, never
+// toward it) with dryMovements, falling back to GoalInvert with dryMovements when that path fails.
+import { Vec3 as V3 } from 'vec3'
+import { fleeHeadings } from '../agent/motor.js'
+test('fleeHeadings: away first, then the two perpendiculars, never toward the threat', () => {
+  assert.deepEqual(fleeHeadings('south'), ['south', 'west', 'east'])
+  assert.deepEqual(fleeHeadings('north'), ['north', 'east', 'west'])
+})
+test('flee: walks along the dry heading with dryMovements; never toward the threat; GoalInvert (dry) as the fallback', async () => {
+  const md = mcDataFor('1.20.4')
+  const mk = () => {
+    const bot = { ...fakeBot(), entities: {}, players: {} }
+    bot.entity = { ...bot.entity, position: new V3(0, 64, 0) }
+    const motor = new Motor(bot, md, new EpisodeMemory())
+    motor.calls = []
+    motor.goto = async function (goal, movements) { this.calls.push({ goal, movements }); if (this.failFirst && this.calls.length === 1) { const e = new Error('no path'); e.name = 'NoPath'; throw e } }
+    return motor
+  }
+  const obs = { attacker: { kind: 'player', name: 'p', dist: 3, sinceS: 0, pos: { x: 0, y: 64, z: -10 } } }   // threat north: away is south
+  let m = mk()
+  m.wetNear = c => c.z > 0 && c.x === 0   // south is wet
+  let r = await m.run('flee', obs)
+  assert.equal(r.result, 'ok', JSON.stringify(r))
+  assert.equal(m.mem.heading, 'west')
+  assert.equal(m.calls.length, 1)
+  assert.equal(m.calls[0].movements, m.dryMovements)
+  assert.equal(m.calls[0].goal.constructor.name, 'GoalNearXZ')
+  assert.ok(m.calls[0].goal.x <= -12 && m.calls[0].goal.z === 0, `the goal lies west: ${m.calls[0].goal.x} ${m.calls[0].goal.z}`)
+
+  m = mk()
+  m.wetNear = c => !(c.z < 0 && c.x === 0)   // only north (toward the threat) is dry
+  r = await m.run('flee', obs)
+  assert.equal(r.result, 'no_path', 'never flees toward the threat')
+  assert.equal(m.calls.length, 0)
+
+  m = mk(); m.failFirst = true
+  m.wetNear = () => false
+  r = await m.run('flee', obs)
+  assert.equal(r.result, 'ok', JSON.stringify(r))
+  assert.equal(m.calls.length, 2)
+  assert.equal(m.calls[1].goal.constructor.name, 'GoalInvert')
+  assert.equal(m.calls[1].movements, m.dryMovements)
+})

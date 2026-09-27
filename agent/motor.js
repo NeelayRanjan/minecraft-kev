@@ -23,6 +23,13 @@ export function fleeHeading(hostilePos, botPos) {
   const dx = botPos.x - hostilePos.x, dz = botPos.z - hostilePos.z
   return Math.abs(dx) >= Math.abs(dz) ? (dx >= 0 ? 'east' : 'west') : (dz >= 0 ? 'south' : 'north')
 }
+// The headings flee() may take, in order: straight away from the threat, then the two perpendiculars (+90, -90).
+// Never toward it (final review: a wet away-heading must not turn the bot back into the threat). Pure.
+export function fleeHeadings(away) {
+  const i = HEADING_ORDER.indexOf(away)
+  return [away, HEADING_ORDER[(i + 1) % 4], HEADING_ORDER[(i + 3) % 4]]
+}
+export const FLEE_DIST = 14
 // The point flee() runs from: a hostile mob's position when one is found, else (fix round 1: flee never fled a
 // player-only attacker, since nearestHostileEntity/obs.nearestHostile are mob-only) the attacker's live entity
 // position when it's a player still tracked in bot.players, else the position recorded in obs.attacker at
@@ -829,16 +836,24 @@ export class Motor {
       const p = fleeTargetPos({ hostilePos: h ? h.position : obs?.nearestHostile?.pos, attacker, livePlayerPos })
       if (!p) return fail('target_gone')
       // r2_leader: fleeing waded straight into the sea when the direction away from the hostile happened to be
-      // wet (GoalInvert does not know about water). Try the heading pointing away from the hostile first, then
-      // rotate (like explore_toward's wet checks) until one is dry 8 m out; if every heading is wet, refuse to
-      // flee at all so the breaker withholds it and the other threat responses (fight, pillar_up) stay offered.
+      // wet (GoalInvert does not know about water). Take the first heading away from the threat, or +-90 degrees
+      // (fleeHeadings), whose cells 8 m and FLEE_DIST m out are dry, and walk FLEE_DIST m along it with
+      // dryMovements (final review: the wet check only set mem.heading and the GoalInvert that followed still ran
+      // into the water). If every allowed heading is wet, refuse (no_path) so the breaker withholds flee and the
+      // other threat responses stay offered. If the walk finds no path, GoalInvert from the threat, still dry.
       const me = this.bot.entity.position
-      const goalAt = ([hx, hz]) => me.floored().offset(hx * 8, 0, hz * 8)
-      const { heading, turns } = this.turnUntilDry(goalAt, { commit: false, startHeading: fleeHeading(p, me) })
-      if (turns > 0) this.log(`flee: water away from the hostile, ${turns === 4 ? 'every heading wet' : `turned to ${heading}`}`)
-      if (turns === 4) return fail('no_path', 'water all around')
+      const cell = ([hx, hz], d) => me.floored().offset(hx * d, 0, hz * d)
+      const heading = fleeHeadings(fleeHeading(p, me)).find(h => !this.wetNear(cell(HEADINGS[h], 8)) && !this.wetNear(cell(HEADINGS[h], FLEE_DIST)))
+      if (!heading) { this.log('flee: water on every heading away from the threat'); return fail('no_path', 'water all around') }
+      if (heading !== fleeHeading(p, me)) this.log(`flee: water away from the threat, turned to ${heading}`)
       this.mem.heading = heading
-      await this.goto(new goals.GoalInvert(new goals.GoalNear(p.x, p.y, p.z, 20)))
+      const dest = cell(HEADINGS[heading], FLEE_DIST)
+      try { await this.goto(new goals.GoalNearXZ(dest.x, dest.z, 2), this.dryMovements) }
+      catch (e) {
+        if (e?.name !== 'NoPath') throw e
+        this.log(`flee: no path ${heading}, running from the threat instead`)
+        await this.goto(new goals.GoalInvert(new goals.GoalNear(p.x, p.y, p.z, 20)), this.dryMovements)
+      }
       return ok('out of range')
     },
 

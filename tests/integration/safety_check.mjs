@@ -180,6 +180,11 @@ log(`(f) flee with water south of the naive direction: heading now ${mem.heading
 check(r6.result !== 'no_path', `did not refuse (only one heading is wet): ${r6.result} ${r6.detail ?? ''}`)
 check(mem.heading === 'west', `turned away from the wet heading (south) instead of fleeing into it (heading ${mem.heading})`)
 check(damage === 0, `no damage fleeing (${damage})`)
+{ // final review: the heading alone proved nothing; the walk itself must stay out of the pool (X-4..X+4, Z+1..Z+9)
+  const p = pos(), inPool = p.x >= X - 4 && p.x < X + 5 && p.z >= Z + 1 && p.z < Z + 10
+  check(!bot.entity.isInWater && !inPool, `dry and outside the pool after fleeing (at ${p.x.toFixed(1)} ${p.z.toFixed(1)}, in water ${bot.entity.isInWater})`)
+  check(p.x < X - 6, `moved west along the dry heading (x ${p.x.toFixed(1)}, start ${X})`)
+}
 await cmd('/kill @e[type=zombie]'); await cmd('/difficulty peaceful')
 
 log(pass ? 'PASS' : 'FAIL')
