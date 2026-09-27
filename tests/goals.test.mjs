@@ -863,3 +863,34 @@ test('go_to(player): arrival lingers 20 s offering linger(<name>), then done; th
     assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_done')
   })
 })
+
+// Item 19 (the user, 2026-09-27): "wait over here". stay(player:<name>) holds the spot where that player was when the
+// bot reached them; stay(here) the bot's own spot. Never done, never stuck, not paused by the night rule; only the
+// holding option stay(<name|here>), eat, wait and the threat responses are offered. The leader pops it on release.
+test('stay: validate, never done or stuck, filter keeps only the hold, eat, wait and threat responses, teacher', () => {
+  assert.deepEqual(validateGoal({ kind: 'stay', arg: 'player:Steve' }), { ok: true })
+  assert.deepEqual(validateGoal({ kind: 'stay', arg: 'here' }), { ok: true })
+  assert.equal(validateGoal({ kind: 'stay', arg: 'base' }).ok, false)
+  assert.equal(validateGoal({ kind: 'stay', arg: null }).ok, false)
+  const K = GOAL_KINDS.stay
+  assert.equal(K.done(chain({ players: { Steve: { dist: 1 } } }), 'player:Steve'), false)
+  assert.equal(K.stuckS, Infinity)
+  const s = new GoalStack({ goal: 'nether' })
+  const o = chain({ inventory: { iron_pickaxe: 1, cobblestone: 20, bread: 2 }, food: 10, blocks: [...stone, ...logs], phase: 'night', underground: false,
+    base: { crafting_table: { dist: 30 }, furnace: null }, players: { Steve: { dist: 2 } }, nearestHostile: { name: 'zombie', dist: 6, dir: 'north' } })
+  s.push({ kind: 'stay', arg: 'player:Steve', source: 'audience:Steve', t: 0, obs: o })
+  withProvider(['stay(Steve)', 'stay(here)', 'go_to_player(Steve)', 'hunt(sheep)'], () => {
+    const kept = s.filter(o, options(o)).map(x => x.id).sort()
+    assert.deepEqual(kept, ['eat', 'fight(threat)', 'flee(threat)', 'pillar_up', 'stay(Steve)', 'wait'].sort())
+    assert.equal(s.teacher(o), 'fight(threat)', 'threats first')
+    const calm = { ...o, nearestHostile: null, food: 18 }
+    assert.equal(s.teacher(calm), 'stay(Steve)')
+    assert.deepEqual(s.filter(calm, options(calm)).map(x => x.id).sort(), ['stay(Steve)', 'wait'])
+  })
+  assert.match(s.step(o).text, /^Staying with Steve until you say I can go/)
+  for (let t = 0; t <= 3600; t += 300) assert.deepEqual(s.update(o, t), [], `never done or stuck (t ${t})`)
+  const h = new GoalStack({ goal: 'nether' })
+  h.push({ kind: 'stay', arg: 'here', source: 'leader', t: 0, obs: o })
+  assert.match(h.step(o).text, /^Staying here until you say I can go/)
+  withProvider(['stay(Steve)', 'stay(here)'], () => assert.equal(h.teacher({ ...o, nearestHostile: null, food: 18 }), 'stay(here)'))
+})

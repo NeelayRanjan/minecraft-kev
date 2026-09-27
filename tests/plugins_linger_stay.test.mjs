@@ -33,3 +33,39 @@ test('linger: offered under go_to(player:<name>); holds near the player and pick
   await holdAround(motor, { center: () => bot.players.Steve.entity.position, keepM: 4, ms: 600 })
   assert.ok(bot.entity.position.distanceTo(new Vec3(10, 64, 10)) <= 2, `back near the player (${bot.entity.position})`)
 })
+
+import stay from '../agent/plugins/stay.mjs'
+test('stay: offered under stay goals; here holds the bot\'s spot; a player\'s spot is where they stood, not where they go; pushed away, it walks back', async () => {
+  assert.deepEqual(stay.options({}, { kind: 'stay', arg: 'player:Steve' }).map(o => o.arg), ['Steve'])
+  assert.deepEqual(stay.options({}, { kind: 'stay', arg: 'here' }).map(o => o.arg), ['here'])
+  assert.deepEqual(stay.options({}, { kind: 'go_to', arg: 'player:Steve' }), [])
+  // here: the spot is the bot's position at the first run
+  let { bot, motor } = stubWorld({ me: new Vec3(5, 64, 5) })
+  motor.deadline = Date.now() + 1600
+  let r = await stay.run(motor, 'here', { goalTop: { id: 7, kind: 'stay', arg: 'here' } })
+  assert.equal(r.result, 'ok', JSON.stringify(r))
+  assert.deepEqual(motor.mem.staySpot, { goalId: 7, arg: 'here', pos: { x: 5, y: 64, z: 5 } })
+  // pushed 8 m away (a fight, a knockback): the next run walks back to the spot
+  bot.entity.position = new Vec3(13, 64, 5)
+  motor.deadline = Date.now() + 1600
+  r = await stay.run(motor, 'here', { goalTop: { id: 7, kind: 'stay', arg: 'here' } })
+  assert.equal(r.result, 'ok')
+  assert.ok(bot.entity.position.distanceTo(new Vec3(5, 64, 5)) <= 2, `back at the spot (${bot.entity.position})`)
+  // a player: the spot is where Steve stood when the bot reached him; he walks off, the bot stays
+  ;({ bot, motor } = stubWorld({ me: new Vec3(0, 64, 0), players: { Steve: { gamemode: 0, entity: { isValid: true, position: new Vec3(2, 64, 0) } } } }))
+  bot.waitForTicks = async () => {}
+  bot.on = () => {}; bot.removeListener = () => {}
+  bot.pathfinder = { setGoal() {} }
+  motor.deadline = Date.now() + 1600
+  r = await stay.run(motor, 'Steve', { goalTop: { id: 9, kind: 'stay', arg: 'player:Steve' } })
+  assert.equal(r.result, 'ok', JSON.stringify(r))
+  assert.deepEqual(motor.mem.staySpot.pos, { x: 2, y: 64, z: 0 })
+  bot.players.Steve.entity.position = new Vec3(30, 64, 30)
+  motor.deadline = Date.now() + 1600
+  await stay.run(motor, 'Steve', { goalTop: { id: 9, kind: 'stay', arg: 'player:Steve' } })
+  assert.ok(bot.entity.position.distanceTo(new Vec3(2, 64, 0)) <= 3, 'did not follow Steve')
+  // a new stay goal fixes a new spot
+  motor.deadline = Date.now() + 1600
+  await stay.run(motor, 'here', { goalTop: { id: 10, kind: 'stay', arg: 'here' } })
+  assert.equal(motor.mem.staySpot.goalId, 10)
+})

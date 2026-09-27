@@ -104,6 +104,16 @@ function surfaceWork(id) {
   const m = /^mine\((\w+)\)$/.exec(id)
   return !!m && Object.values(MINE).some(e => e?.where === 'surface' && e.blocks.includes(m[1]))
 }
+// stay: the option arg is the player's name or 'here'
+const stayKey = arg => playerOf(arg) ?? 'here'
+const STAY_KEEP = new Set([...THREAT, 'eat', 'wait'])
+function stayFilter(obs, arg, opts, count, g) {
+  if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
+  const stuck = stuckOn(obs)
+  for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)
+  const hold = `stay(${stayKey(arg)})`
+  return [...opts.filter(o => STAY_KEEP.has(o.id)), ...pluginOptions(obs, goalOf('stay', arg, count, g)).filter(o => o.id === hold && !stuck.has(o.id))]
+}
 const firstPlugin = (obs, goal, relevant) => pluginOptions(obs, goal).map(o => o.id).find(relevant) ?? null
 const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
 
@@ -485,6 +495,18 @@ export const GOAL_KINDS = {
     describe: (obs, item, count) => `smelt ${count} ${humanize(item)} (have ${have(obs, item)})`,
     stuckS: 300,
   },
+  // stay(player:<name> | here) (the user's "wait over here", 2026-09-27): the plugin's stay(<name|here>) walks to the
+  // player (or stays where the bot is), then holds that spot, picking up drops and walking back when pushed away. Never
+  // done and never stuck (the leader pops it: "you can go"); the night rule does not pause it (staying put is the safe
+  // choice); only the hold, eat, wait and the threat responses are offered.
+  stay: {
+    done: () => false,
+    filter: (obs, arg, opts, count, g) => stayFilter(obs, arg, opts, count, g),
+    step: (obs, arg) => ({ index: 1, of: 1, text: GOAL_KINDS.stay.describe(obs, arg) }),
+    teacher: (obs, arg) => `stay(${stayKey(arg)})`,
+    describe: (obs, arg) => `${playerOf(arg) ? `Staying with ${playerOf(arg)}` : 'Staying here'} until you say I can go`,
+    stuckS: Infinity,
+  },
   // receive(<item>, n) from a player (goal.from): the plugin's receive(<item>) waits for the drop and picks it up.
   receive: {
     done: (obs, item, count) => have(obs, item) >= count,
@@ -554,6 +576,8 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
       if (!isItem(arg)) return { ok: false, reason: `unknown item ${arg}` }
       if (!countOk(count)) return BAD_COUNT
       return typeof from === 'string' && /^\w{1,16}$/.test(from) ? { ok: true } : { ok: false, reason: 'receive needs the name of the player giving it' }
+    case 'stay':
+      return arg === 'here' || playerOf(arg) ? { ok: true } : { ok: false, reason: 'stay needs player:<name> or here' }
     case 'go_to': {
       if (PLACES.includes(arg) || playerOf(arg)) return { ok: true }
       const y = goToY(arg)

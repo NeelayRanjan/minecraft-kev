@@ -66,3 +66,26 @@ test('item 5: a continue or override leaves a shown request waiting: the next ca
   b.shown([r.id]); const nn = b.settle([r.id], 'continue', 9)
   assert.equal(nn.length, 1); assert.equal(requestStillWaiting('continue', shown), false)
 })
+
+// 19: stay(player:<name> | here): "wait over here" pushes it, "you can go" pops it (with a reply).
+import { GoalStack, goalHave } from '../agent/goals.js'
+import { goalPhrase, planChatLines } from '../agent/plans.js'
+import { goalStackView } from '../agent/leader.js'
+import { baseObs } from './fixtures.mjs'
+test('item 19: stay is pushed and popped through the leader; the prompt has the examples; plan shows it', () => {
+  const push = applyAnswer({ answer: { action: 'push_goal', goal: { kind: 'stay', arg: 'player:Steve' }, reply: "I'll wait here", why: 'asked' },
+    currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true })
+  assert.equal(push.kind, 'push_goal'); assert.deepEqual(push.goal, { kind: 'stay', arg: 'player:Steve', count: null })
+  assert.equal(applyAnswer({ answer: { action: 'push_goal', goal: { kind: 'stay', arg: 'the tree' } }, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true }).kind, 'invalid')
+  assert.equal(applyAnswer({ answer: { action: 'pop_goal', reply: 'Off I go!' }, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true }).kind, 'pop_goal')
+  const sys = leaderSystemGoals()
+  assert.match(sys, /- stay, arg player:<name> or here:/)
+  assert.match(sys, /"wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I'll wait here"/)
+  assert.match(sys, /"you're free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply/)
+  assert.equal(goalPhrase({ kind: 'stay', arg: 'player:Steve' }, 'Steve'), 'wait here with you')
+  assert.equal(goalPhrase({ kind: 'stay', arg: 'here' }), 'wait here')
+  const s = new GoalStack({ goal: 'nether' }), o = baseObs({ goal: 'nether', armor: {}, portalLit: false })
+  s.push({ kind: 'stay', arg: 'player:Steve', source: 'audience:Steve', t: 0, obs: o })
+  const lines = planChatLines({ pushed: goalStackView(s, o).pushed, planLines: ['no plans'], chain: null })
+  assert.match(lines[0], /^Goals: #1 Staying with Steve until you say I can go/)
+})
