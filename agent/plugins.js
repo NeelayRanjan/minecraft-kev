@@ -127,6 +127,7 @@ export class PluginRegistry {
 
   strike(e, error) {
     e.throws += 1
+    this.log(`plugins: ${e.id} bug, strike ${e.throws}/${MAX_THROWS}: ${error}`)
     if (e.throws >= MAX_THROWS) this.disable(e.id, error)
   }
 
@@ -141,12 +142,13 @@ export class PluginRegistry {
 
   list() {
     return [...this.entries.values()].sort((a, b) => a.id.localeCompare(b.id))
-      .map(e => ({ id: e.id, timeout: e.plugin.timeout ?? null, enabled: e.enabled, error: e.error }))
+      .map(e => ({ id: e.id, timeout: e.plugin.timeout ?? null, enabled: e.enabled, error: e.error, throws: e.throws }))
   }
 
   // The options the enabled plugins offer under `goal` whose preconditions hold, shaped as subtasks.js options.
+  // An arg outside parseOption's grammar (\w+) would make an id Motor.run cannot parse: skipped, logged once per call.
   optionsFor(obs, goal) {
-    const out = []
+    const out = [], badArgs = []
     for (const e of [...this.entries.values()].sort((a, b) => a.id.localeCompare(b.id))) {
       if (!e.enabled) continue
       const p = e.plugin
@@ -155,6 +157,7 @@ export class PluginRegistry {
         const opts = []
         for (const o of offered) {
           const arg = o?.arg ?? null
+          if (arg !== null && !(typeof arg === 'string' && /^\w+$/.test(arg))) { badArgs.push(`${p.id}(${String(arg)})`); continue }
           if (typeof p.preconditions === 'function' && !p.preconditions(obs, arg)) continue
           const id = optionId(p.id, arg)
           opts.push({ id, name: p.id, arg, desc: o?.desc ?? id })
@@ -165,6 +168,7 @@ export class PluginRegistry {
         this.strike(e, short(err))
       }
     }
+    if (badArgs.length) this.log(`plugins: skipped options with an arg outside \\w+: ${badArgs.join(', ')}`)
     return out
   }
 

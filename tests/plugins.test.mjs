@@ -37,7 +37,7 @@ test('load() loads echo.mjs and reports broken.mjs failed with its error', async
   assert.equal(r.failed.length, 1)
   assert.match(r.failed[0].file, /broken\.mjs$/)
   assert.match(r.failed[0].error, /broken on purpose/)
-  assert.deepEqual(reg.list(), [{ id: 'echo', timeout: 2, enabled: true, error: null }])
+  assert.deepEqual(reg.list(), [{ id: 'echo', timeout: 2, enabled: true, error: null, throws: 0 }])
 })
 
 test('get() runs a loaded plugin; unknown names are null', async () => {
@@ -183,4 +183,29 @@ test('only bugs count: three NoPath throws in a row do not disable; three TypeEr
   for (let i = 0; i < 3; i++) await assert.rejects(reg.get('typo').run(ctx, 'a', {}), TypeError)
   assert.equal(reg.enabled('typo'), false)
   assert.match(reg.list().find(p => p.id === 'typo').error, /undefined/)
+})
+
+test('every counted bug is logged with its strike number, and list() shows the count', async () => {
+  const dir = tempDir({ 'typo.mjs': plugin('typo', `return undefined.x`) })
+  const lines = []
+  const reg = new PluginRegistry({ dir, log: l => lines.push(l) })
+  await reg.load()
+  await assert.rejects(reg.get('typo').run(ctx, 'a', {}), TypeError)
+  const strikes = lines.filter(l => /typo bug, strike 1\/3/.test(l))
+  assert.equal(strikes.length, 1)
+  assert.match(strikes[0], /undefined/)
+  assert.equal(reg.list().find(p => p.id === 'typo').throws, 1)
+  assert.equal(reg.enabled('typo'), true)
+})
+
+test('optionsFor skips (and logs) an option whose arg is outside parseOption\'s grammar', async () => {
+  const dir = tempDir({ 'odd.mjs': 'export default { id: "odd", options: () => [{ arg: "two words" }, { arg: "a-b" }, { arg: "ok_1" }, {}], preconditions: () => true, async run() { return { result: "ok" } } }\n' })
+  const lines = []
+  const reg = new PluginRegistry({ dir, log: l => lines.push(l) })
+  await reg.load()
+  assert.deepEqual(reg.optionsFor({}, null).map(o => o.id), ['odd(ok_1)', 'odd'])
+  const skipped = lines.filter(l => /skipped options/.test(l))
+  assert.equal(skipped.length, 1)
+  assert.match(skipped[0], /odd\(two words\).*odd\(a-b\)/)
+  assert.equal(reg.enabled('odd'), true)
 })
