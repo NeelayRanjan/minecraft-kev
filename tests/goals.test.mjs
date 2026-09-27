@@ -783,3 +783,26 @@ test('the portal_frame build keeps its old filter, step and describe', () => {
   const withObs = chain({ inventory: { ...allTools, water_bucket: 1, obsidian: 10, flint_and_steel: 1, cobblestone: 4 }, armor: armorKit })
   assert.ok(K.filter(withObs, 'portal_frame', options(withObs)).some(x => x.id === 'build_portal'))
 })
+
+// Task 7 fix round 1: a plan's gather step clamps the NEED to the cap, not the absolute target (64 cobblestone held, a
+// build needing 8 more: target 72, not 32 done at once); the option layer's cap lifts while such a goal is on top.
+test('planStepGoal: a capped gather step aims at held + min(need, cap); the plan step is pushed unclamped and offers mine_stone', () => {
+  const o = chain({ inventory: { cobblestone: 64, stone_pickaxe: 1 }, blocks: stone })
+  assert.deepEqual(planStepGoal({ kind: 'gather', arg: 'cobblestone', count: 8 }, o), { kind: 'gather', arg: 'cobblestone', count: 72 })
+  assert.deepEqual(planStepGoal({ kind: 'gather', arg: 'cobblestone', count: 60 }, o), { kind: 'gather', arg: 'cobblestone', count: 96 })
+  assert.deepEqual(planStepGoal({ kind: 'gather', arg: 'oak_log', count: 20 }, chain({ inventory: { oak_log: 3 } })), { kind: 'gather', arg: 'oak_log', count: 15 })
+  const s = new GoalStack({ goal: 'nether' })
+  const g = s.push({ ...planStepGoal({ kind: 'gather', arg: 'cobblestone', count: 8 }, o), source: 'audience:tester', t: 0, obs: o, plan_id: 1, step_index: 0 })
+  assert.equal(g.count, 72)
+  assert.deepEqual(s.update(o, 1), [], 'not done at once')
+  o.goalTop = pubGoal(s.top())
+  assert.ok(s.filter(o, options(o)).some(x => x.id === 'mine_stone'), 'mine_stone offered past the 32 cap under this goal')
+  const o2 = chain({ inventory: { cobblestone: 64, stone_pickaxe: 1 }, blocks: stone })
+  assert.ok(!options(o2).some(x => x.id === 'mine_stone'), 'without the goal the cap holds')
+  // a leader push_goal keeps the absolute clamp; the split steps of a 60 need with nothing held: 32 then 28
+  assert.equal(new GoalStack({ goal: 'nether' }).push({ kind: 'gather', arg: 'cobblestone', count: 64, source: 'leader', t: 0 }).count, 32)
+  const empty = chain({ inventory: { stone_pickaxe: 1 } })
+  assert.equal(planStepGoal({ kind: 'gather', arg: 'cobblestone', count: 32 }, empty).count, 32)
+  assert.equal(planStepGoal({ kind: 'gather', arg: 'cobblestone', count: 28 }, chain({ inventory: { stone_pickaxe: 1, cobblestone: 32 } })).count, 60)
+  assert.deepEqual(checkPlanGates([{ kind: 'gather', arg: 'cobblestone', count: 8 }], o), null, 'the gate accepts a target above 64')
+})

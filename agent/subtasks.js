@@ -200,8 +200,12 @@ export function options(obs) {
   // Gathering caps: more than the tech tree can use is never offered (a leader without arithmetic would hoard forever).
   const done = !!obs.inventory?.iron_pickaxe
   const woodEq = c.logs + Math.floor(c.planks / 4)
-  if (seen(obs, isLog, 48) && (done || woodEq < 12)) add('gather_wood')
-  if (c.hasPickaxe && seen(obs, isStone, 16) && (done || c.cobble < 32)) add('mine_stone')
+  // a pushed gather goal above the cap (a plan step: held + need, goals.planStepGoal) lifts it until reached
+  const gt = obs.goalTop?.kind === 'gather' && Number.isInteger(obs.goalTop.count) ? obs.goalTop : null
+  const moreWood = !!gt && (gt.arg === 'log' || String(gt.arg).endsWith('_log')) && c.logs < gt.count
+  const moreStone = !!gt && gt.arg === 'cobblestone' && c.cobble < gt.count
+  if (seen(obs, isLog, 48) && (done || woodEq < 12 || moreWood)) add('gather_wood')
+  if (c.hasPickaxe && seen(obs, isStone, 16) && (done || c.cobble < 32 || moreStone)) add('mine_stone')
   if (c.hasPickaxe && seen(obs, isCoal, 32)) add('mine_coal')
   // Chain mode keeps the flat experiment-1 cap (6) at stage 0 (the iron pickaxe itself isn't in needs()'s
   // model). From stage 1 on: needs(obs).ingots is already net of held ingots, so it's compared against

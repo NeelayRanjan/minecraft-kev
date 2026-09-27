@@ -486,7 +486,9 @@ const DIAMOND_GOAL = (kind, arg) => (kind === 'gather' && arg === 'diamond') || 
 // (reason phrased for the audience). obs (optional) enables the stage gates.
 const countOk = n => Number.isInteger(n) && n >= 1 && n <= 64
 const BAD_COUNT = { ok: false, reason: 'count must be an integer from 1 to 64' }
-export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
+// planStep: a plan step's goal, whose count the code computed as held + need (planStepGoal): the gather cap and the
+// 1..64 range apply to the need, so the absolute target is neither clamped nor range-checked here.
+export function validateGoal({ kind, arg, count, from } = {}, obs = null, { planStep = false } = {}) {
   if (!GOAL_KINDS[kind]) return { ok: false, reason: `unknown goal kind ${kind}` }
   if (DEFAULTS.has(kind)) return { ok: false, reason: `${kind} is the default goal and cannot be pushed` }
   const stage = obs ? stageOf(obs).index : null
@@ -500,8 +502,9 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null) {
       return count == null || countOk(count) ? { ok: true } : BAD_COUNT
     case 'gather': {
       if (!PRODUCERS[arg] && producerOf(arg)?.kind !== 'gather') return { ok: false, reason: `cannot gather ${arg}` }
-      if (!countOk(count)) return BAD_COUNT
+      if (!(planStep ? Number.isInteger(count) && count >= 1 : countOk(count))) return BAD_COUNT
       if (arg === 'flint' && stage != null && stage < 4) return { ok: false, reason: 'flint comes later, when the bot builds the portal' }
+      if (planStep) return { ok: true }
       const cap = capOf(arg)
       if (cap != null && count > cap) return { ok: true, goal: { kind, arg, count: cap }, note: `capped at ${cap} ${humanize(arg)}` }
       return { ok: true }
@@ -570,7 +573,12 @@ export const goalHave = (obs, kind, arg) => kind === 'gather' ? gHave(obs, arg) 
 export function planStepGoal(step, obs) {
   const { kind, arg = null, count = null } = step
   const goal = { kind, arg, count, ...(step.from != null ? { from: step.from } : {}) }
-  if (COUNTED_KINDS.has(kind) && Number.isInteger(count)) goal.count = Math.min(64, goalHave(obs, kind, arg) + count)
+  // a capped gather (goals.GATHER_CAPS): the NEED is clamped to the cap, the target is held + that (Task 7 fix round 1:
+  // 64 cobblestone held, 8 more needed -> 72, not the absolute 32 that was done at once); the option layer lifts its cap
+  // while such a goal is on top (subtasks.options, obs.goalTop)
+  const cap = kind === 'gather' && typeof arg === 'string' ? capOf(arg) : null
+  if (cap != null && Number.isInteger(count)) goal.count = goalHave(obs, kind, arg) + Math.min(count, cap)
+  else if (COUNTED_KINDS.has(kind) && Number.isInteger(count)) goal.count = Math.min(64, goalHave(obs, kind, arg) + count)
   return goal
 }
 
@@ -608,7 +616,7 @@ export function checkPlanGates(steps, obs) {
   const inv = { ...(obs?.inventory || {}) }
   for (let i = 0; i < steps.length; i++) {
     const sim = { ...obs, inventory: { ...inv } }
-    const v = validateGoal(planStepGoal(steps[i], sim), sim)
+    const v = validateGoal(planStepGoal(steps[i], sim), sim, { planStep: true })
     if (!v.ok) return { step_index: i, step: steps[i], reason: v.reason }
     const { arg, count } = steps[i]
     if (typeof arg === 'string' && Number.isInteger(count)) inv[arg] = (inv[arg] || 0) + count
@@ -626,7 +634,7 @@ export class GoalStack {
   top() { return this.stack[this.stack.length - 1] }
   depth() { return this.stack.length - 1 }
   push({ kind, arg = null, count = null, source = 'leader', t = null, obs = null, plan_id = null, step_index = null, from = null }) {
-    const v = validateGoal({ kind, arg, count, from }, obs)
+    const v = validateGoal({ kind, arg, count, from }, obs, { planStep: plan_id != null })
     if (!v.ok) throw new Error(`invalid goal ${kind}(${arg ?? ''}): ${v.reason}`)
     if (v.goal) count = v.goal.count   // clamped
     const g = { kind, arg, count, source, id: this.nextId++, t, best: null, progressT: t, lastT: t, plan_id, step_index, from }
