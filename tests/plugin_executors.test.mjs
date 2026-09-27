@@ -439,7 +439,7 @@ test('followPlayer: out of sight, asks /data, walks toward the position, re-asks
   assert.equal(r.result, 'ok', JSON.stringify(r))
   assert.ok(bot.chats.length >= 2 && bot.chats.every(c => c === '/data get entity Steve Pos'), bot.chats.join(' | '))
   const near = bot.goals.find(g => g?.constructor?.name === 'GoalNear')
-  assert.ok(near && near.x === 100 && near.z === 0 && near.rangeSq === 64, 'GoalNear 8 at the reported position')
+  assert.ok(near && near.x === 100 && near.z === 0 && near.rangeSq === 4, "GoalNear 2 at the reported position")
   assert.ok(bot.goals.some(g => g?.constructor?.name === 'GoalFollow'), 'then follows')
 })
 test('followPlayer: no reply (not on the server) or only a player-chat spoof gives player_gone', async () => {
@@ -455,4 +455,46 @@ test('receive: a named giver out of sight is approached through /data (go_to_pla
   const r = await receive.run(motor, 'redstone_block', { goalTop: { kind: 'receive', arg: 'redstone_block', count: 2, from: 'Steve' } })
   assert.equal(r.result, 'player_gone')
   assert.deepEqual(bot.chats, ['/data get entity Steve Pos'], 'asked the server where the giver is')
+})
+
+// Live retry session (2026-09-27): the player was in spectator mode (no entity for other clients) and "come here" never
+// arrived. Within 3 m of the last server-reported position with no entity counts as arrived (followPlayer ok); the
+// reported position is kept in motor.mem.reportedPlayers so the goal layer sees the distance (summary.playersMap).
+test('followPlayer: a spectator (no entity) is reached at the reported position: within 3 m is arrived', async () => {
+  const bot = farBot()
+  bot.players.Steve.gamemode = 3
+  bot.players.Steve.entity = { isValid: true, position: new Vec3(100.5, 64, 0.5) }   // hidden: spectators are not followed
+  setTimeout(() => { bot.entity.position = new Vec3(99, 64, 1) }, 100)   // the walk arrives
+  const motor = { ...stubMotor(bot), mem: {} }
+  const r = await followPlayer(motor, 'Steve', { holdMs: 0, queryEveryMs: 50, replyMs: 200 })
+  assert.equal(r.result, 'ok', JSON.stringify(r))
+  assert.match(r.detail, /reported position/)
+  const near = bot.goals.find(g => g?.constructor?.name === 'GoalNear')
+  assert.ok(near && near.rangeSq === 4, 'walks to within 2 m of the reported position')
+  assert.deepEqual(motor.mem.reportedPlayers.Steve.pos, { x: 100.5, y: 64, z: 0.5 })
+  assert.ok(Number.isFinite(motor.mem.reportedPlayers.Steve.at))
+})
+test('receive: a spectator giver is reached at the reported position, then the bot waits for the drop', async () => {
+  const bot = farBot()
+  bot.players.Steve.gamemode = 3
+  bot.entities = {}
+  setTimeout(() => { bot.entity.position = new Vec3(100, 64, 0) }, 80)
+  const motor = { ...stubMotor(bot), mem: {}, settleInventory: async () => {}, count: () => 0, deadline: Date.now() + 2200, goto: async () => {} }
+  const r = await receive.run(motor, 'redstone_block', { goalTop: { kind: 'receive', arg: 'redstone_block', count: 2, from: 'Steve' } })
+  assert.equal(r.result, 'timeout', JSON.stringify(r))
+  assert.match(r.detail, /no redstone_block dropped/)
+})
+import { playersMap } from '../agent/summary.js'
+test('playersMap: entities by distance and direction; a player with no entity at its reported position (60 s)', () => {
+  const me = new Vec3(0, 64, 0)
+  const bot = { username: 'Kevin', players: { Kevin: { entity: { position: me } }, Steve: { entity: { position: new Vec3(3, 64, 4) } }, Alex: { entity: null },
+    Far: { entity: { position: new Vec3(0, 64, 100) } }, Spec: { gamemode: 3, entity: { position: new Vec3(1, 64, 0) } } } }
+  const now = 1_000_000
+  const reported = { Alex: { pos: { x: -12, y: 64, z: 0 }, at: now - 5000 }, Far: { pos: { x: 0, y: 64, z: 200 }, at: now }, Old: { pos: { x: 1, y: 64, z: 0 }, at: now - 61_000 } }
+  assert.deepEqual(playersMap(bot, me, reported, now), {
+    Steve: { dist: 5, dir: 'south-east' },
+    Alex: { dist: 12, dir: 'west', reported: true },
+    Far: { dist: 200, dir: 'south', reported: true },   // beyond 64 m only a reported position gives a distance
+  }, 'a spectator with no report is absent')
+  assert.deepEqual(playersMap(bot, me, null, now), { Steve: { dist: 5, dir: 'south-east' } })
 })

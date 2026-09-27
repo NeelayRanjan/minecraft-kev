@@ -13,7 +13,7 @@ const { goals } = pathfinderPkg
 export const NEAR_M = 3
 export const HOLD_S = 5
 const FOLLOW_M = 2
-const FAR_NEAR_M = 8          // the walk toward a /data position ends this close (the entity appears well before)
+const FAR_NEAR_M = 2          // the walk toward a /data position ends this close (a visible entity takes over well before)
 const QUERY_EVERY_MS = 10_000
 const REPLY_MS = 3000
 const NO_PATH_LIMIT = 3
@@ -59,17 +59,20 @@ export function queryPlayerPos(bot, name, { replyMs = REPLY_MS } = {}) {
   })
 }
 
-// Walk toward an out-of-sight player by /data queries until the entity is in range: { result: 'seen' } or a typed
-// failure (player_gone: no position; no_path: the pathfinder reports noPath three times in a row).
+// Walk toward an out-of-sight player by /data queries until the entity is in range: { result: 'seen' }, or within NEAR_M
+// of the last reported position with still no entity (a spectator: live retry session): { result: 'arrived' }, or a
+// typed failure (player_gone: no position; no_path: the pathfinder reports noPath three times in a row). Each reported
+// position is kept in motor.mem.reportedPlayers[name] = {pos, at} (the goal layer's distance, summary.playersMap).
 async function approachUnseen(motor, name, { queryEveryMs, replyMs }) {
   const bot = motor.bot
-  let lastQuery = -Infinity, noPath = 0
+  let lastQuery = -Infinity, noPath = 0, last = null
   const onPath = r => { if (r?.status === 'noPath') noPath++; else if (r?.status === 'success' || r?.status === 'partial') noPath = 0 }
   bot.on('path_update', onPath)
   try {
     for (;;) {
       motor.check()
       if (playerEntity(bot, name)) return { result: 'seen' }
+      if (last && bot.entity.position.distanceTo(last) <= NEAR_M) return { result: 'arrived', detail: `at ${name}'s reported position` }
       if (noPath >= NO_PATH_LIMIT) return { result: 'no_path', detail: `no path toward ${name}` }
       if (Date.now() - lastQuery >= queryEveryMs) {
         lastQuery = Date.now()
@@ -77,6 +80,8 @@ async function approachUnseen(motor, name, { queryEveryMs, replyMs }) {
         motor.check()
         if (playerEntity(bot, name)) return { result: 'seen' }
         if (!pos) return { result: 'player_gone', detail: `${name} is not on the server` }
+        last = pos   // Vec3.distanceTo reads x, y, z
+        if (motor.mem) (motor.mem.reportedPlayers ??= {})[name] = { pos: { x: pos.x, y: pos.y, z: pos.z }, at: Date.now() }
         motor.log?.(`go_to_player: ${name} out of sight, walking toward ${Math.round(pos.x)} ${Math.round(pos.y)} ${Math.round(pos.z)}`)
         bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, FAR_NEAR_M))
       }
@@ -94,6 +99,7 @@ export async function followPlayer(motor, name, { holdMs = HOLD_S * 1000, queryE
   let target = playerEntity(bot, name)
   if (!target) {
     const r = await approachUnseen(motor, name, { queryEveryMs, replyMs })
+    if (r.result === 'arrived') { try { bot.pathfinder.setGoal(null) } catch {} return { result: 'ok', detail: r.detail } }
     if (r.result !== 'seen') { try { bot.pathfinder.setGoal(null) } catch {} return r }
     target = playerEntity(bot, name)
   }
