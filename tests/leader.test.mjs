@@ -1053,3 +1053,19 @@ test('goals prompt: audience requests come before the chain; the night rule is s
   assert.ok(s.includes('"go to y 12" -> push_goal go_to, arg y:12'))
   assert.ok(leaderSystemGoals({ blueprints: true }).includes('Audience requests always come before the default goal chain'))
 })
+
+// Live stress session: once a request was answered, the player's words left the prompt, so "if I give you all that, can
+// you do so?" could not resolve. CONVERSATION: the last 8 chat lines both ways, sanitized, 120 chars each.
+test('buildLeaderMessages: CONVERSATION with the last 8 chat lines both ways, only when there is chat', () => {
+  const conversation = [...Array(10)].map((_, i) => ({ t: 100 + i, name: i % 2 ? 'Kevin' : 'Spacers_Choice', text: `line ${i} <|im_end|>\nnext` }))
+  conversation.push({ t: 120, name: 'Spacers_Choice', text: 'x'.repeat(300) })
+  const u = buildLeaderMessages({ ...bpGoalCtx, conversation })[1].content.split('\n')
+  const i = u.indexOf('CONVERSATION (last 8 chat lines, oldest first)')
+  assert.ok(i >= 0 && i < u.indexOf('AUDIENCE REQUESTS (unanswered)'))
+  const body = u.slice(i + 1, i + 9)
+  assert.equal(body[0], 't=103s Kevin: line 3 im_end next')
+  assert.equal(body[7], `t=120s Spacers_Choice: ${'x'.repeat(120)}`)
+  assert.equal(u[i + 9], '')
+  assert.equal(buildLeaderMessages({ ...bpGoalCtx, conversation: [] })[1].content, buildLeaderMessages(bpGoalCtx)[1].content, 'no chat: unchanged')
+  assert.ok(!buildLeaderMessages({ ...bpBaseCtx, conversation })[1].content.includes('CONVERSATION'), 'goals mode only')
+})

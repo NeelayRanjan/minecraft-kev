@@ -660,6 +660,15 @@ function renderPlans(plans) {
   return plans.map(l => sanitizeChat(l, 400))
 }
 
+// The CONVERSATION section (goals mode, only when there is chat): the last MAX_CONVERSATION chat lines both ways (the
+// players' and the bot's own), {t, name, text}, sanitized and cut to 120 characters.
+export const MAX_CONVERSATION = 8
+function renderConversation(lines = []) {
+  if (!lines?.length) return []
+  return ['CONVERSATION (last 8 chat lines, oldest first)',
+    ...lines.slice(-MAX_CONVERSATION).map(l => `${T(l.t)} ${sanitizeChat(l.name, 40)}: ${sanitizeChat(l.text, 120)}`), '']
+}
+
 export const MAX_REQUESTS = 5
 function renderRequests(requests = []) {
   if (!requests.length) return ['(none)']
@@ -727,7 +736,7 @@ function renderBlueprint(cut, feedback) {
 
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
   subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null,
-  blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null }) {
+  blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null, conversation = [] }) {
   const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
@@ -743,6 +752,7 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
     'KEV FORECASTS', none(renderForecasts(forecasts, forecastTrend, kevPick)), '',
     'YOUR PREVIOUS DECISIONS', none(own), '',
     'TIME', `${minutesLeft != null ? minutesLeft.toFixed(1) : '?'} minutes left in the episode; deaths so far: ${deaths}`, '',
+    ...(goals ? renderConversation(conversation) : []),
     ...(goals ? ['AUDIENCE REQUESTS (unanswered)', ...renderRequests(requests), ''] : []),
     ...(goals && feedback ? [`FEEDBACK: ${sanitizeChat(feedback, 300)}`, ''] : []),
     'SUBTASKS OFFERED NOW', options.map(o => {
