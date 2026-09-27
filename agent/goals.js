@@ -52,6 +52,7 @@ const FIND_MATCH = {
 export const FIND_RANGE = 16
 export const NEAR_BASE = 6
 export const DIAMOND_LEVEL_Y = -50
+export const CLOSING_M = 4   // go_to(player): a distance decrease this large is progress for the stuck clock
 
 const humanize = s => s.replace(/_/g, ' ')
 const THREAT = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
@@ -378,6 +379,15 @@ export const GOAL_KINDS = {
       return place === 'diamond_level' ? 'go to diamond level' : place === 'base' ? 'go to base' : 'go to the surface'
     },
     stuckS: place => playerOf(place) ? 120 : 240,
+    // go_to(player): the distance shrinking by CLOSING_M since the last mark is progress (a 200 m walk spends minutes
+    // in one step bucket); a growing distance moves the mark up, so closing in again counts
+    progressed: (obs, place, g) => {
+      const who = playerOf(place), d = who ? obs.players?.[who]?.dist : null
+      if (d == null || !g) return false
+      if (g.markD == null || d > g.markD) { g.markD = d; return false }
+      if (g.markD - d >= CLOSING_M) { g.markD = d; return true }
+      return false
+    },
   },
   survive_night: {
     done: obs => DAY.has(obs.phase),
@@ -664,7 +674,8 @@ export class GoalStack {
       const g = this.top(), K = GOAL_KINDS[g.kind]
       if (K.done(obs, g.arg, g.count, g)) { this.pop('done'); events.push({ kind: 'goal_done', goal: pub(g), t }); continue }
       const s = K.step(obs, g.arg, g.count, g).index
-      if (g.best == null || s > g.best || g.progressT == null) {
+      const moved = !!K.progressed?.(obs, g.arg, g)   // a kind's own progress besides the step index (go_to(player): closing in)
+      if (g.best == null || s > g.best || g.progressT == null || moved) {
         if (g.best == null || s > g.best) g.best = s
         g.progressT = t
       } else if (g.lastT != null && (K.paused?.(obs, g.arg, g) || nightPaused(obs, K.filter(obs, g.arg, options(obs), g.count, g)))) g.progressT += t - g.lastT   // the night rule: the clock stands still

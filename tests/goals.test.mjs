@@ -820,3 +820,18 @@ test('refreshPlanStep: a plan step\'s need is recomputed from the inventory when
   assert.deepEqual(refreshPlanStep(smelt, more, baseObs({ inventory: { iron_ingot: 3, ...kit } })), { ...smelt, count: 2 })
   assert.deepEqual(refreshPlanStep(smelt, more, baseObs({ inventory: { iron_ingot: 4, ...kit } })), { ...smelt, count: 1 }, 'one gained since')
 })
+
+// Live retry session: go_to(player) popped as stuck after 120 s on a 200 m walk (the step buckets are 16-64 m wide).
+// A distance to the player that shrank by 4 m or more since the last progress mark counts as progress.
+test('go_to(player): a distance decrease of 4 m since the last progress mark resets the stuck clock', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  const at = d => baseObs({ goal: 'nether', players: { Steve: { dist: d, dir: 'north', reported: true } } })
+  s.push({ kind: 'go_to', arg: 'player:Steve', source: 'audience:Steve', t: 0, obs: at(200) })
+  let d = 200, t = 0
+  for (; t <= 400; t += 10) { d -= 3.5; assert.deepEqual(s.update(at(d), t), [], `t ${t}, ${d} m`) }   // 0.35 m/s: slow but closing
+  assert.equal(s.depth(), 1, 'still on the stack after 400 s of closing in')
+  // no progress (standing still at the same distance) pops it after 120 s
+  const e = []
+  for (let u = t; u <= t + 130; u += 10) e.push(...s.update(at(d), u))
+  assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_failed')
+})
