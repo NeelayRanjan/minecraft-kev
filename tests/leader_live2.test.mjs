@@ -189,3 +189,24 @@ test('item 14: a cannot whose text repeats one of the last 5 cannot texts is inv
   const ev = [{ kind: 'leader_cannot', why: 'a' }, { kind: 'leader_cannot', why: 'b', reply: 'B!' }, { kind: 'leader_cannot', why: 'night', reason: 'night' }, { kind: 'leader_say', text: 'c' }]
   assert.deepEqual(recentCannotTexts(ev), ['a', 'B!'], 'the code\'s own refusals (night, blocked plan) do not count')
 })
+
+// 15: "I turned on keep inventory for you" got "Not now": a statement (no question, nothing to do) the leader answers
+// with continue is settled as thanks, with an automatic "thanks!" at most once per 60 s.
+import { isStatement, statementsToThank, THANKS_EVERY_S } from '../agent/leader.js'
+test('item 15: statements answered with continue are thanked, not "not now"; requests and questions are not statements', () => {
+  for (const t of ['I turned on keep inventory for you', 'I set the time to day for you', 'nice job', 'bye kevin', 'lol'])
+    assert.equal(isStatement(t, 'Kevin'), true, t)
+  for (const t of ['I want two white beds total', 'come here', 'where are you', 'can you make a bed', 'Im so scared, there is a skeleton next to me',
+    'please get wood', 'hey kevin, tell me about yourself', 'help'])
+    assert.equal(isStatement(t, 'Kevin'), false, t)
+  assert.equal(THANKS_EVERY_S, 60)
+  const b = new RequestBook()
+  const s1 = b.add({ t: 1, name: 'A', text: 'I turned on keep inventory for you' }), r1 = b.add({ t: 2, name: 'A', text: 'come here' })
+  const shown = [s1, r1]
+  assert.deepEqual(statementsToThank('continue', shown, 'Kevin').map(r => r.id), [s1.id])
+  assert.deepEqual(statementsToThank('override', shown, 'Kevin'), [], 'only a continue thanks')
+  assert.deepEqual(statementsToThank('push_goal', shown, 'Kevin'), [])
+  b.shown([s1.id, r1.id]); b.settle([s1.id], 'thanks', 3)
+  assert.equal(s1.answered.kind, 'thanks')
+  assert.equal(requestStillWaiting('continue', shown), true, 'the real request still waits')
+})

@@ -249,6 +249,19 @@ function guardSay(res, requests, recentSays, botName = null) {
 export const WAITING_FEEDBACK = 'a player request is still waiting: answer it first'
 const SUBTASK_OUTCOMES = new Set(['continue', 'override', 'stale', 'blocked'])
 export const requestStillWaiting = (settleAs, shown = []) => SUBTASK_OUTCOMES.has(settleAs) && (shown || []).some(r => !r.answered)
+// Statements (live retry session: "I turned on keep inventory for you" got "Not now"): no question and no word that asks
+// for something or signals danger. A continue to a shown statement settles it as 'thanks' (the runner sends "thanks!"
+// at most once per THANKS_EVERY_S); requests and questions still wait (requestStillWaiting).
+export const THANKS_EVERY_S = 60
+const REQUEST_WORDS = new Set(['want', 'need', 'please', 'pls', 'plz', 'make', 'craft', 'get', 'bring', 'give', 'come', 'go', 'build', 'dig', 'mine', 'find',
+  'gather', 'help', 'stop', 'wait', 'stay', 'follow', 'kill', 'fight', 'protect', 'collect', 'put', 'place', 'take', 'drop', 'lets', 'let', 'can', 'could',
+  'would', 'should', 'save', 'scared', 'attack', 'attacking', 'skeleton', 'zombie', 'creeper', 'spider', 'hurry'])
+export function isStatement(text, botName = null) {
+  if (asksQuestion(text, botName)) return false
+  const words = String(text ?? '').toLowerCase().replace(/'/g, '').split(/[^a-z0-9_]+/).filter(Boolean)
+  return words.length > 0 && !words.some(w => REQUEST_WORDS.has(w))
+}
+export const statementsToThank = (settleAs, shown = [], botName = null) => settleAs === 'continue' ? (shown || []).filter(r => !r.answered && isStatement(r.text, botName)) : []
 // The leader's say texts from the runner's events, the last SAY_MEMORY.
 export const recentSayTexts = events => (events || []).filter(e => e?.kind === 'leader_say' && typeof e.text === 'string').map(e => e.text).slice(-SAY_MEMORY)
 // The leader's own cannot texts (the reply it sent, else why; not the code's night or blocked-plan refusals), the last SAY_MEMORY.
@@ -651,7 +664,7 @@ export function parseChatMessage(jsonMsg, position, botName) {
 // cannot, plan_item, plan_steps, edit, say; the runner passes an invalid push it replied to as cannot). Any other outcome of a call that showed it
 // (continue, override, blocked, stale, invalid, error) leaves it waiting; after maxShown such calls it is settled as
 // 'not_now' and returned so the runner can reply "Not now". Ids are 1, 2, ... in arrival order.
-export const REQUEST_ANSWERS = new Set([...GOAL_ACTIONS, 'reply'])
+export const REQUEST_ANSWERS = new Set([...GOAL_ACTIONS, 'reply', 'thanks'])
 // How a call's outcome settles the audience requests it showed: an invalid goal-level answer (push_goal or a plan answer
 // the validator refused: an unknown item, a bad step, an edit without its plan_id, an empty say) is replied to with the
 // reason, so it settles them as cannot; every other outcome settles as its own kind.

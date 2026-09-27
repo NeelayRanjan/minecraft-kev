@@ -32,7 +32,7 @@ import { injectDeaths } from './relabel.js'
 import { askPlanner, askLeader } from './planner.js'
 import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStackView, sanitizeChat, parseChatMessage, RequestBook, ChatQueue, MAX_REQUESTS,
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop, unknownItemBackstop,
-  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts } from './leader.js'
+  requestStillWaiting, WAITING_FEEDBACK, recentCannotTexts, statementsToThank, THANKS_EVERY_S } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations, refreshPlanStep } from './goals.js'
 import { PlanBook, planTitle, itemPlanTitle, stepText, guardPlanAnswer, planChatLines, goalPhrase } from './plans.js'
@@ -176,6 +176,7 @@ let lastIdleWaitT = null   // last leaderNote('idle_wait'): kev picking wait und
 // leader: events since the last tick (the trigger's input), the call in flight, an override waiting for the next
 // decision, the last 5 values of each forecast (the trend line) and kev's last pick with its top alternatives.
 let leaderEvents = [], leaderAsk = null, pendingLeader = null, forecastHist = {}, kevPick = null, leaderCalls = 0
+let lastThanksT = null   // the last automatic "thanks!" (leader.statementsToThank)
 let leaderFeedbackNext = null   // a refused say's FEEDBACK line for the next leader call (leader.leaderFeedback)
 let lastObs = null   // the latest tick's obs: the leader's threat guard re-checks it when an answer arrives
 const threatNearIn = o => !!(o?.nearestHostile && o.nearestHostile.dist <= 16)
@@ -475,6 +476,13 @@ function leaderAnswered(snap, a, err) {
   // a refused say settles nothing and sends nothing; with requests shown, the next call is told why (FEEDBACK)
   if (goalsOn) leaderFeedbackNext = leaderFeedback(res, reqs.length > 0)
   const waiting = reqs.filter(r => !r.answered)
+  // statements the leader let pass (continue): thanked instead of "not now" (the thanks line at most once per 60 s)
+  const thank = goalsOn ? statementsToThank(settleAs, reqs, me) : []
+  if (thank.length) {
+    requestBook.settle(thank.map(r => r.id), 'thanks', +t.toFixed(1))
+    if (lastThanksT == null || t - lastThanksT >= THANKS_EVERY_S) { lastThanksT = t; say('thanks!') }
+    elog.event({ t, kind: 'request_thanked', requests: thank.map(r => ({ t: r.t, name: r.name })) })
+  }
   const notNow = requestBook.settle(reqs.map(r => r.id), settleAs, +t.toFixed(1))
   const settled = waiting.filter(r => r.answered).map(r => ({ t: r.t, name: r.name, as: r.answered.kind }))
   // a request shown to a call that answered at subtask level is still waiting: ask again at once, with FEEDBACK
