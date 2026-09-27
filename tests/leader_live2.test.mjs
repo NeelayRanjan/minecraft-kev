@@ -35,6 +35,7 @@ test('item 4: the goals prompt asks for a reply whenever the leader acts on a re
   const sys = leaderSystemGoals()
   assert.match(sys, /Add a short reply for the player whenever you act on a request/)
   assert.match(sys, /"reply": "<short line for the player>"/)
+  assert.match(sys, /"are you coming\?" -> push_goal go_to, arg player:Steve, reply "On my way!"/)
   assert.doesNotMatch(LEADER_SYSTEM, /reply/)
   assert.match(buildLeaderMessages(goalCtx)[1].content, /"reply" \(any action\)/)
   assert.doesNotMatch(buildLeaderMessages(baseCtx)[1].content, /reply/)

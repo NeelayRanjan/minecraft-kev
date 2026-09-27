@@ -944,6 +944,7 @@ export const LIVE_EDITS = [
 // The second live round (live_retry, 2026-09-27; brief items 4, 9-16, 19): goals-prompt edits made on purpose, applied
 // after LIVE_EDITS; USER2_EDITS for the goals user prompt; schema2 for the goals schema. Nothing else changed.
 export const LIVE2_EDITS = [
+  ['Steve says "come here" -> push_goal go_to, arg player:Steve;', 'Steve says "come here" or "are you coming?" -> push_goal go_to, arg player:Steve, reply "On my way!";'],
   ['- say with a line the audience reads, only to answer a question: {', '- say with a line the audience reads, only for conversation (a question with nothing to do); when a request can be acted on, act and answer in reply: {'],
   ['- cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.',
     '- cannot: decline an audience request; write one short friendly sentence saying why in reply (or in "why").\nEvery answer may also carry "reply": one short line the player reads in chat. Add a short reply for the player whenever you act on a request ("on my way!", "sure, making it now").'],
