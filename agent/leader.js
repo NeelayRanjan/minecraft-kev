@@ -736,13 +736,16 @@ function renderBlueprint(cut, feedback) {
 
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
   subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null,
-  blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null, conversation = [] }) {
+  blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null, conversation = [], inventory = null }) {
   const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
   const own = ownHistory.slice(-5).map(h => `${T(h.t)} ${h.action ?? '(no answer)'}${h.kind && h.kind !== h.action ? ` (${h.kind})` : ''}${h.why ? `: ${h.why}` : ''}`)
+  // INVENTORY (exact): the state text names tools without counts; with chat to answer, the leader gets every stack total
+  const chat = goals && inventory && (requests.length > 0 || conversation?.length > 0)
+  const inv = chat ? [`INVENTORY (exact): ${Object.entries(inventory).filter(([, n]) => n > 0).map(([k, n]) => `${sanitizeChat(k, 60)} x${n}`).join(', ') || 'empty'}`] : []
   const user = [
-    'STATE', stateText, '',
+    'STATE', stateText, ...inv, '',
     'GOAL CHAIN', chainText, ...renderNeeds(need), '',
     ...(goals ? ['GOAL STACK', ...renderGoalStack(goalStack), '', 'PLANS', ...renderPlans(plans), ''] : []),
     ...renderBlueprint(blueprintCut, blueprintFeedback),

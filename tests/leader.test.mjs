@@ -1069,3 +1069,17 @@ test('buildLeaderMessages: CONVERSATION with the last 8 chat lines both ways, on
   assert.equal(buildLeaderMessages({ ...bpGoalCtx, conversation: [] })[1].content, buildLeaderMessages(bpGoalCtx)[1].content, 'no chat: unchanged')
   assert.ok(!buildLeaderMessages({ ...bpBaseCtx, conversation })[1].content.includes('CONVERSATION'), 'goals mode only')
 })
+
+// Live stress session: the state text lists tools without counts ("iron pickaxe" for 5), so the leader told a player
+// "one iron pickaxe". The leader's prompt (not kev's state text) gets INVENTORY (exact) when there is chat to answer.
+test('buildLeaderMessages: INVENTORY (exact) after the state, with chat only; the state text is untouched', () => {
+  const inventory = { iron_pickaxe: 5, cobblestone: 12, torch: 0 }
+  const u = buildLeaderMessages({ ...bpGoalCtx, inventory })[1].content.split('\n')
+  assert.equal(u[0], 'STATE'); assert.equal(u[1], bpGoalCtx.stateText)
+  assert.equal(u[2], 'INVENTORY (exact): iron_pickaxe x5, cobblestone x12')
+  assert.equal(u[3], '')
+  assert.ok(buildLeaderMessages({ ...bpGoalCtx, requests: [], inventory, conversation: [{ t: 1, name: 'A', text: 'hi' }] })[1].content.includes('INVENTORY (exact): iron_pickaxe x5'))
+  assert.ok(buildLeaderMessages({ ...bpGoalCtx, requests: [], inventory: {} , conversation: [{ t: 1, name: 'A', text: 'hi' }] })[1].content.includes('INVENTORY (exact): empty'))
+  assert.equal(buildLeaderMessages({ ...bpGoalCtx, requests: [], inventory })[1].content, buildLeaderMessages({ ...bpGoalCtx, requests: [] })[1].content, 'no chat: unchanged')
+  assert.ok(!buildLeaderMessages({ ...bpBaseCtx, inventory })[1].content.includes('INVENTORY'), 'goals mode only')
+})
