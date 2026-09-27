@@ -100,7 +100,23 @@ async function walkCapped (goal) {
     if (trail.length > 80) trail.shift()
   }
   bot.on('physicsTick', onTick)
-  try { await motor.walkWithin(goal, 40_000) } catch (e) { log(`walk trace (last ticks): ${trail.join(' | ')}`); throw e } finally { bot.removeListener('physicsTick', onTick) }
+  try {
+    // The 1-wide staircase quirk (Task 7 investigation, 1 hang in 12 runs of (d)): the pathfinder's jump onto a step
+    // ends with the bot's box 0.02-0.03 m inside the step's face (z 2.27 against a block ending at z 2, feet y + 0.42),
+    // no control held, gravity applied every tick and the position never changing: the server keeps the player where
+    // it is (a move that stays inside a block is refused), so it hangs mid-jump while the pathfinder waits. The stairs
+    // are not the cause (3 air cells above every step, open sky in the arena; it happened on the first step, from flat
+    // ground): a mineflayer physics / Paper collision quirk. walkWithin ends it after STALL_MS; shuffling to the cell
+    // centre gets the box out of the face, and the walk is tried again (in the failing run the same jump hung twice).
+    for (let attempt = 0; ; attempt++) {
+      try { await motor.walkWithin(goal, 40_000); return } catch (e) {
+        log(`walk trace (last ticks): ${trail.slice(-20).join(' | ')}`)
+        if (attempt >= 2 || e?.name !== 'Timeout') throw e
+        log(`walk stalled at ${bot.entity.position} (${e.message}); centring and retrying (${attempt + 1}/2)`)
+        bot.pathfinder.setGoal(null); await motor.centre(); motor.deadline = Date.now() + 60_000
+      }
+    }
+  } finally { bot.removeListener('physicsTick', onTick) }
 }
 
 // (a) flat hut
