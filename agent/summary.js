@@ -25,26 +25,28 @@ export function classifyEntity(e, mcData) {
   const cat = mcData.entitiesByName[e.name]?.category
   return cat === 'Hostile mobs' ? 'hostile' : cat === 'Passive mobs' ? 'passive' : null
 }
-// obs.attacker (live-session lesson: a player who hit the bot was never a threat, since nearestHostile only ever
-// looks at hostile mobs). kind: 'player' when the entity is a player, 'hostile' when it classifies as a hostile
-// mob, else 'other' (a passive mob, or anything classifyEntity does not recognise, still standing within 4 m of a
-// health drop). Pure given the entity and mcData.
-export function attackerKind(e, mcData) {
-  if (e.type === 'player') return 'player'
-  return classifyEntity(e, mcData) === 'hostile' ? 'hostile' : 'other'
-}
-// The nearest entity (not the bot itself) within maxDist of `me`, else null. Pure given a bot.entities-shaped map.
-export function nearestEntity(entities, meEntity, me, maxDist) {
+// The nearest entity (not the bot itself) within maxDist of `me`, else null; `filter` narrows the candidates (the
+// attacker fallback counts players only). Pure given a bot.entities-shaped map.
+export function nearestEntity(entities, meEntity, me, maxDist, filter = () => true) {
   let best = null, bestD = maxDist
   for (const e of Object.values(entities)) {
-    if (e === meEntity || !e.position) continue
+    if (e === meEntity || !e.position || !filter(e)) continue
     const d = me.distanceTo(e.position)
     if (d <= bestD) { best = e; bestD = d }
   }
   return best ? { e: best, dist: bestD } : null
 }
+// A 1.20.4 damage_event packet (sourceCauseId = the responsible entity's id + 1, 0 when none: fall, drowning, lava,
+// starvation) -> the hurt record summarize() attributes a health drop from: the source entity snapshot or null. The
+// cause, not the direct source, so an arrow counts as its shooter. Pure given a bot.entities-shaped map.
+export function hurtFromDamageEvent(packet, entities) {
+  const e = packet?.sourceCauseId > 0 ? entities[packet.sourceCauseId - 1] : null
+  if (!e || !e.position) return { source: null }
+  return { source: { id: e.id, type: e.type, name: e.name || e.username || 'unknown', pos: { x: e.position.x, y: e.position.y, z: e.position.z } } }
+}
 export class EpisodeMemory {
-  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null; this.spawn = null; this.lastHealth = null; this.attacker = null }
+  constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null; this.spawn = null; this.lastHealth = null; this.attacker = null; this.hurts = [] }
+  noteHurt(h) { this.hurts.push(h) }   // from the runner's damage_event listener; summarize() consumes them
   sawIron(pos, t, where = null) { this.ironSeen = { pos: { x: pos.x, y: pos.y, z: pos.z }, t, where } }
   saw(kind, pos, t) { this.seen[kind] = { pos: { x: pos.x, y: pos.y, z: pos.z }, t } }
   setBase(kind, pos) { this.base[kind] = pos ? { x: pos.x, y: pos.y, z: pos.z } : null }
@@ -131,16 +133,23 @@ export function summarize(bot, mcData, mem, ctx) {
     .map(e => ({ name: e.name || e.username || 'unknown', kind: classifyEntity(e, mcData), ...relTo(me, e.position), id: e.id, pos: { x: e.position.x, y: e.position.y, z: e.position.z } }))
     .filter(e => e.kind && e.dist <= 32).sort((a, b) => a.dist - b.dist).slice(0, 6)
   const hostiles = entities.filter(e => e.kind === 'hostile')
-  // obs.attacker (live session lesson: a player who hit the bot was never a threat): on a tick health drops with any
-  // entity within 4 m, remember it (kind, name, the distance at detection, and its position so flee can run from a
-  // player attacker: motor.js's nearestHostileEntity/obs.nearestHostile are mob-only, fix round 1) for 30 s;
-  // obs.nearestHostile is unchanged and still only ever hostile mobs.
+  // obs.attacker (live session lesson: a player who hit the bot was never a threat, since obs.nearestHostile is
+  // mob-only): only ever a PLAYER who hit the bot, kept 30 s with its position so flee can run from it. The hit is
+  // attributed from the damage_event packets seen since the last tick (mem.hurts, the source entity); a zombie, an
+  // arrow's mob shooter, fall/drowning/lava damage never make an attacker, even with a player standing near (final
+  // review: any hit near any entity interrupted every subtask). Only when no damage_event arrived at all does a
+  // player within 4 m of the drop count (proximity fallback, players only). Mob hits keep main's behaviour exactly.
   const health = bot.health ?? 20
   if (mem.lastHealth != null && health < mem.lastHealth) {
-    const near = nearestEntity(bot.entities, bot.entity, me, 4)
-    if (near) mem.attacker = { kind: attackerKind(near.e, mcData), name: near.e.name || near.e.username || 'unknown', dist: near.dist,
-      pos: { x: near.e.position.x, y: near.e.position.y, z: near.e.position.z }, t: ctx.t }
+    let src = null
+    if (mem.hurts.length) src = mem.hurts.map(h => h.source).find(s => s && s.type === 'player') || null
+    else {
+      const near = nearestEntity(bot.entities, bot.entity, me, 4, e => e.type === 'player')
+      if (near) src = { name: near.e.username || near.e.name || 'unknown', pos: { x: near.e.position.x, y: near.e.position.y, z: near.e.position.z } }
+    }
+    if (src) mem.attacker = { kind: 'player', name: src.name, dist: me.distanceTo(src.pos), pos: { ...src.pos }, t: ctx.t }
   }
+  mem.hurts = []
   mem.lastHealth = health
   const attacker = mem.attacker && ctx.t - mem.attacker.t <= 30
     ? { kind: mem.attacker.kind, name: mem.attacker.name, dist: Math.round(mem.attacker.dist), sinceS: Math.round(ctx.t - mem.attacker.t), pos: mem.attacker.pos } : null

@@ -79,7 +79,7 @@ test('portalFrameNear: the full 10 obsidian give the anchor (lowest block of a s
 
 import mcDataFor from 'minecraft-data'
 import { Vec3 } from 'vec3'
-import { summarize } from '../agent/summary.js'
+import { summarize, hurtFromDamageEvent } from '../agent/summary.js'
 
 // A minimal bot for summarize(): every method summarize() touches returns an empty/neutral default, so a test can
 // override just health and entities.
@@ -116,7 +116,7 @@ test('obs.attacker: a health drop with a player 2 m away is a player attacker fo
   assert.equal(obs.attacker, null)
 })
 
-test('obs.attacker: only an entity within 4 m counts, and a hostile mob attacker classifies as hostile, not player', () => {
+test('obs.attacker: only an entity within 4 m counts, and a hostile mob near a health drop is never the attacker', () => {
   const mcData = mcDataFor('1.20.4')
   const mem = new EpisodeMemory()
   const far = { id: 1, type: 'player', username: 'Far_Away', position: new Vec3(10, 64, 0), isValid: true }
@@ -126,13 +126,45 @@ test('obs.attacker: only an entity within 4 m counts, and a hostile mob attacker
   let obs = summarize(bot, mcData, mem, { t: 1, current: null, last: null, goal: 'iron_pickaxe' })
   assert.equal(obs.attacker, null, 'nothing within 4 m')
 
+  // no damage_event seen: the proximity fallback counts players only (a zombie, a cow, an item, an arrow do not)
   const zombie = { id: 2, type: 'hostile', name: 'zombie', position: new Vec3(1, 64, 0), isValid: true }
+  const cow = { id: 3, type: 'animal', name: 'cow', position: new Vec3(0, 64, 1), isValid: true }
   const mem2 = new EpisodeMemory()
-  const bot2 = fakeBot({ health: 20, entities: { 2: zombie } })
+  const bot2 = fakeBot({ health: 20, entities: { 2: zombie, 3: cow } })
   summarize(bot2, mcData, mem2, { t: 0, current: null, last: null, goal: 'iron_pickaxe' })
   bot2.health = 15
   obs = summarize(bot2, mcData, mem2, { t: 1, current: null, last: null, goal: 'iron_pickaxe' })
-  assert.equal(obs.attacker.kind, 'hostile')
+  assert.equal(obs.attacker, null)
+})
+
+// Final review, Important 1: the hit is attributed from the damage_event packet's source (sourceCauseId = id + 1).
+test('obs.attacker from damage_event: a zombie source leaves it null even with a player near; a player source sets it', () => {
+  const mcData = mcDataFor('1.20.4')
+  const zombie = { id: 2, type: 'hostile', name: 'zombie', position: new Vec3(1, 64, 0), isValid: true }
+  const player = { id: 9, type: 'player', username: 'Spacers_Choice', position: new Vec3(2, 64, 0), isValid: true }
+  const entities = { 2: zombie, 9: player }
+  // a zombie hit with a player standing 2 m away
+  let mem = new EpisodeMemory(), bot = fakeBot({ health: 20, entities })
+  summarize(bot, mcData, mem, { t: 0, current: null, last: null, goal: 'iron_pickaxe' })
+  mem.noteHurt(hurtFromDamageEvent({ entityId: 0, sourceTypeId: 1, sourceCauseId: 3, sourceDirectId: 3 }, entities))
+  bot.health = 17
+  assert.equal(summarize(bot, mcData, mem, { t: 1, current: null, last: null, goal: 'iron_pickaxe' }).attacker, null)
+  // fall damage (no source entity) with the player standing near: not the attacker either
+  mem = new EpisodeMemory(); bot = fakeBot({ health: 20, entities })
+  summarize(bot, mcData, mem, { t: 0, current: null, last: null, goal: 'iron_pickaxe' })
+  mem.noteHurt(hurtFromDamageEvent({ entityId: 0, sourceTypeId: 5, sourceCauseId: 0, sourceDirectId: 0 }, entities))
+  bot.health = 17
+  assert.equal(summarize(bot, mcData, mem, { t: 1, current: null, last: null, goal: 'iron_pickaxe' }).attacker, null)
+  // the player hits the bot (even from 6 m, past the proximity radius)
+  const farPlayer = { ...player, position: new Vec3(6, 64, 0) }
+  mem = new EpisodeMemory(); bot = fakeBot({ health: 20, entities: { 2: zombie, 9: farPlayer } })
+  summarize(bot, mcData, mem, { t: 0, current: null, last: null, goal: 'iron_pickaxe' })
+  mem.noteHurt(hurtFromDamageEvent({ entityId: 0, sourceTypeId: 1, sourceCauseId: 10, sourceDirectId: 10 }, bot.entities))
+  bot.health = 18
+  const obs = summarize(bot, mcData, mem, { t: 1, current: null, last: null, goal: 'iron_pickaxe' })
+  assert.deepEqual(obs.attacker, { kind: 'player', name: 'Spacers_Choice', dist: 6, sinceS: 0, pos: { x: 6, y: 64, z: 0 } })
+  // the recorded hurts are consumed: a later drop with only the zombie hurt event does not re-attribute
+  assert.equal(mem.hurts.length, 0)
 })
 
 test('memory remembers diamond, lava and water sightings', () => {

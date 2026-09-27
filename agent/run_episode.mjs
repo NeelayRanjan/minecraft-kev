@@ -18,7 +18,7 @@ import { plugin as pvp } from 'mineflayer-pvp'
 import mcDataFor from 'minecraft-data'
 import { startServer } from './server_ctl.js'
 import { Motor } from './motor.js'
-import { EpisodeMemory, summarize } from './summary.js'
+import { EpisodeMemory, summarize, hurtFromDamageEvent } from './summary.js'
 import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
 import { stageOf, describeChain, needs } from './stages.js'
@@ -235,6 +235,8 @@ bot.on('death', () => {
 })
 bot.on('respawn', () => { if (dead) elog.event({ t: now(), kind: 'respawn' }); dead = false })
 bot.on('health', () => { if (bot.health <= 0) dead = true })
+// who hit the bot (1.20.4 damage_event: the source entity, or none for fall/drowning/lava); summarize() attributes the drop
+bot._client.on('damage_event', p => { if (bot.entity && p.entityId === bot.entity.id) mem.noteHurt(hurtFromDamageEvent(p, bot.entities)) })
 
 function startSubtask(id, source, obs) {
   subtaskStartHealth = bot.health
@@ -289,7 +291,7 @@ function tick() {
     ...(doneIds.length ? { goals_done: doneIds } : {}) })
   elog.frame({ t, x: +obs.pos.x.toFixed(1), y: +obs.pos.y.toFixed(1), z: +obs.pos.z.toFixed(1), yaw: +bot.entity.yaw.toFixed(2), pitch: +bot.entity.pitch.toFixed(2), health: obs.health, food: obs.food, timeOfDay: obs.timeOfDay, hostile: obs.nearestHostile?.dist ?? null })
   const why = interruptFor({ hostileDist: obs.nearestHostile?.dist ?? null, prevHostileDist, current: motor.current, healthDrop: subtaskStartHealth != null ? subtaskStartHealth - obs.health : 0, dead,
-    oxygen: obs.oxygen, attackerNew: obs.attacker != null && obs.attacker.sinceS === 0 })
+    oxygen: obs.oxygen, attacker: obs.attacker })
   if (why && motor.busy) { elog.event({ t, kind: 'interrupt', reason: why, subtask: motor.current?.id }); leaderNote('interrupt'); motor.interrupt(why) }
   else if (motor.busy) {   // the supervisor replans on a forecast that has stayed low (a stale forecast counts as none)
     const p = lastForecast && t - lastForecast.t <= 3 ? lastForecast.p : null

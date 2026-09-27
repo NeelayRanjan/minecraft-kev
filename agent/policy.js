@@ -20,16 +20,19 @@ export function chooseAction({ policy, qs, labels, answers, rng = Math.random, e
 }
 
 // Order: died > took_damage > threat crossing (a hostile within 16 m, or a new attacker: a player who just hit the
-// bot, obs.attacker, live session lesson) > drowning (the threat crossing is an edge and would be lost; drowning is
-// a level and fires again on the next tick). 'drowning': while the air is at DROWNING_OXYGEN or below, every tick, for
-// any subtask that is not an escape (a mining subtask re-picked in a flooded tunnel is cut at once, r2_leader t=2404);
-// wait (floats, swims to shore), explore_toward(surface) and the threat responses run on.
-export function interruptFor({ hostileDist, prevHostileDist, current, healthDrop, dead, oxygen = 20, attackerNew = false }) {
+// bot, obs.attacker with sinceS 0, live session lesson) > drowning (the threat crossing is an edge and would be lost;
+// drowning is a level and fires again on the next tick). The attacker edge fires only for a player attacker and only
+// with no hostile within 16 m (a mob hit keeps main's behaviour exactly: the 16 m crossing and the 4 hp cumulative
+// drop; final review). 'drowning': while the air is at DROWNING_OXYGEN or below, every tick, for any subtask that is
+// not an escape (a mining subtask re-picked in a flooded tunnel is cut at once, r2_leader t=2404); wait (floats, swims
+// to shore), explore_toward(surface) and the threat responses run on.
+export function interruptFor({ hostileDist, prevHostileDist, current, healthDrop, dead, oxygen = 20, attacker = null }) {
   if (!current) return null
   if (dead) return 'died'
   if (healthDrop >= DAMAGE_INTERRUPT_HP) return 'took_damage'
   const nowNear = hostileDist != null && hostileDist <= HOSTILE_RANGE
   const wasNear = prevHostileDist != null && prevHostileDist <= HOSTILE_RANGE
+  const attackerNew = attacker?.kind === 'player' && attacker.sinceS === 0 && !nowNear
   if (!THREAT_SUBTASKS.has(current.name) && ((nowNear && !wasNear) || attackerNew)) return 'threat'
   if (oxygen != null && oxygen <= DROWNING_OXYGEN && !escapes(current)) return 'drowning'
   return null

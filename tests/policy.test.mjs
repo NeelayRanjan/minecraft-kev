@@ -53,10 +53,26 @@ test('drowning: while air is 10/20 or less, every tick, for any subtask that is 
 test('a new attacker (a player who just hit the bot) fires threat like a hostile crossing 16 m', () => {
   const cur = name => ({ name })
   const base = { hostileDist: null, prevHostileDist: null, healthDrop: 0, dead: false }
-  assert.equal(interruptFor({ ...base, current: cur('gather_wood'), attackerNew: true }), 'threat')
-  assert.equal(interruptFor({ ...base, current: cur('mine_stone'), attackerNew: false }), null)
-  for (const n of ['fight', 'flee', 'pillar_up']) assert.equal(interruptFor({ ...base, current: cur(n), attackerNew: true }), null, n)
-  assert.equal(interruptFor({ ...base, current: null, attackerNew: true }), null)
+  const player = { kind: 'player', name: 'Spacers_Choice', sinceS: 0 }
+  assert.equal(interruptFor({ ...base, current: cur('gather_wood'), attacker: player }), 'threat')
+  assert.equal(interruptFor({ ...base, current: cur('mine_stone'), attacker: { ...player, sinceS: 3 } }), null, 'only on the tick of the hit')
+  assert.equal(interruptFor({ ...base, current: cur('mine_stone'), attacker: null }), null)
+  for (const n of ['fight', 'flee', 'pillar_up']) assert.equal(interruptFor({ ...base, current: cur(n), attacker: player }), null, n)
+  assert.equal(interruptFor({ ...base, current: null, attacker: player }), null)
+})
+
+// Final review, Important 1: a mob hit (or any non-player attacker) keeps main's behaviour exactly: only the 16 m
+// crossing and the cumulative 4 hp drop interrupt; a player hit with a hostile already within 16 m adds nothing.
+test('a mob attacker never fires threat; a player attacker with a hostile already near does not either', () => {
+  const cur = name => ({ name })
+  const base = { hostileDist: null, prevHostileDist: null, healthDrop: 1, dead: false }
+  for (const kind of ['hostile', 'other']) {
+    assert.equal(interruptFor({ ...base, current: cur('eat'), attacker: { kind, name: 'zombie', sinceS: 0 } }), null, kind)
+    assert.equal(interruptFor({ ...base, current: cur('build_shelter'), attacker: { kind, name: 'zombie', sinceS: 0 } }), null, kind)
+  }
+  const player = { kind: 'player', name: 'x', sinceS: 0 }
+  assert.equal(interruptFor({ ...base, hostileDist: 6, prevHostileDist: 6, current: cur('eat'), attacker: player }), null)
+  assert.equal(interruptFor({ ...base, current: cur('eat'), attackerNew: true }), null, 'the old boolean is gone: an unattributed hit is not a threat')
 })
 
 test('a threat crossing on the same tick as low air is not lost; drowning fires on the next tick', () => {
