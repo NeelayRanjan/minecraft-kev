@@ -13,8 +13,9 @@
 //
 // Pure: the runner (agent/run_episode.mjs) owns the transport (planner.js askLeader), the timing and the motor.
 import { GOAL_KINDS, validateGoal, RECIPES, PRODUCERS, FINDABLE_NOW, PLACES, STRUCTURES } from './goals.js'
-import { isItem } from './recipes.js'
-import { stepText } from './plans.js'
+import { isItem, expandItem, HUNT } from './recipes.js'
+import { SHELTER_DEPTH } from './subtasks.js'
+import { stepText, BLOCKED_WINDOW_S } from './plans.js'
 import { TEMPLATES, checkParams, describeTemplates } from './templates.js'
 import { validate, cells } from './blueprints.js'
 
@@ -23,11 +24,11 @@ const PERIOD = { periodic15: 15, periodic30_interrupts: 30, subgoals: 120 }
 const EVENT_TRIGGERS = {
   events: new Set(['subtask_done', 'subtask_failed', 'subtask_error', 'death']),
   periodic30_interrupts: new Set(['interrupt', 'death']),
-  subgoals: new Set(['goal_done', 'goal_failed', 'subtask_failed', 'interrupt', 'death', 'audience_request', 'idle_wait', 'plan_blocked']),
+  subgoals: new Set(['goal_done', 'goal_failed', 'subtask_failed', 'interrupt', 'death', 'audience_request', 'request_waiting', 'idle_wait', 'plan_blocked']),
 }
 // subgoals: at most one call per SPACING s, except for these events (which also skip the FIRST_AT wait)
 const SPACING = { subgoals: 20 }
-const BYPASS = { subgoals: new Set(['death', 'interrupt', 'audience_request', 'idle_wait', 'plan_blocked']) }
+const BYPASS = { subgoals: new Set(['death', 'interrupt', 'audience_request', 'request_waiting', 'idle_wait', 'plan_blocked']) }
 const FIRST_AT = 20   // periodic modes: let the bot start before the first call
 
 // When to ask. The runner calls due() once per tick with the most important event of that tick (pickEvent) and
@@ -57,7 +58,7 @@ export class LeaderTrigger {
 
 // The most important event of a tick. With a mode, events that mode ignores are skipped, so a goal_done does not
 // shadow a subtask_done in the events mode.
-const EVENT_RANK = ['death', 'interrupt', 'audience_request', 'idle_wait', 'plan_blocked', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
+const EVENT_RANK = ['death', 'interrupt', 'audience_request', 'request_waiting', 'idle_wait', 'plan_blocked', 'goal_failed', 'goal_done', 'subtask_failed', 'subtask_error', 'subtask_done']
 export function pickEvent(events, mode = null) {
   const cares = mode ? EVENT_TRIGGERS[mode] : null
   for (const e of EVENT_RANK) if (events.includes(e) && (!cares || cares.has(e))) return e
@@ -67,11 +68,12 @@ export function pickEvent(events, mode = null) {
 // What an answer does, judged against what is running now. askedCurrentId is the subtask the leader was shown (or, when
 // asked while idle, the one kev started right after); if that has ended, the answer is about a situation that is gone.
 // Two guards (run 1: prompt rules alone did not hold) turn an otherwise valid override into 'blocked':
-// - threat: the bot is in a threat response (fight, flee, pillar_up) with a hostile near (threatNear) and the answer
+// - threat: the bot is in a threat response (fight, flee, pillar_up, build_shelter) with a hostile near (threatNear) and the answer
 //   is not itself a threat response; switching into or between threat responses stays allowed;
 // - recent_failure: the answer's id failed to path (or timed out) in one of its last two attempts (recentResults: the
 //   runner's last subtask completions {id, result}, oldest first).
-export const THREAT_RESPONSES = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
+// build_shelter too (live stress session: at 1 hp the guard refused flee -> build_shelter and the bot died)
+export const THREAT_RESPONSES = new Set(['fight(threat)', 'flee(threat)', 'pillar_up', 'build_shelter'])
 export const PATH_FAILURES = new Set(['no_path', 'target_gone', 'timeout', 'not_found'])
 
 // The failing result among the last two attempts of id in recentResults, or null.
@@ -111,8 +113,14 @@ const FREE_FORM = { maxSize: 9, maxBlocks: 150 }
 const DEFAULT_MATERIAL = 'cobblestone'
 const goalText = ({ kind, arg, count } = {}) => `${kind}${arg != null || count != null ? `(${[arg, count].filter(x => x != null).join(', ')})` : ''}`
 // A goal object as the model sent it -> {kind, arg, count} plus from only when given (a receive goal's giver).
+// A bare player name where a player goal wants player:<name> (live probe: protect arg "Spacers_Choice"): go_to (unless a
+// place or y:<n>), stay (unless here) and protect.
+const PLAYER_ARG_KINDS = new Set(['go_to', 'stay', 'protect'])
+const playerArg = (kind, arg) => PLAYER_ARG_KINDS.has(kind) && typeof arg === 'string' && /^\w{1,16}$/.test(arg) && !PLACES.includes(arg)
+  && arg !== 'here' && !/^y:/.test(arg) ? `player:${arg}` : arg
 const goalOf = raw => {
-  const goal = { kind: raw.kind ?? null, arg: raw.arg == null || raw.arg === '' ? null : raw.arg, count: raw.count ?? null }
+  const arg = raw.arg == null || raw.arg === '' ? null : playerArg(raw.kind, raw.arg)
+  const goal = { kind: raw.kind ?? null, arg, count: raw.count ?? null }
   if (typeof raw.from === 'string' && raw.from !== '') goal.from = raw.from
   return goal
 }
@@ -133,12 +141,19 @@ export function askedIdFor(snap, currentId) {
   return snap?.currentId ?? null
 }
 
-export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [], goalsEnabled = false, obs = null }) {
+export function applyAnswer({ answer, currentId, askedCurrentId, offered, threatNear = false, recentResults = [], goalsEnabled = false, obs = null,
+  requests = [], recentSays = [], botName = null, recentCannots = [] }) {
   const action = answer?.action ?? null
   if (!action) return { kind: 'invalid', id: null }
   if (goalsEnabled && GOAL_ACTIONS.includes(action)) {
     const why = typeof answer.why === 'string' ? answer.why : ''
+    if (action === 'say') return guardSay(applyPlanAnswer(action, answer, why, obs), requests, recentSays, botName)
     if (PLAN_ACTIONS.includes(action)) return applyPlanAnswer(action, answer, why, obs)
+    // a cannot repeating one of the last SAY_MEMORY cannot texts word for word (the reply, else why) is refused
+    if (action === 'cannot') {
+      const text = typeof answer.reply === 'string' && answer.reply.trim() ? answer.reply : why
+      if (text.trim() && (recentCannots || []).slice(-SAY_MEMORY).some(x => sameText(x, text))) return { kind: 'invalid', id: 'cannot', reason: 'repeated reply' }
+    }
     if (action !== 'push_goal') return { kind: action, id: null, why }
     const raw = answer.goal
     if (!raw || typeof raw !== 'object') return { kind: 'invalid', id: action, reason: 'push_goal without a goal' }
@@ -155,15 +170,131 @@ export function applyAnswer({ answer, currentId, askedCurrentId, offered, threat
   return { kind: 'override', id: action }
 }
 
+// The cannot backstop (live stress session: the leader refused "white bed", "5 leather" and "ender pearl" as outside its
+// lists). itemInRequest parses the PLAYER's request text (never the model's): scanning left to right, at each word the
+// two-word underscore join first, then the word alone, each as written, without a trailing 's', then without 'es';
+// the first minecraft-data item wins, with the integer right before it as the count (else 1). Common English words
+// that happen to be items are skipped.
+const NOT_ITEM_WORDS = new Set(['air', 'light', 'target', 'chain', 'lead', 'barrier', 'structure_void', 'jigsaw'])
+// Generic names that are not items in 1.20.4 (live retry session: "bed" was planned as `bed`), to one unambiguous
+// default variant; applied to plan_item's item and to the request text. A name with a colour or wood ("red bed") is
+// already an item and wins.
+export const ITEM_ALIASES = { bed: 'white_bed', wool: 'white_wool', planks: 'oak_planks', plank: 'oak_planks', log: 'oak_log', boat: 'oak_boat',
+  door: 'oak_door', stairs: 'oak_stairs', slab: 'oak_slab', fence: 'oak_fence', fence_gate: 'oak_fence_gate', trapdoor: 'oak_trapdoor',
+  carpet: 'white_carpet', concrete: 'white_concrete', dye: 'white_dye', banner: 'white_banner', sign: 'oak_sign' }
+export const itemAlias = n => (typeof n === 'string' && Object.hasOwn(ITEM_ALIASES, n) ? ITEM_ALIASES[n] : n)
+export function itemInRequest(text) {
+  const w = String(text ?? '').toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean)
+  const forms = x => [x, x.replace(/s$/, ''), x.replace(/es$/, '')]
+  const hit = x => { const f = forms(x).find(f => !NOT_ITEM_WORDS.has(f) && isItem(itemAlias(f))); return f ? itemAlias(f) : null }
+  const countAt = i => (i > 0 && /^\d+$/.test(w[i - 1]) ? Math.max(1, Math.min(64, Number(w[i - 1]))) : 1)
+  for (let i = 0; i < w.length; i++) {
+    if (/^\d+$/.test(w[i])) continue
+    const two = i + 1 < w.length ? hit(`${w[i]}_${w[i + 1]}`) : null
+    const item = two ?? hit(w[i])
+    if (item) return { item, count: countAt(i) }
+  }
+  return null
+}
+// The leader's own cannot (not the code's night or blocked-plan refusal) to shown requests: the first request naming an
+// item whose expansion has steps or a missing leaf becomes plan_item (the code plans it or says what is missing);
+// otherwise null and the cannot stands.
+export function cannotBackstop(res, requests = [], inventory = {}, { placed } = {}) {
+  if (res?.kind !== 'cannot' || res.night || res.guard) return null
+  return requestItemPlan(requests, inventory, placed, res.why ?? '', 'cannot')
+}
+// The same for a plan_item the validator refused as an unknown item (retry probe: "white bed" came back as plan_item
+// "bed"): the request text's item is planned instead, else null and the invalid answer stands.
+export function unknownItemBackstop(res, requests = [], inventory = {}, { placed } = {}) {
+  if (res?.kind !== 'invalid' || res.id !== 'plan_item' || !String(res.reason ?? '').startsWith('unknown item')) return null
+  return requestItemPlan(requests, inventory, placed, '', 'unknown_item')
+}
+function requestItemPlan(requests, inventory, placed, why, via) {
+  for (const r of (requests || []).slice(0, MAX_REQUESTS)) {
+    const m = itemInRequest(r?.text)
+    if (!m) continue
+    const ex = expandItem(m.item, m.count, inventory || {}, placed ? { placed } : {})
+    if (ex.steps.length || ex.missing.length) return { kind: 'plan_item', id: null, item: m.item, count: m.count, why, via }
+  }
+  return null
+}
+// A model's item name as minecraft-data spells it: lowercase, no minecraft: prefix, spaces and dashes to underscores.
+const normItem = n => typeof n === 'string' ? n.trim().toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_') : n
+
+// The say guards (live stress session: say used to acknowledge instead of acting, 7 identical lines, and to refuse with
+// invented reasons). requests: the ones the call showed; recentSays: the leader's say texts so far (the last SAY_MEMORY
+// count). A say is invalid with nothing to reply to, with no question among the requests, or when it repeats one of them.
+export const SAY_MEMORY = 5
+const sameText = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase()
+// A shown request (the first MAX_REQUESTS, as the prompt renders them) asks a question: it contains '?' or its first
+// word is a question word (players skip the '?': "where are you", "do you have an iron pick").
+const QUESTION_WORDS = new Set(['what', 'where', 'when', 'why', 'how', 'who', 'which', 'whose', 'is', 'are', 'am', 'do', 'does', 'did',
+  'can', 'could', 'will', 'would', 'have', 'has', 'should'])
+// Also (live retry session: "hey kevin, tell me about yourself" got no say): a request opening with tell, explain,
+// describe or show, and one that names the bot (a whole word, any case) and asks something anywhere in it (a '?', a
+// question word or one of those verbs).
+const TELL_WORDS = new Set(['tell', 'explain', 'describe', 'show'])
+const asksQuestion = (text, botName = null) => {
+  const s = String(text ?? '').trim().toLowerCase(), words = s.split(/[^a-z0-9_]+/).filter(Boolean)
+  if (s.includes('?') || QUESTION_WORDS.has(words[0]) || TELL_WORDS.has(words[0])) return true
+  return !!botName && words.includes(String(botName).toLowerCase()) && words.some(w => QUESTION_WORDS.has(w) || TELL_WORDS.has(w))
+}
+export const hasQuestion = (requests = [], botName = null) => requests.slice(0, MAX_REQUESTS).some(r => asksQuestion(r?.text, botName))
+function guardSay(res, requests, recentSays, botName = null) {
+  if (res.kind !== 'say') return res
+  const bad = reason => ({ kind: 'invalid', id: 'say', reason })
+  if (!requests?.length) return bad('nothing to reply to')
+  if (!hasQuestion(requests, botName)) return bad('say only answers a question; nobody asked one')
+  // a first-person refusal through say (live probe: "I can't come to you" to "are you coming to me?")
+  if (/\bI\s+(can't|can’t|cannot|can not|am unable to|won't be able to)\b/i.test(res.text)) return bad('say never refuses; act on the request or answer cannot')
+  if ((recentSays || []).slice(-SAY_MEMORY).some(t => sameText(t, res.text))) return bad('repeated reply')
+  return res
+}
+// A call that showed requests and answered at subtask level (continue, override, or one that came too late or was
+// blocked) leaves them waiting (live retry session: an interrupt call overrode a subtask while "come back" waited): the
+// runner fires the next call at once (event request_waiting, which bypasses the spacing) with WAITING_FEEDBACK. After
+// RequestBook's maxShown calls they are settled as not_now as before, and nothing waits any more.
+export const WAITING_FEEDBACK = 'a player request is still waiting: answer it first'
+const SUBTASK_OUTCOMES = new Set(['continue', 'override', 'stale', 'blocked'])
+export const requestStillWaiting = (settleAs, shown = []) => SUBTASK_OUTCOMES.has(settleAs) && (shown || []).some(r => !r.answered)
+// Statements (live retry session: "I turned on keep inventory for you" got "Not now"): no question and no word that asks
+// for something or signals danger. A continue to a shown statement settles it as 'thanks' (the runner sends "thanks!"
+// at most once per THANKS_EVERY_S); requests and questions still wait (requestStillWaiting).
+export const THANKS_EVERY_S = 60
+const REQUEST_WORDS = new Set(['want', 'need', 'please', 'pls', 'plz', 'make', 'craft', 'get', 'bring', 'give', 'come', 'go', 'build', 'dig', 'mine', 'find',
+  'gather', 'help', 'stop', 'wait', 'stay', 'follow', 'kill', 'fight', 'protect', 'collect', 'put', 'place', 'take', 'drop', 'lets', 'let', 'can', 'could',
+  'would', 'should', 'save', 'scared', 'attack', 'attacking', 'skeleton', 'zombie', 'creeper', 'spider', 'hurry'])
+export function isStatement(text, botName = null) {
+  if (asksQuestion(text, botName)) return false
+  const words = String(text ?? '').toLowerCase().replace(/'/g, '').split(/[^a-z0-9_]+/).filter(Boolean)
+  return words.length > 0 && !words.some(w => REQUEST_WORDS.has(w))
+}
+export const statementsToThank = (settleAs, shown = [], botName = null) => settleAs === 'continue' ? (shown || []).filter(r => !r.answered && isStatement(r.text, botName)) : []
+// A protect goal on top ends at a new request the leader acts on (a pushed goal or a new plan): the runner pops it
+// before acting (the brief: protect lasts 120 s or until "stop" or a new request).
+export const endsProtect = (res, top) => top?.kind === 'protect' && ['push_goal', 'plan_item', 'plan_steps'].includes(res?.kind)
+// The leader's say texts from the runner's events, the last SAY_MEMORY.
+export const recentSayTexts = events => (events || []).filter(e => e?.kind === 'leader_say' && typeof e.text === 'string').map(e => e.text).slice(-SAY_MEMORY)
+// The leader's own cannot texts (the reply it sent, else why; not the code's night or blocked-plan refusals), the last SAY_MEMORY.
+export const recentCannotTexts = events => (events || []).filter(e => e?.kind === 'leader_cannot' && !e.reason)
+  .map(e => (typeof e.reply === 'string' && e.reply ? e.reply : e.why)).filter(x => typeof x === 'string' && x).slice(-SAY_MEMORY)
+// The FEEDBACK line for the next call: a refused say or a repeated cannot with requests shown (they stay pending), else null.
+export function leaderFeedback(res, hasRequests) {
+  if (res?.kind !== 'invalid' || (res.id !== 'say' && res.id !== 'cannot') || !hasRequests) return null
+  return `your last answer was refused: ${res.reason}; act on the request with a goal, a plan or cannot`
+}
+
 function applyPlanAnswer(action, answer, why, obs) {
   const bad = reason => ({ kind: 'invalid', id: action, reason })
   if (action === 'plan_item') {
     const it = answer.item
     if (!it || typeof it !== 'object') return bad('plan_item without an item')
-    if (!isItem(it.name)) return bad(`unknown item ${it.name}`)
+    const name = itemAlias(normItem(it.name))
+    if (!isItem(name)) return bad(`unknown item ${it.name}`)
     const count = it.count ?? 1
     if (!Number.isInteger(count) || count < 1) return bad(`bad count ${count}`)
-    return { kind: 'plan_item', id: null, item: it.name, count: Math.min(64, count), why }   // the expander's cap: the title matches the plan
+    // the expander's cap: the title matches the plan; materials_only: the ingredients without the final craft
+    return { kind: 'plan_item', id: null, item: name, count: Math.min(64, count), why, ...(it.materials_only === true ? { materials_only: true } : {}) }
   }
   if (action === 'plan_steps') {
     const raw = answer.steps
@@ -189,7 +320,7 @@ function applyPlanAnswer(action, answer, why, obs) {
   }
   if (action === 'plan_build' || action === 'plan_dig') return applyTemplateAnswer(action, answer, why)
   if (action === 'plan_blueprint') return applyBlueprintAnswer(answer, why)
-  const text = sanitizeChat(answer.text, SAY_MAX).trim()
+  const text = sanitizeChat(typeof answer.text === 'string' && answer.text.trim() ? answer.text : answer.reply, SAY_MAX).trim()   // a say may put its line in reply
   if (!text) return bad('say without text')
   return { kind: 'say', id: null, text }
 }
@@ -272,17 +403,19 @@ const BLUEPRINT_SCHEMA = {
 // schema is the one before the blueprint answers (66867fc). The runner that wires the blueprint book passes true.
 export const BLUEPRINT_ACTIONS = ['plan_build', 'plan_dig', 'plan_blueprint']
 const goalActionsFor = ({ blueprints = false } = {}) => blueprints ? GOAL_ACTIONS : GOAL_ACTIONS.filter(a => !BLUEPRINT_ACTIONS.includes(a))
-export const leaderSchema = (options, { goals = false, blueprints = false } = {}) => goals ? {
+// requests: the ones the prompt shows; say is in the action enum only when one of them asks a question (hasQuestion).
+export const leaderSchema = (options, { goals = false, blueprints = false, requests = [], botName = null } = {}) => goals ? {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['continue', ...goalActionsFor({ blueprints }), ...options.map(o => o.id)] },
+    action: { type: 'string', enum: ['continue', ...goalActionsFor({ blueprints }).filter(a => a !== 'say' || hasQuestion(requests, botName)), ...options.map(o => o.id)] },
     goal: STEP_SCHEMA,
-    item: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' } }, required: ['name'] },
+    item: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' }, materials_only: { type: 'boolean' } }, required: ['name'] },
     title: { type: 'string' },
     steps: { type: 'array', items: STEP_SCHEMA, minItems: 1, maxItems: MAX_PLAN_STEPS },
     edit: { type: 'object', properties: { op: { type: 'string', enum: EDIT_OPS }, plan_id: { type: 'integer' } }, required: ['op'] },
     text: { type: 'string' },
     ...(blueprints ? { build: BUILD_SCHEMA, dig: DIG_SCHEMA, blueprint: BLUEPRINT_SCHEMA } : {}),
+    reply: { type: 'string' },   // any action: a short line the runner sends to the player (live retry: talking and acting were exclusive)
     why: { type: 'string' },
   },
   required: ['action'],
@@ -294,7 +427,8 @@ export const leaderSchema = (options, { goals = false, blueprints = false } = {}
 
 // With goals, the goal actions are accepted and `goal` ({kind, arg, count[, from]} as sent, or null) is returned for
 // applyAnswer to validate, plus the plan answer's payload (item, title + steps, edit, text) when the action is one of
-// PLAN_ACTIONS; without, the result is {action, why} exactly as before.
+// PLAN_ACTIONS; without, the result is {action, why} exactly as before. Without blueprints a blueprint action is refused
+// (action null) like any action outside the schema.
 export function parseLeaderAnswer(text, options, { goals = false, blueprints = false } = {}) {
   if (typeof text !== 'string') return { action: null, why: '' }
   let s = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -309,10 +443,11 @@ export function parseLeaderAnswer(text, options, { goals = false, blueprints = f
   const ok = a === 'continue' || options.some(o => o.id === a) || (goals && goalActionsFor({ blueprints }).includes(a))
   if (!goals) return { action: ok ? a : null, why }
   const goal = obj.goal && typeof obj.goal === 'object' ? parsedGoal(obj.goal) : null
-  const out = { action: ok ? a : null, why, goal }
+  const out = { action: ok ? a : null, why, goal, reply: typeof obj.reply === 'string' ? obj.reply : null }
   if (!ok) return out
   const o = x => x && typeof x === 'object' && !Array.isArray(x) ? x : null
-  if (a === 'plan_item') out.item = o(obj.item) && { name: typeof obj.item.name === 'string' ? obj.item.name : null, count: Number.isInteger(obj.item.count) ? obj.item.count : null }
+  if (a === 'plan_item') out.item = o(obj.item) && { name: typeof obj.item.name === 'string' ? obj.item.name : null, count: Number.isInteger(obj.item.count) ? obj.item.count : null,
+    ...(obj.item.materials_only === true ? { materials_only: true } : {}) }
   if (a === 'plan_steps') { out.title = typeof obj.title === 'string' ? obj.title : ''; out.steps = Array.isArray(obj.steps) ? obj.steps.map(s => o(s) ? parsedGoal(s) : null) : null }
   if (a === 'edit') out.edit = o(obj.edit) && { op: typeof obj.edit.op === 'string' ? obj.edit.op : null, plan_id: Number.isInteger(obj.edit.plan_id) ? obj.edit.plan_id : null }
   if (a === 'say') out.text = typeof obj.text === 'string' ? obj.text : ''
@@ -371,8 +506,8 @@ Answer with JSON only: {"action": "continue" | "<subtask id>", "why": "<one sent
 // Goal mode: the same rules, then the goal rules with the declared vocabularies (from goals.js), then the answer format.
 const list = xs => xs.join(', ')
 // The BUILDING AND DIGGING block and the plan_build / plan_dig / plan_blueprint answers are offered only with blueprints
-// (the runner wires the blueprint book); without, the prompt is byte-identical to the one before the blueprint answers
-// (66867fc, tests/fixtures/leader_system_goals_66867fc.txt).
+// (the runner wires the blueprint book; live stress session: plan_dig was chosen in a session without it and the
+// request was settled silently). Without, the prompt is byte-identical to the one before the blueprint answers (66867fc).
 const BLUEPRINT_RULES = `BUILDING AND DIGGING. A shape is built or dug from the requesting player's feet, facing where they look. Templates, name(param min-max [default], ...) kind: what it is:
 ${describeTemplates()}
 - plan_build: {"action": "plan_build", "build": {"template": "hut", "params": {"w": 5, "d": 5, "h": 3}, "material": "cobblestone"}, "why": ...}; material a full block (default cobblestone);
@@ -381,36 +516,56 @@ ${describeTemplates()}
 Use a template whenever one fits; write your own blueprint (plan_blueprint) only for a shape no template covers, full blocks only, at most 9x9x9.
 Examples: "build me a small stone hut" -> plan_build hut w 5 d 5 h 3 material cobblestone; "stairs up 6 blocks" -> plan_build staircase_up height 6; "dig a 3x3x2 cave here" -> plan_dig room w 3 d 3 h 2; "mine down to y 12" -> plan_dig stairs_down_to y 12; "strip mine for diamonds" -> plan_dig strip_mine at_y -58.
 `
-export function leaderSystemGoals({ blueprints = false } = {}) {
+// The persona and HOW I WORK (live retry session: Kevin invented a village search and claimed staircases keep it safe):
+// true facts only, from the code's constants.
+const SEARCH_M = 32   // hunt(<mob>) and mine(<block>) look this far (agent/plugins/hunt.mjs, mine.mjs RANGE)
+const minutes = s => `${Math.round(s / 60)} minute${Math.round(s / 60) === 1 ? '' : 's'}`
+export const HOW_I_WORK = ['HOW I WORK (true facts; never claim anything else about yourself):',
+  `- I look for animals, mobs and ore within ${SEARCH_M} m; farther away I have to explore first.`,
+  `- Most goals that make no progress for ${minutes(GOAL_KINDS.craft_item.stuckS)} are given up.`,
+  `- A blocked plan is not tried again for ${minutes(BLOCKED_WINDOW_S)} unless a player asks again.`,
+  `- The blocks I can find: ${FINDABLE_NOW.map(x => x.replace(/_/g, ' ')).join(', ')}; I have no village finder yet.`,
+  `- I hunt ${[...new Set(Object.values(HUNT).flatMap(h => h.mobs))].join(', ')} (for ${Object.keys(HUNT).map(x => x.replace(/_/g, ' ')).join(', ')}).`,
+  `- At night I dig ${SHELTER_DEPTH} blocks down and seal the top; over lava or water I pillar up instead.`,
+  '- Whether I keep my items when I die depends on the server\'s keepInventory rule.'].join('\n')
+export const persona = (botName = 'Kevin') => `You are ${botName}, a Minecraft bot the audience steers from chat. Friendly, a bit dramatic, honest about what you can and cannot do.`
+export function leaderSystemGoals({ blueprints = false, botName = 'Kevin' } = {}) {
   const bpActions = blueprints ? ', plan_build, plan_dig, plan_blueprint' : ''
   const bpFormat = blueprints ? ' | "plan_build" | "plan_dig" | "plan_blueprint"' : ''
   const bpFields = blueprints ? ', "build" (plan_build only), "dig" (plan_dig only), "blueprint" (plan_blueprint only)' : ''
   return `${LEADER_RULES}
 
 Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and on top any goals pushed by you or asked for by the audience (players chatting with the bot). kev works on the top goal until it is done or stuck, then the one below resumes. Plans: the PLANS section lists the bot's plans, ordered goal steps it works through one at a time, the front plan first (numbered #1, #2, ...), then any plan blocked in the last 10 minutes ("blocked #n ...: reason"; the code refuses to plan it again until a new request asks). Besides "continue" and a subtask id you can answer:
-- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};
+- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...}; add "materials_only": true to the item to gather its materials without crafting it;
 - plan_steps with a title and 1 to 8 goal steps: {"action": "plan_steps", "title": "stone from home", "steps": [{"kind": "go_to", "arg": "base"}, {"kind": "gather", "arg": "cobblestone", "count": 8}], "why": ...};
 - edit with an op (skip, drop, move_front, clear) and, for drop and move_front, the plan number from PLANS: {"action": "edit", "edit": {"op": "drop", "plan_id": 3}, "why": ...};
-- say with a line the audience reads: {"action": "say", "text": "...", "why": ...};
+- say with a line the audience reads, only for conversation (a question with nothing to do); when a request can be acted on, act and answer in reply: {"action": "say", "text": "...", "why": ...};
 - push_goal with a typed goal: {"action": "push_goal", "goal": {"kind": ..., "arg": ..., "count": ...}, "why": ...};
 - pop_goal: drop the top pushed goal when it is pointless now (its materials are lost, night has fallen on the surface, it keeps failing);
-- cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.
-Goal kinds and their arguments (nothing else is accepted):
-- craft_item, arg one of: ${list(Object.keys(RECIPES))};
-- gather, arg one of: ${list(Object.keys(PRODUCERS))}; count an integer from 1 to 64;
+- cannot: decline an audience request; write one short friendly sentence saying why in reply (or in "why").
+Every answer may also carry "reply": one short line the player reads in chat. Add a short reply for the player whenever you act on a request ("on my way!", "sure, making it now").
+push_goal goal kinds and their arguments (these lists are for push_goal only; plan_item is not limited to them):
+- craft_item (push_goal only), arg one of: ${list(Object.keys(RECIPES))};
+- gather (push_goal only), arg one of: ${list(Object.keys(PRODUCERS))}; count an integer from 1 to 64;
 - find, arg one of: ${list(FINDABLE_NOW)};
 - go_to, arg one of: ${list(PLACES)}, or player:<name>, or y:<height>;
 - build, arg one of: ${list(Object.keys(STRUCTURES).filter(k => STRUCTURES[k].executor))};
 - receive, arg an item, count, from the name of the player giving it (the bot waits for the item);
+- stay, arg player:<name> or here: wait at that spot (picks up drops, eats, fights back) until you pop it;
+- protect, arg player:<name>: follow that player and fight hostile mobs near them for 2 minutes;
 - survive_night, return_to_base: no arg.
-For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say answers a question or acknowledges; it is not an action. cannot only for things outside every list.
-The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; Steve says "come here" -> push_goal go_to, arg player:Steve; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.
+For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first. Storage blocks unpack into 9 of their item (1 redstone block = 9 redstone, 1 iron block = 9 iron ingots; coal, gold, diamond, emerald and lapis blocks too): a held or offered storage block helps, and the code unpacks it when a plan needs the item. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse: act with a goal or a plan, or answer cannot. cannot only for things that are neither an item nor a goal above.
+The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "enough leather for a leather helmet, don't craft it" -> plan_item leather_helmet count 1 materials_only true; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; "go to y 12" -> push_goal go_to, arg y:12; Steve says "come here" or "are you coming?" -> push_goal go_to, arg player:Steve, reply "On my way!"; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve; Steve says "wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I'll wait here"; "you're free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply; Steve says "help, there's a skeleton next to me" -> push_goal protect, arg player:Steve, reply "Coming to help!"; "stop" -> pop_goal.
 ${blueprints ? BLUEPRINT_RULES : ''}Answer every audience request with exactly one of plan_item, plan_steps${bpActions}, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
 Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
-Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot.
+Audience requests always come before the default goal chain; the chain resumes afterwards.
+Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot. The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.
 "continue" remains the default when there is no request and the goals make progress.
 
-Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "why": "<one sentence>"}`
+${persona(botName)}
+${HOW_I_WORK}
+
+Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}`
 }
 export const LEADER_SYSTEM_GOALS = leaderSystemGoals({ blueprints: true })
 
@@ -521,12 +676,15 @@ export function parseChatMessage(jsonMsg, position, botName) {
 // cannot, plan_item, plan_steps, edit, say; the runner passes an invalid push it replied to as cannot). Any other outcome of a call that showed it
 // (continue, override, blocked, stale, invalid, error) leaves it waiting; after maxShown such calls it is settled as
 // 'not_now' and returned so the runner can reply "Not now". Ids are 1, 2, ... in arrival order.
-export const REQUEST_ANSWERS = new Set(GOAL_ACTIONS)
+export const REQUEST_ANSWERS = new Set([...GOAL_ACTIONS, 'reply', 'thanks'])
 // How a call's outcome settles the audience requests it showed: an invalid goal-level answer (push_goal or a plan answer
 // the validator refused: an unknown item, a bad step, an edit without its plan_id, an empty say) is replied to with the
 // reason, so it settles them as cannot; every other outcome settles as its own kind.
-const REPLIED_INVALID = new Set(['push_goal', ...PLAN_ACTIONS])
-export function settleKind(res, hasRequests) {
+// A refused say is not replied to (it settles nothing; the next prompt carries FEEDBACK, leaderFeedback).
+const REPLIED_INVALID = new Set(['push_goal', ...PLAN_ACTIONS.filter(a => a !== 'say')])
+// A continue or override that carries a reply (the runner sends it) answers the shown requests as 'reply'.
+export function settleKind(res, hasRequests, reply = null) {
+  if (hasRequests && (res?.kind === 'continue' || res?.kind === 'override') && typeof reply === 'string' && reply.trim()) return 'reply'
   return res?.kind === 'invalid' && hasRequests && REPLIED_INVALID.has(res.id) ? 'cannot' : res?.kind ?? null
 }
 export class RequestBook {
@@ -597,6 +755,15 @@ function renderPlans(plans) {
   return plans.map(l => sanitizeChat(l, 400))
 }
 
+// The CONVERSATION section (goals mode, only when there is chat): the last MAX_CONVERSATION chat lines both ways (the
+// players' and the bot's own), {t, name, text}, sanitized and cut to 120 characters.
+export const MAX_CONVERSATION = 8
+function renderConversation(lines = []) {
+  if (!lines?.length) return []
+  return ['CONVERSATION (last 8 chat lines, oldest first)',
+    ...lines.slice(-MAX_CONVERSATION).map(l => `${T(l.t)} ${sanitizeChat(l.name, 40)}: ${sanitizeChat(l.text, 120)}`), '']
+}
+
 export const MAX_REQUESTS = 5
 function renderRequests(requests = []) {
   if (!requests.length) return ['(none)']
@@ -664,13 +831,18 @@ function renderBlueprint(cut, feedback) {
 
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
   subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null,
-  blueprintCut = null, blueprintFeedback = null, blueprints = false }) {
+  blueprintCut = null, blueprintFeedback = null, blueprints = false, feedback = null, conversation = [], inventory = null, botName = null, players = null }) {
   const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
   const own = ownHistory.slice(-5).map(h => `${T(h.t)} ${h.action ?? '(no answer)'}${h.kind && h.kind !== h.action ? ` (${h.kind})` : ''}${h.why ? `: ${h.why}` : ''}`)
+  // INVENTORY (exact): the state text names tools without counts; with chat to answer, the leader gets every stack total
+  const chat = goals && inventory && (requests.length > 0 || conversation?.length > 0)
+  const inv = chat ? [`INVENTORY (exact): ${Object.entries(inventory).filter(([, n]) => n > 0).map(([k, n]) => `${sanitizeChat(k, 60)} x${n}`).join(', ') || 'empty'}`] : []
+  // PLAYERS (exact): obs.players' distances (live retry session: "where are you" was answered with a made-up distance)
+  if (chat && players) inv.push(`PLAYERS (exact): ${Object.entries(players).map(([n, p]) => `${sanitizeChat(n, 16)} ${Math.round(p.dist)} m ${p.dir ?? 'away'}${p.dir ? ' of you' : ''}${p.reported ? ' (last reported position)' : ''}`).join(', ') || 'none within 64 m'}`)
   const user = [
-    'STATE', stateText, '',
+    'STATE', stateText, ...inv, '',
     'GOAL CHAIN', chainText, ...renderNeeds(need), '',
     ...(goals ? ['GOAL STACK', ...renderGoalStack(goalStack), '', 'PLANS', ...renderPlans(plans), ''] : []),
     ...renderBlueprint(blueprintCut, blueprintFeedback),
@@ -680,13 +852,15 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
     'KEV FORECASTS', none(renderForecasts(forecasts, forecastTrend, kevPick)), '',
     'YOUR PREVIOUS DECISIONS', none(own), '',
     'TIME', `${minutesLeft != null ? minutesLeft.toFixed(1) : '?'} minutes left in the episode; deaths so far: ${deaths}`, '',
+    ...(goals ? renderConversation(conversation) : []),
     ...(goals ? ['AUDIENCE REQUESTS (unanswered)', ...renderRequests(requests), ''] : []),
+    ...(goals && feedback ? [`FEEDBACK: ${sanitizeChat(feedback, 300)}`, ''] : []),
     'SUBTASKS OFFERED NOW', options.map(o => {
       const bad = recentFailure(o.id, recentResults)
       return `- ${o.id}: ${o.desc}${bad ? ` (failed recently: ${bad}, do not pick)` : ''}`
     }).join('\n'), '',
-    goals ? 'Reply with JSON only: {"action": "continue" | "plan_item" | "plan_steps" | "edit" | "say" | "push_goal" | "pop_goal" | "cannot" | "<subtask id from the list>", "goal" (push_goal), "item" (plan_item), "title" and "steps" (plan_steps), "edit" (edit), "text" (say), "why": "<one sentence>"}'
+    goals ? 'Reply with JSON only: {"action": "continue" | "plan_item" | "plan_steps" | "edit" | "say" | "push_goal" | "pop_goal" | "cannot" | "<subtask id from the list>", "goal" (push_goal), "item" (plan_item), "title" and "steps" (plan_steps), "edit" (edit), "text" (say), "reply" (any action), "why": "<one sentence>"}'
       : 'Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}',
   ].join('\n')
-  return [{ role: 'system', content: goals ? leaderSystemGoals({ blueprints }) : LEADER_SYSTEM }, { role: 'user', content: user }]
+  return [{ role: 'system', content: goals ? leaderSystemGoals({ blueprints, ...(botName ? { botName } : {}) }) : LEADER_SYSTEM }, { role: 'user', content: user }]
 }

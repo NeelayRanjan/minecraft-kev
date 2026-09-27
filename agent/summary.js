@@ -44,6 +44,27 @@ export function hurtFromDamageEvent(packet, entities) {
   if (!e || !e.position) return { source: null }
   return { source: { id: e.id, type: e.type, name: e.name || e.username || 'unknown', pos: { x: e.position.x, y: e.position.y, z: e.position.z } } }
 }
+// obs.players: other players by name, {dist, dir} (go_to(player:<name>) is done within 3 m); not in the state text. A
+// player's entity within 64 m (not a spectator: other clients get no entity for one), else the position the server last
+// reported for them (go_to_player's /data query, mem.reportedPlayers {name: {pos, at: ms}}) within the last 60 s, at
+// any distance, marked reported (live retry session: a spectator was never reached; 200 m walks looked stuck).
+export const REPORTED_FRESH_MS = 60_000
+export function playersMap(bot, me, reported, nowMs) {
+  const players = {}
+  const round = d => Math.round(d * 10) / 10
+  for (const [name, p] of Object.entries(bot.players || {})) {
+    if (name === bot.username || p?.gamemode === 3 || !p?.entity?.position) continue
+    const r = relTo(me, p.entity.position)
+    if (r.dist <= 64) players[name] = { dist: round(r.dist), dir: r.dir }
+  }
+  for (const [name, rp] of Object.entries(reported || {})) {
+    if (name === bot.username || players[name] || !rp?.pos || !(nowMs - rp.at <= REPORTED_FRESH_MS)) continue
+    const r = relTo(me, rp.pos)
+    players[name] = { dist: round(r.dist), dir: r.dir, reported: true }
+  }
+  return players
+}
+
 export class EpisodeMemory {
   constructor() { this.ironSeen = null; this.lastPath = null; this.deaths = 0; this.heading = 'north'; this.base = { table: null, furnace: null }; this.seen = { diamond: null, lava: null, water: null }; this.portal = null; this.spawn = null; this.lastHealth = null; this.attacker = null; this.hurts = [] }
   noteHurt(h) { this.hurts.push(h) }   // from the runner's damage_event listener; summarize() consumes them
@@ -154,13 +175,7 @@ export function summarize(bot, mcData, mem, ctx) {
   const attacker = mem.attacker && ctx.t - mem.attacker.t <= 30
     ? { kind: mem.attacker.kind, name: mem.attacker.name, dist: Math.round(mem.attacker.dist), sinceS: Math.round(ctx.t - mem.attacker.t), pos: mem.attacker.pos } : null
   if (!attacker) mem.attacker = null
-  // obs.players: other players within 64 m by name (go_to(player:<name>) is done within 3 m); not in the state text.
-  const players = {}
-  for (const [name, p] of Object.entries(bot.players || {})) {
-    if (name === bot.username || !p?.entity?.position) continue
-    const d = relTo(me, p.entity.position).dist
-    if (d <= 64) players[name] = { dist: Math.round(d * 10) / 10 }
-  }
+  const players = playersMap(bot, me, mem.reportedPlayers, Date.now())
   const inv = {}, toolWear = {}
   for (const it of bot.inventory.items()) {
     inv[it.name] = (inv[it.name] || 0) + it.count

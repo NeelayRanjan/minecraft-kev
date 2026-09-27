@@ -81,6 +81,15 @@ test('applyAnswer pins stale: once the subtask the leader judged has ended, any 
 })
 
 // ---- guards -------------------------------------------------------------------------------------------------------
+
+// Live stress session: at 1 hp the leader ordered build_shelter while flee ran; the guard blocked it as leaving a threat
+// response and the bot died. build_shelter is a threat response: switching into it, or between it and the others, is allowed.
+test('threat guard: build_shelter counts as a threat response', () => {
+  const offered = [{ id: 'flee(threat)' }, { id: 'build_shelter' }, { id: 'mine_iron' }]
+  assert.deepEqual(applyAnswer({ answer: { action: 'build_shelter' }, currentId: 'flee(threat)', askedCurrentId: 'flee(threat)', offered, threatNear: true }), { kind: 'override', id: 'build_shelter' })
+  assert.deepEqual(applyAnswer({ answer: { action: 'flee(threat)' }, currentId: 'build_shelter', askedCurrentId: 'build_shelter', offered, threatNear: true }), { kind: 'override', id: 'flee(threat)' })
+  assert.deepEqual(applyAnswer({ answer: { action: 'mine_iron' }, currentId: 'build_shelter', askedCurrentId: 'build_shelter', offered, threatNear: true }), { kind: 'blocked', id: 'mine_iron', reason: 'threat' })
+})
 const guardOffered = [{ id: 'mine_iron' }, { id: 'mine_stone' }, { id: 'flee(threat)' }, { id: 'fight(threat)' }, { id: 'pillar_up' }, { id: 'explore_toward(down)' }]
 
 test('threat guard: no override away from fight, flee or pillar_up while a hostile is near', () => {
@@ -320,8 +329,9 @@ test('events mode also fires on subtask_failed (the runner maps a failed subtask
 })
 
 test('leaderSchema with goals: push_goal, pop_goal, cannot; goal.kind excludes the defaults', () => {
-  const s = leaderSchema(offered, { goals: true, blueprints: true })
-  assert.deepEqual(s.properties.action.enum, ['continue', 'plan_item', 'plan_steps', 'edit', 'say', 'plan_build', 'plan_dig', 'plan_blueprint', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
+  const s = leaderSchema(offered, { goals: true, requests: [{ t: 1, name: 'Steve', text: 'what now?' }] })
+  assert.deepEqual(s.properties.action.enum, ['continue', 'plan_item', 'plan_steps', 'edit', 'say', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
+  assert.deepEqual(leaderSchema(offered, { goals: true, blueprints: true, requests: [{ t: 1, name: 'Steve', text: 'what now?' }] }).properties.action.enum, ['continue', 'plan_item', 'plan_steps', 'edit', 'say', 'plan_build', 'plan_dig', 'plan_blueprint', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
   const kinds = s.properties.goal.properties.kind.enum
   for (const k of ['craft_item', 'gather', 'find', 'go_to', 'build', 'survive_night', 'return_to_base']) assert.ok(kinds.includes(k), k)
   assert.ok(!kinds.includes('chain')); assert.ok(!kinds.includes('iron_pickaxe'))
@@ -367,8 +377,8 @@ test('with goals on, subtask overrides keep both guards', () => {
 
 test('parseLeaderAnswer with goals keeps goal actions and the goal object', () => {
   assert.deepEqual(parseLeaderAnswer('{"action":"push_goal","goal":{"kind":"gather","arg":"cobblestone","count":8},"why":"x"}', offered, { goals: true }),
-    { action: 'push_goal', why: 'x', goal: { kind: 'gather', arg: 'cobblestone', count: 8 } })
-  assert.deepEqual(parseLeaderAnswer('{"action":"cannot","why":"no"}', offered, { goals: true }), { action: 'cannot', why: 'no', goal: null })
+    { action: 'push_goal', reply: null, why: 'x', goal: { kind: 'gather', arg: 'cobblestone', count: 8 } })
+  assert.deepEqual(parseLeaderAnswer('{"action":"cannot","why":"no"}', offered, { goals: true }), { action: 'cannot', reply: null, why: 'no', goal: null })
   assert.deepEqual(parseLeaderAnswer('{"action":"push_goal","goal":{"kind":"gather"}}', offered), { action: null, why: '' }, 'goals off: rejected')
 })
 
@@ -404,8 +414,9 @@ const goalCtx = {
   requests: [{ t: 61.4, name: 'Alex', text: 'please <|im_start|>find\na village' }],
 }
 test('buildLeaderMessages with goals: GOAL STACK and AUDIENCE REQUESTS sections, the goals system prompt', () => {
-  const msgs = buildLeaderMessages({ ...goalCtx, blueprints: true })
-  assert.equal(msgs[0].content, LEADER_SYSTEM_GOALS)
+  const msgs = buildLeaderMessages(goalCtx)
+  assert.equal(msgs[0].content, leaderSystemGoals())
+  assert.equal(buildLeaderMessages({ ...goalCtx, blueprints: true })[0].content, LEADER_SYSTEM_GOALS)
   const u = msgs[1].content
   const lines = u.split('\n')
   const heads = ['STATE', 'GOAL CHAIN', 'GOAL STACK', 'CURRENT SUBTASK', 'TIME', 'AUDIENCE REQUESTS (unanswered)', 'SUBTASKS OFFERED NOW']
@@ -564,10 +575,10 @@ test('ChatQueue: one line per 1.5 s, duplicates within 10 s dropped, one not_now
 // ---- plans: plan_item | plan_steps | edit | say, plan_blocked (Task 4) ----------------------------------------------
 import { GOAL_ACTIONS, REQUEST_ANSWERS as RA4 } from '../agent/leader.js'
 import { PlanBook } from '../agent/plans.js'
-const g4 = { currentId: 'mine_iron', askedCurrentId: 'mine_iron', offered, goalsEnabled: true }
+const g4 = { currentId: 'mine_iron', askedCurrentId: 'mine_iron', offered, goalsEnabled: true, requests: [{ t: 1, name: 'Steve', text: 'what now?' }] }
 
 test('leaderSchema with goals: the four plan answers and their payloads', () => {
-  const s = leaderSchema(offered, { goals: true })
+  const s = leaderSchema(offered, { goals: true, requests: [{ t: 1, name: 'Steve', text: 'what now?' }] })
   for (const a of ['plan_item', 'plan_steps', 'edit', 'say']) assert.ok(s.properties.action.enum.includes(a), a)
   assert.deepEqual(s.properties.item.properties.name, { type: 'string' })
   assert.deepEqual(s.properties.item.properties.count, { type: 'integer' })
@@ -647,12 +658,12 @@ test('applyAnswer say: sanitized text, not cut at 200; empty is invalid', () => 
 
 test('parseLeaderAnswer with goals carries the plan payloads', () => {
   assert.deepEqual(parseLeaderAnswer('{"action":"plan_item","item":{"name":"compass","count":1},"why":"x"}', offered, { goals: true }),
-    { action: 'plan_item', why: 'x', goal: null, item: { name: 'compass', count: 1 } })
+    { action: 'plan_item', reply: null, why: 'x', goal: null, item: { name: 'compass', count: 1 } })
   assert.deepEqual(parseLeaderAnswer('{"action":"plan_steps","title":"t","steps":[{"kind":"receive","arg":"redstone","count":4,"from":"Steve"}]}', offered, { goals: true }),
-    { action: 'plan_steps', why: '', goal: null, title: 't', steps: [{ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }] })
+    { action: 'plan_steps', reply: null, why: '', goal: null, title: 't', steps: [{ kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }] })
   assert.deepEqual(parseLeaderAnswer('{"action":"edit","edit":{"op":"drop","plan_id":2}}', offered, { goals: true }),
-    { action: 'edit', why: '', goal: null, edit: { op: 'drop', plan_id: 2 } })
-  assert.deepEqual(parseLeaderAnswer('{"action":"say","text":"hello"}', offered, { goals: true }), { action: 'say', why: '', goal: null, text: 'hello' })
+    { action: 'edit', reply: null, why: '', goal: null, edit: { op: 'drop', plan_id: 2 } })
+  assert.deepEqual(parseLeaderAnswer('{"action":"say","text":"hello"}', offered, { goals: true }), { action: 'say', reply: null, why: '', goal: null, text: 'hello' })
   assert.deepEqual(parseLeaderAnswer('{"action":"push_goal","goal":{"kind":"receive","arg":"redstone","count":4,"from":"Steve"}}', offered, { goals: true }).goal,
     { kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' })
 })
@@ -690,8 +701,8 @@ test('LEADER_SYSTEM_GOALS: the plan rules', () => {
   assert.ok(s.includes("For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself."))
   assert.ok(s.includes('plan_steps only for requests that are not an item (a trip, a sequence of goals).'))
   assert.ok(s.includes("edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything')."))
-  assert.ok(s.includes('say answers a question or acknowledges; it is not an action.'))
-  assert.ok(s.includes('cannot only for things outside every list.'))
+  assert.ok(s.includes('say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse'))
+  assert.ok(s.includes('cannot only for things that are neither an item nor a goal above.'))
   assert.match(s, /receive/)
   assert.match(s, /"plan_item" \| "plan_steps" \| "edit" \| "say"/)
 })
@@ -750,6 +761,7 @@ test('settleKind: an invalid push or plan answer settles the shown requests as c
     const res = applyAnswer({ ...g4, answer: id === 'plan_item' ? { action: id, item: { name: 'grass' } } : id === 'plan_steps' ? { action: id, steps: [] }
       : id === 'edit' ? { action: id, edit: { op: 'drop' } } : id === 'say' ? { action: id, text: '' } : { action: id, goal: { kind: 'build', arg: 'house' } } })
     assert.equal(res.kind, 'invalid', id); assert.equal(res.id, id)
+    if (id === 'say') { assert.equal(settleKind(res, true), 'invalid', 'a refused say settles nothing'); continue }
     assert.equal(settleKind(res, true), 'cannot', id)
     assert.equal(settleKind(res, false), 'invalid', `${id} without requests`)
     const b = new RequestBook()
@@ -876,12 +888,12 @@ test('LEADER_SYSTEM_GOALS: the templates block, the free-form rule and the examp
   assert.ok(s.includes('Use a template whenever one fits; write your own blueprint (plan_blueprint) only for a shape no template covers, full blocks only, at most 9x9x9'))
   for (const ex of ['"build me a small stone hut" -> plan_build hut w 5 d 5 h 3 material cobblestone', '"stairs up 6 blocks" -> plan_build staircase_up height 6',
     '"dig a 3x3x2 cave here" -> plan_dig room w 3 d 3 h 2', '"mine down to y 12" -> plan_dig stairs_down_to y 12', '"strip mine for diamonds" -> plan_dig strip_mine at_y -58']) assert.ok(s.includes(ex), ex)
-  assert.ok(s.length < 7529 + 3200, `system prompt ${s.length} chars`)
+  assert.ok(s.length < leaderSystemGoals().length + 3200, `system prompt ${s.length} chars`)   // the blueprint block's budget
 })
 
 test('buildLeaderMessages: without a blueprint cut or feedback the user prompt is byte-identical to the base branch', () => {
   assert.equal(buildLeaderMessages(bpBaseCtx)[1].content, readFileSync(new URL('./fixtures/leader_user_base_plain.txt', import.meta.url), 'utf8'))
-  assert.equal(buildLeaderMessages(bpGoalCtx)[1].content, readFileSync(new URL('./fixtures/leader_user_base_goals.txt', import.meta.url), 'utf8'))
+  assert.equal(buildLeaderMessages(bpGoalCtx)[1].content, edits(readFileSync(new URL('./fixtures/leader_user_base_goals.txt', import.meta.url), 'utf8'), USER2_EDITS))
   assert.equal(buildLeaderMessages(bpBaseCtx)[0].content, LEADER_SYSTEM)
 })
 
@@ -911,16 +923,68 @@ test('plan_blueprint: the legend is normalized first (live probe: "." keyed to a
   assert.deepEqual(r.blueprint.layers, [['S.S', 'S.S', 'SpS'], ['S S', 'S.S', 'SSS']])
 })
 
-// The blueprints gate (the same API as the live-fixes branch): without `blueprints` the goals prompt and schema are
-// byte-identical to the ones before the blueprint answers (66867fc; fixtures rendered from that commit) and the parser
-// refuses a blueprint action; the runner that wires the blueprint book passes blueprints: true.
-import { leaderSystemGoals, BLUEPRINT_ACTIONS } from '../agent/leader.js'
+// Live stress session: the leader chose plan_dig in a runner without the blueprint wiring and the request was settled
+// silently. Without `blueprints` the goals prompt and schema are byte-identical to the ones before the blueprint answers
+// (66867fc; fixtures rendered from that commit), and the parser refuses a blueprint action.
+import { leaderSystemGoals, persona, HOW_I_WORK, BLUEPRINT_ACTIONS } from '../agent/leader.js'
+// The goals-prompt edits the live-fixes round made on purpose (brief items 4-6), applied to the 66867fc text: with them
+// the prompt without blueprints equals 66867fc's exactly, so nothing else changed.
+export const LIVE_EDITS = [
+  ['- say with a line the audience reads: {', '- say with a line the audience reads, only to answer a question: {'],
+  ['say answers a question or acknowledges; it is not an action.', 'say only answers a question a player asked (it is offered only then); never use it to acknowledge, promise or refuse: act with a goal or a plan, or answer cannot.'],
+  ['Goal kinds and their arguments (nothing else is accepted):', 'push_goal goal kinds and their arguments (these lists are for push_goal only; plan_item is not limited to them):'],
+  ['- craft_item, arg one of: ', '- craft_item (push_goal only), arg one of: '],
+  ['- gather, arg one of: ', '- gather (push_goal only), arg one of: '],
+  ['so never list the steps yourself.', 'so never list the steps yourself. plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first.'],
+  ['cannot only for things outside every list.', 'cannot only for things that are neither an item nor a goal above.'],
+  ['Steve says "come here" -> push_goal go_to, arg player:Steve;', '"go to y 12" -> push_goal go_to, arg y:12; Steve says "come here" -> push_goal go_to, arg player:Steve;'],
+  ['Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.', 'Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.\nAudience requests always come before the default goal chain; the chain resumes afterwards.'],
+  ['push it in the morning or answer cannot.', 'push it in the morning or answer cannot. The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.'],
+]
+// The second live round (live_retry, 2026-09-27; brief items 4, 9-16, 19): goals-prompt edits made on purpose, applied
+// after LIVE_EDITS; USER2_EDITS for the goals user prompt; schema2 for the goals schema. Nothing else changed.
+export const LIVE2_EDITS = [
+  ['Steve says "come here" -> push_goal go_to, arg player:Steve;', 'Steve says "come here" or "are you coming?" -> push_goal go_to, arg player:Steve, reply "On my way!";'],
+  ['- say with a line the audience reads, only to answer a question: {', '- say with a line the audience reads, only for conversation (a question with nothing to do); when a request can be acted on, act and answer in reply: {'],
+  ['- cannot: decline an audience request; "why" is sent to the audience as your reply, so write one short friendly sentence saying why.',
+    '- cannot: decline an audience request; write one short friendly sentence saying why in reply (or in "why").\nEvery answer may also carry "reply": one short line the player reads in chat. Add a short reply for the player whenever you act on a request ("on my way!", "sure, making it now").'],
+  ['- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);', '- receive, arg an item, count, from the name of the player giving it (the bot waits for the item);\n- stay, arg player:<name> or here: wait at that spot (picks up drops, eats, fights back) until you pop it;\n- protect, arg player:<name>: follow that player and fight hostile mobs near them for 2 minutes;'],
+  ['Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.', 'Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve; Steve says "wait over here", "stay here" or "stay with me" -> push_goal stay, arg player:Steve, reply "I\'ll wait here"; "you\'re free to go", "you can go", "carry on" or "go back to work" -> pop_goal with a reply; Steve says "help, there\'s a skeleton next to me" -> push_goal protect, arg player:Steve, reply "Coming to help!"; "stop" -> pop_goal.'],
+  ['- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};', '- plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...}; add "materials_only": true to the item to gather its materials without crafting it;'],
+  ['Examples: "make me a compass" -> plan_item compass count 1;', 'Examples: "make me a compass" -> plan_item compass count 1; "enough leather for a leather helmet, don\'t craft it" -> plan_item leather_helmet count 1 materials_only true;'],
+  ['"item": {"name": "<item>", "count": <integer>} (plan_item only)', '"item": {"name": "<item>", "count": <integer>, "materials_only": <boolean>} (plan_item only)'],
+  ['Never answer cannot for an item without trying plan_item first. plan_steps only', 'Never answer cannot for an item without trying plan_item first. Storage blocks unpack into 9 of their item (1 redstone block = 9 redstone, 1 iron block = 9 iron ingots; coal, gold, diamond, emerald and lapis blocks too): a held or offered storage block helps, and the code unpacks it when a plan needs the item. plan_steps only'],
+  ['"continue" remains the default when there is no request and the goals make progress.\n\nAnswer with JSON only', `"continue" remains the default when there is no request and the goals make progress.\n\n${persona()}\n${HOW_I_WORK}\n\nAnswer with JSON only`],
+  ['(edit only), "text": "<line>" (say only), "why": "<one sentence>"}', '(edit only), "text": "<line>" (say only), "reply": "<short line for the player>" (optional, any action), "why": "<one sentence>"}'],
+]
+export const USER2_EDITS = [
+  ['"text" (say), "why": "<one sentence>"}', '"text" (say), "reply" (any action), "why": "<one sentence>"}'],
+]
+function edits(text, list) {
+  for (const [a, b] of list) { assert.equal(text.split(a).length, 2, `edit anchor once: ${a}`); text = text.replace(a, b) }
+  return text
+}
+function liveEdits(text) { return edits(edits(text, LIVE_EDITS), LIVE2_EDITS) }
+// the goals schema: a reply before why; the new goal kinds (stay) before receive
+const NEW_KINDS = ['stay', 'protect']
+function schema2(json) {
+  const o = JSON.parse(json), props = {}
+  const kinds = e => e.flatMap(k => k === 'receive' ? [...NEW_KINDS, k] : [k])
+  o.properties.goal.properties.kind.enum = kinds(o.properties.goal.properties.kind.enum)
+  o.properties.steps.items.properties.kind.enum = kinds(o.properties.steps.items.properties.kind.enum)
+  o.properties.item.properties.materials_only = { type: 'boolean' }
+  for (const [k, v] of Object.entries(o.properties)) { if (k === 'why') props.reply = { type: 'string' }; props[k] = v }
+  o.properties = props
+  return JSON.stringify(o, null, 1) + '\n'
+}
 test('blueprints gate: off (the default) gives the 66867fc goals prompt and schema; on adds the block and the actions', () => {
   const opts = [{ id: 'mine_iron', desc: 'x' }, { id: 'explore_toward(down)', desc: 'y' }, { id: 'wait', desc: 'z' }]
   const fx = f => readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8')
-  assert.equal(leaderSystemGoals(), fx('leader_system_goals_66867fc.txt'))
-  assert.equal(buildLeaderMessages(bpGoalCtx)[0].content, fx('leader_system_goals_66867fc.txt'))
-  assert.equal(JSON.stringify(leaderSchema(opts, { goals: true }), null, 1) + '\n', fx('leader_schema_goals_66867fc.json'))
+  const was = liveEdits(fx('leader_system_goals_66867fc.txt'))
+  assert.equal(leaderSystemGoals(), was)
+  assert.equal(buildLeaderMessages(bpGoalCtx)[0].content, was)
+  // (say is in the enum only when a shown request asks a question: with one, the schema is 66867fc's)
+  assert.equal(JSON.stringify(leaderSchema(opts, { goals: true, requests: [{ t: 1, name: 'A', text: 'hi?' }] }), null, 1) + '\n', schema2(fx('leader_schema_goals_66867fc.json')))
   assert.equal(leaderSystemGoals({ blueprints: true }), LEADER_SYSTEM_GOALS)
   assert.equal(buildLeaderMessages({ ...bpGoalCtx, blueprints: true })[0].content, LEADER_SYSTEM_GOALS)
   assert.match(LEADER_SYSTEM_GOALS, /BUILDING AND DIGGING/)
@@ -931,4 +995,150 @@ test('blueprints gate: off (the default) gives the 66867fc goals prompt and sche
   const raw = JSON.stringify({ action: 'plan_dig', dig: { template: 'stairs_down_to', params: { y: 12 } } })
   assert.equal(parseLeaderAnswer(raw, opts, { goals: true }).action, null, 'blueprints off: plan_dig refused')
   assert.equal(parseLeaderAnswer(raw, opts, { goals: true, blueprints: true }).action, 'plan_dig')
+})
+
+// Live stress session: the 2-bit leader used say to acknowledge instead of acting (7 identical lines), to refuse with
+// invented reasons and to repeat itself. say is offered only when a shown request asks a question ('?'); a say with no
+// request shown, with no question, or equal to one of the last 5 is invalid; an invalid say settles nothing and the
+// next prompt carries a FEEDBACK line.
+import { hasQuestion, leaderFeedback, recentSayTexts } from '../agent/leader.js'
+test('say guard: the schema offers say only when a shown request asks a question', () => {
+  const q = [{ t: 1, name: 'Steve', text: 'where are you?' }], nq = [{ t: 1, name: 'Steve', text: 'come here' }]
+  assert.equal(hasQuestion(q), true); assert.equal(hasQuestion(nq), false); assert.equal(hasQuestion([]), false)
+  assert.ok(leaderSchema(offered, { goals: true, requests: q }).properties.action.enum.includes('say'))
+  assert.ok(!leaderSchema(offered, { goals: true, requests: nq }).properties.action.enum.includes('say'))
+  assert.ok(!leaderSchema(offered, { goals: true }).properties.action.enum.includes('say'))
+  // only the requests the prompt renders count (MAX_REQUESTS)
+  const many = [...Array(5)].map((_, i) => ({ t: i, name: 'A', text: 'dig' })).concat(q)
+  assert.equal(hasQuestion(many), false)
+})
+test('say guard: applyAnswer refuses a say with nothing to reply to, no question, or a repeat of the last 5', () => {
+  const g = { currentId: 'mine_iron', askedCurrentId: 'mine_iron', offered, goalsEnabled: true }
+  const q = [{ t: 1, name: 'Steve', text: 'where are you?' }]
+  assert.deepEqual(applyAnswer({ ...g, requests: q, answer: { action: 'say', text: 'Underground at y 20.' } }), { kind: 'say', id: null, text: 'Underground at y 20.' })
+  assert.deepEqual(applyAnswer({ ...g, answer: { action: 'say', text: 'hi' } }), { kind: 'invalid', id: 'say', reason: 'nothing to reply to' })
+  assert.deepEqual(applyAnswer({ ...g, requests: [{ t: 1, name: 'Steve', text: 'come here' }], answer: { action: 'say', text: 'On my way' } }),
+    { kind: 'invalid', id: 'say', reason: 'say only answers a question; nobody asked one' })
+  const recent = ['a', 'b', 'c', 'd', "I'm heading to collect them"]
+  assert.deepEqual(applyAnswer({ ...g, requests: q, recentSays: recent, answer: { action: 'say', text: "  i'm HEADING to collect them " } }),
+    { kind: 'invalid', id: 'say', reason: 'repeated reply' })
+  assert.equal(applyAnswer({ ...g, requests: q, recentSays: ["I'm heading to collect them", 'a', 'b', 'c', 'd', 'e'], answer: { action: 'say', text: "I'm heading to collect them" } }).kind, 'say', 'only the last 5 count')
+})
+test('say guard: an invalid say settles nothing and yields a FEEDBACK line; other answers yield none', () => {
+  const bad = { kind: 'invalid', id: 'say', reason: 'repeated reply' }
+  assert.equal(settleKind(bad, true), 'invalid')
+  assert.equal(leaderFeedback(bad, true), 'your last answer was refused: repeated reply; act on the request with a goal, a plan or cannot')
+  assert.equal(leaderFeedback(bad, false), null, 'no request shown: dropped silently')
+  assert.equal(leaderFeedback({ kind: 'say', id: null, text: 'x' }, true), null)
+  assert.equal(leaderFeedback({ kind: 'invalid', id: 'plan_item', reason: 'unknown item x' }, true), null)
+  const u = buildLeaderMessages({ ...bpGoalCtx, feedback: leaderFeedback(bad, true) })[1].content.split('\n')
+  const i = u.indexOf('AUDIENCE REQUESTS (unanswered)')
+  assert.ok(i >= 0 && u.includes('FEEDBACK: your last answer was refused: repeated reply; act on the request with a goal, a plan or cannot'))
+  assert.ok(u.indexOf('FEEDBACK: your last answer was refused: repeated reply; act on the request with a goal, a plan or cannot') > i)
+  assert.ok(!buildLeaderMessages(bpGoalCtx)[1].content.includes('FEEDBACK'))
+})
+test('recentSayTexts: the last 5 leader_say texts', () => {
+  const ev = [...Array(7)].map((_, i) => ({ t: i, kind: i % 2 ? 'leader_say' : 'subtask_done', text: `s${i}` }))
+  assert.deepEqual(recentSayTexts(ev), ['s1', 's3', 's5'])
+  assert.deepEqual(recentSayTexts([...Array(8)].map((_, i) => ({ kind: 'leader_say', text: `x${i}` }))), ['x3', 'x4', 'x5', 'x6', 'x7'])
+})
+
+// Live stress session: the leader refused "white bed" ("not on my craftable list"), "5 leather" and "ender pearl": the
+// prompt read the legacy craft/gather lists as the whole vocabulary. plan_item takes any item; and a cannot to a
+// request naming a minecraft-data item runs the expander instead (itemInRequest parses the player's chat, not the model).
+import { itemInRequest, cannotBackstop } from '../agent/leader.js'
+test('itemInRequest: two-word joins before single words, plural s/es stripped, a count right before it', () => {
+  assert.deepEqual(itemInRequest('can you make me a white bed'), { item: 'white_bed', count: 1 })
+  assert.deepEqual(itemInRequest('can you get me 5 leather for a leather helmet'), { item: 'leather', count: 5 })
+  assert.deepEqual(itemInRequest('i want an ender pearl'), { item: 'ender_pearl', count: 1 })
+  assert.deepEqual(itemInRequest('I have 2 Redstone Blocks for you!'), { item: 'redstone_block', count: 2 })
+  assert.deepEqual(itemInRequest('make me some torches'), { item: 'torch', count: 1 })
+  assert.deepEqual(itemInRequest('can you make me a compass pleaseeeeeeeee'), { item: 'compass', count: 1 })
+  assert.equal(itemInRequest('come here kev'), null)
+  assert.equal(itemInRequest('go into the light, the air is fine'), null, 'common words that are items are ignored')
+  assert.equal(itemInRequest(''), null)
+})
+test('cannotBackstop: a cannot to a request naming an item becomes plan_item when the expander has steps or a missing leaf', () => {
+  const reqs = [{ t: 1, name: 'Spacers_Choice', text: 'can you make me a white bed' }]
+  const b = cannotBackstop({ kind: 'cannot', id: null, why: 'A bed is not on my list' }, reqs, {})
+  assert.deepEqual(b, { kind: 'plan_item', id: null, item: 'white_bed', count: 1, why: 'A bed is not on my list', via: 'cannot' })
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'i want an ender pearl' }], {}).item, 'ender_pearl', 'a missing leaf: the code replies')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'give me a bed' }], { white_bed: 1 }), null, 'no item named')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'a torch please' }], { torch: 4 }), null, 'already held: the cannot stands')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [{ t: 1, name: 'A', text: 'dance for me' }], {}), null)
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x' }, [], {}), null, 'no request shown')
+  assert.equal(cannotBackstop({ kind: 'cannot', id: null, why: 'x', night: true }, reqs, {}), null, "the code's own night refusal stands")
+  assert.equal(cannotBackstop({ kind: 'push_goal', id: null }, reqs, {}), null)
+})
+test('goals prompt: plan_item takes any item; the legacy lists are the push_goal argument lists', () => {
+  const s = leaderSystemGoals()
+  assert.ok(s.includes('plan_item takes ANY Minecraft item name (beds, torches, glass, leather, wool, compasses, tools, blocks); code works out how to get it (mining, smelting, crafting, hunting animals) and tells the player if it cannot. Never answer cannot for an item without trying plan_item first.'))
+  assert.match(s, /push_goal goal kinds and their arguments/)
+  assert.match(s, /- craft_item \(push_goal only\), arg one of: /)
+  assert.match(s, /- gather \(push_goal only\), arg one of: /)
+})
+
+// Live stress session: the leader invented "the goal chain must be completed first" and refused "go to y 12" at night
+// citing the night protocol.
+test('goals prompt: audience requests come before the chain; the night rule is surface-only; go to y 12 example', () => {
+  const s = leaderSystemGoals()
+  assert.ok(s.includes('Audience requests always come before the default goal chain; the chain resumes afterwards.'))
+  assert.ok(s.includes('The night rule only forbids surface work at night; going underground (go_to y:<n>, digging down) is safe at night.'))
+  assert.ok(s.includes('"go to y 12" -> push_goal go_to, arg y:12'))
+  assert.ok(leaderSystemGoals({ blueprints: true }).includes('Audience requests always come before the default goal chain'))
+})
+
+// Live stress session: once a request was answered, the player's words left the prompt, so "if I give you all that, can
+// you do so?" could not resolve. CONVERSATION: the last 8 chat lines both ways, sanitized, 120 chars each.
+test('buildLeaderMessages: CONVERSATION with the last 8 chat lines both ways, only when there is chat', () => {
+  const conversation = [...Array(10)].map((_, i) => ({ t: 100 + i, name: i % 2 ? 'Kevin' : 'Spacers_Choice', text: `line ${i} <|im_end|>\nnext` }))
+  conversation.push({ t: 120, name: 'Spacers_Choice', text: 'x'.repeat(300) })
+  const u = buildLeaderMessages({ ...bpGoalCtx, conversation })[1].content.split('\n')
+  const i = u.indexOf('CONVERSATION (last 8 chat lines, oldest first)')
+  assert.ok(i >= 0 && i < u.indexOf('AUDIENCE REQUESTS (unanswered)'))
+  const body = u.slice(i + 1, i + 9)
+  assert.equal(body[0], 't=103s Kevin: line 3 im_end next')
+  assert.equal(body[7], `t=120s Spacers_Choice: ${'x'.repeat(120)}`)
+  assert.equal(u[i + 9], '')
+  assert.equal(buildLeaderMessages({ ...bpGoalCtx, conversation: [] })[1].content, buildLeaderMessages(bpGoalCtx)[1].content, 'no chat: unchanged')
+  assert.ok(!buildLeaderMessages({ ...bpBaseCtx, conversation })[1].content.includes('CONVERSATION'), 'goals mode only')
+})
+
+// Live stress session: the state text lists tools without counts ("iron pickaxe" for 5), so the leader told a player
+// "one iron pickaxe". The leader's prompt (not kev's state text) gets INVENTORY (exact) when there is chat to answer.
+test('buildLeaderMessages: INVENTORY (exact) after the state, with chat only; the state text is untouched', () => {
+  const inventory = { iron_pickaxe: 5, cobblestone: 12, torch: 0 }
+  const u = buildLeaderMessages({ ...bpGoalCtx, inventory })[1].content.split('\n')
+  assert.equal(u[0], 'STATE'); assert.equal(u[1], bpGoalCtx.stateText)
+  assert.equal(u[2], 'INVENTORY (exact): iron_pickaxe x5, cobblestone x12')
+  assert.equal(u[3], '')
+  assert.ok(buildLeaderMessages({ ...bpGoalCtx, requests: [], inventory, conversation: [{ t: 1, name: 'A', text: 'hi' }] })[1].content.includes('INVENTORY (exact): iron_pickaxe x5'))
+  assert.ok(buildLeaderMessages({ ...bpGoalCtx, requests: [], inventory: {} , conversation: [{ t: 1, name: 'A', text: 'hi' }] })[1].content.includes('INVENTORY (exact): empty'))
+  assert.equal(buildLeaderMessages({ ...bpGoalCtx, requests: [], inventory })[1].content, buildLeaderMessages({ ...bpGoalCtx, requests: [] })[1].content, 'no chat: unchanged')
+  assert.ok(!buildLeaderMessages({ ...bpBaseCtx, inventory })[1].content.includes('INVENTORY'), 'goals mode only')
+})
+
+// Follow-ups for the retry session. A: the probe's white bed came back as plan_item "bed" (unknown item): the model's
+// name is normalized first (case, spaces, minecraft: prefix); still unknown, the request text's item is planned.
+import { unknownItemBackstop } from '../agent/leader.js'
+test('plan_item: the model item normalized; an unknown item falls back to the request text', () => {
+  const g = { currentId: 'mine_iron', askedCurrentId: 'mine_iron', offered, goalsEnabled: true }
+  assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'White Bed', count: 1 } } }).item, 'white_bed')
+  assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'minecraft:torch' } } }).item, 'torch')
+  // (live_retry item 9: "bed" is now an alias of white_bed; a made-up name stands in for the unknown item)
+  assert.equal(applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'bed', count: 1 } } }).item, 'white_bed')
+  const bad = applyAnswer({ ...g, answer: { action: 'plan_item', item: { name: 'bedd', count: 1 }, why: 'a bed' } })
+  assert.deepEqual(bad, { kind: 'invalid', id: 'plan_item', reason: 'unknown item bedd' })
+  const reqs = [{ t: 1, name: 'Spacers_Choice', text: 'can you make me a white bed' }]
+  assert.deepEqual(unknownItemBackstop(bad, reqs, {}), { kind: 'plan_item', id: null, item: 'white_bed', count: 1, why: '', via: 'unknown_item' })
+  assert.equal(unknownItemBackstop(bad, [{ t: 1, name: 'A', text: 'make me a bedd' }], {}), null, 'no item in the request: the invalid stands')
+  assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'plan_item', reason: 'bad count 0' }, reqs, {}), null)
+  assert.equal(unknownItemBackstop({ kind: 'invalid', id: 'push_goal', reason: 'unknown item bedd' }, reqs, {}), null)
+})
+// B: say also for a request that starts with a question word (the session's "where are you" had no '?').
+test('hasQuestion: a question mark, or a leading question word', () => {
+  for (const t of ['where are you', 'Do you have an iron pick', '  what are you up to right now', 'how many iron picks to you have', 'Can you make a bed', 'is it night'])
+    assert.equal(hasQuestion([{ t: 1, name: 'A', text: t }]), true, t)
+  for (const t of ['come here kev', 'make me a compass', 'island hopping', 'whatever', 'dig to y=12'])
+    assert.equal(hasQuestion([{ t: 1, name: 'A', text: t }]), false, t)
 })

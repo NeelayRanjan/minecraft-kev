@@ -11,6 +11,7 @@ export const HOSTILE_RANGE = 16
 export const TABLE_NEAR = 16      // a remembered table/furnace within this many metres counts as usable (the motor walks to it)
 export const REPEAT_LIMIT = 3     // lesson 7: an option that failed the same way this many times in a row is withheld
 export const REPEAT_WINDOW = 6    // ... or this many times among the last REPEAT_WINDOW attempts (a leader alternated coal with other tries 51 times)
+// (okLoop below: an ok result repeated without progress is a livelock too)
 export const CHAIN_CRAFTABLE = ['iron_sword', 'iron_axe', 'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots',
   'bucket', 'flint_and_steel', 'diamond_pickaxe', 'diamond_sword', 'diamond_axe']
 export const TABLE_ITEMS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'furnace', 'iron_pickaxe', ...CHAIN_CRAFTABLE])
@@ -24,6 +25,14 @@ export const isNight = obs => obs.phase === 'dusk' || obs.phase === 'night'
 export const nightOnSurface = obs => obs.goal === 'nether' && isNight(obs) && !obs.underground
 export const shelterSoon = obs => obs.goal === 'nether' && obs.phase === 'afternoon' && !obs.underground
   && obs.secondsToDusk != null && obs.secondsToDusk <= SHELTER_EARLY_S
+// Sheltered at low health (chain mode only; live stress session: sealed in at night with 1/20 health, kev picked
+// return_to_base and died): at dusk/night, enclosed (underground, or the last subtask sealed the bot in) and at health
+// <= SHELTER_HEALTH, only the ways to stay put are offered.
+export const SHELTER_HEALTH = 6
+const SHELTERED_KEEP = new Set(['eat', 'wait', 'fight', 'flee', 'pillar_up', 'build_shelter'])
+export const shelteredLow = obs => obs.goal === 'nether' && isNight(obs) && (obs.health ?? 20) <= SHELTER_HEALTH
+  && (!!obs.underground || (obs.last?.id === 'build_shelter' && obs.last?.result === 'ok'))
+export const SHELTER_DEPTH = 3   // build_shelter digs this many cells down and seals one below the ground (motor.js)
 export const LOW_AIR = 10   // of 20: policy.DROWNING_OXYGEN
 const LOW_AIR_OPTIONS = new Set(['wait', 'fight', 'flee', 'pillar_up'])   // the escapes in policy.js; eating while drowning would be interrupted at once
 export const NIGHT_REFUGES = ['build_shelter', 'explore_toward(down)', 'return_to_base']   // withhold only when one is offered
@@ -86,8 +95,34 @@ export function stuckOn(obs) {
     n.set(k, (n.get(k) || 0) + 1)
     if (n.get(k) >= REPEAT_LIMIT) out.add(a.id)
   }
+  for (const id of okLoop(l.recent)) out.add(id)
   out.delete('wait')
   return out
+}
+
+// A livelock of successes (live retry session: explore_toward(cave) -> ok (at the cave) 7 times in 7 s): the last
+// OK_LOOP_N attempts of an id among `recent` all ok with the same detail, the first and last within OK_LOOP_S seconds,
+// and no progress between them: the same inventory, within OK_LOOP_M metres, the same goal step (progressMark, recorded
+// by the runner on each attempt; entries without a mark never count). The ids to withhold. wait never is.
+export const OK_LOOP_N = 5, OK_LOOP_S = 10, OK_LOOP_M = 2
+export function okLoop(recent = []) {
+  const out = new Set()
+  for (const id of new Set((recent || []).map(a => a?.id))) {
+    if (id === 'wait') continue
+    const mine = recent.filter(a => a?.id === id).slice(-OK_LOOP_N)
+    if (mine.length < OK_LOOP_N || !mine.every(a => a.result === 'ok' && typeof a.t === 'number' && a.detail === mine[0].detail)) continue
+    const a = mine[0], b = mine[mine.length - 1]
+    if (b.t - a.t > OK_LOOP_S || a.inv !== b.inv || a.step !== b.step) continue
+    if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > OK_LOOP_M) continue
+    out.add(id)
+  }
+  return out
+}
+// The progress mark of an attempt (the runner adds it to each entry of `recent`): time, position, the inventory as a
+// sorted key (zero counts dropped), the goal step index.
+export function progressMark(obs) {
+  const inv = Object.entries(obs?.inventory || {}).filter(([, n]) => n > 0).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, n]) => `${k}:${n}`).join(',')
+  return { t: obs?.t ?? null, x: obs?.pos?.x ?? 0, y: obs?.pos?.y ?? 0, z: obs?.pos?.z ?? 0, inv, step: obs?.goalStep?.index ?? null }
 }
 const seen = (obs, pred, maxDist) => (obs.blocks || []).some(b => pred(b.name) && b.dist <= maxDist)
 export const isLog = n => n.endsWith('_log')
@@ -244,5 +279,6 @@ export function options(obs) {
   // standing idle all night.
   if (nightOnSurface(obs) && out.some(o => NIGHT_REFUGES.includes(o.id) && !stuck.has(o.id)))
     for (const id of NIGHT_SURFACE_WITHHELD) stuck.add(id)
+  if (shelteredLow(obs)) for (const o of out) if (!SHELTERED_KEEP.has(o.name)) stuck.add(o.id)
   return out.filter(o => !stuck.has(o.id))
 }

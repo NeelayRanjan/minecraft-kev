@@ -396,3 +396,67 @@ test('digCell: never the block the bot stands on; it steps to a dig reach spot f
   assert.deepEqual(await motor.digCell({ x: 1, y: 63, z: 0 }), { ok: true })
   assert.deepEqual(motor.reached, []); assert.ok(!solid.has('1,63,0'))
 })
+
+// Live stress session: at 1 hp the bot fled into lava ("kev_80 tried to swim in lava"). Lava counts as wet for the flee
+// heading, the surface walk and the descent (wetNear), and the dry walk (dryMovements) never steps next to lava.
+import { lavaAdjacent, LAVA_STEP_COST } from '../agent/motor.js'
+test('wetNear: lava (source or flowing) counts like water', () => {
+  const bot = { ...fakeBot(), entities: {} }
+  const motor = new Motor(bot, mcDataFor('1.20.4'), new EpisodeMemory())
+  const c = new V3(10, 64, 10)
+  bot.blockAt = p => (p.x === 11 && p.y === 64 && p.z === 10 ? { name: 'lava', boundingBox: 'empty' } : { name: 'air', boundingBox: 'empty' })
+  assert.equal(motor.wetNear(c), true)
+  bot.blockAt = () => ({ name: 'air', boundingBox: 'empty' })
+  assert.equal(motor.wetNear(c), false)
+})
+test('lavaAdjacent / dryMovements: a cell next to (or over) lava costs LAVA_STEP_COST; lava stays in blocksToAvoid', () => {
+  const lavaAt = new Set(['5,63,5'])
+  const at = p => ({ name: lavaAt.has(`${p.x},${p.y},${p.z}`) ? 'lava' : 'air' })
+  assert.equal(lavaAdjacent(at, new V3(6, 63, 5)), true, 'beside it')
+  assert.equal(lavaAdjacent(at, new V3(5, 64, 5)), true, 'standing over it')
+  assert.equal(lavaAdjacent(at, new V3(5, 63, 5)), true, 'in it')
+  assert.equal(lavaAdjacent(at, new V3(8, 63, 5)), false, 'three cells away')
+  const bot = { ...fakeBot(), entities: {} }
+  bot.blockAt = at
+  const md = mcDataFor('1.20.4')
+  const motor = new Motor(bot, md, new EpisodeMemory())
+  assert.ok(motor.dryMovements.blocksToAvoid.has(md.blocksByName.lava.id))
+  assert.equal(motor.dryMovements.exclusionStep({ position: new V3(6, 63, 5) }), LAVA_STEP_COST)
+  assert.equal(motor.dryMovements.exclusionStep({ position: new V3(9, 63, 5) }), 0)
+  assert.ok(LAVA_STEP_COST > 100, 'more than the pathfinder\'s give-up cost')
+  assert.equal(motor.movements.exclusionStep({ position: new V3(6, 63, 5) }), 0, 'the ordinary movements are unchanged')
+})
+
+// Live retry session (2026-09-27): build_shelter dug straight down into lava at 1 hp. The dig-down uses the staircase
+// digger's liquid checks: lava or water in a cell it digs, beside one, or under the floor it ends on means not here.
+import { shelterColumnLiquid, shelterPlan } from '../agent/motor.js'
+test('shelterColumnLiquid / shelterPlan: the dig-down never opens into lava or water; an adjacent dry column, else pillar up', () => {
+  const world = (liquids = {}, holes = new Set()) => p => {
+    const k = `${p.x},${p.y},${p.z}`
+    if (liquids[k]) return { name: liquids[k], boundingBox: 'empty' }
+    if (p.y >= 64 || holes.has(k)) return { name: 'air', boundingBox: 'empty' }
+    return { name: 'stone', boundingBox: 'block' }
+  }
+  const feet = new V3(0, 64, 0)
+  assert.equal(shelterColumnLiquid(world(), feet), null, 'solid stone all the way down')
+  assert.equal(shelterColumnLiquid(world({ '0,61,0': 'lava' }), feet), 'lava', 'lava 2 blocks under the flat spot')
+  assert.equal(shelterColumnLiquid(world({ '0,60,0': 'water' }), feet), 'water', 'water under the floor the bot ends on')
+  assert.equal(shelterColumnLiquid(world({ '1,62,0': 'lava' }), feet), 'lava', 'lava beside the second dug cell')
+  assert.equal(shelterColumnLiquid(world({ '0,63,-1': 'water' }), feet), 'water', 'water beside the first dug cell')
+  assert.equal(shelterColumnLiquid(world({ '0,63,0': 'lava' }), feet), 'lava', 'lava in the cell below')
+  assert.equal(shelterColumnLiquid(world({ '3,62,0': 'lava' }), feet), null, 'three cells away is fine')
+  assert.deepEqual(shelterPlan(world(), feet), { action: 'dig', at: feet })
+  // lava under this spot's floor only: the east neighbour (x+1) is dry, stand there instead
+  const one = shelterPlan(world({ '0,60,0': 'lava' }), feet)
+  assert.equal(one.action, 'move')
+  assert.ok(shelterColumnLiquid(world({ '0,60,0': 'lava' }), one.to) === null, 'the chosen neighbour is dry')
+  assert.equal(Math.abs(one.to.x) + Math.abs(one.to.z), 1)
+  // a lava lake 2 below everything: nothing is safe, pillar up instead
+  const lake = {}
+  for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) lake[`${x},62,${z}`] = 'lava'
+  assert.deepEqual(shelterPlan(world(lake), feet), { action: 'pillar' })
+  // a neighbour whose feet cell is solid (a wall) cannot be stood in
+  const walled = world({ '0,60,0': 'lava', '-1,60,0': 'lava', '0,60,1': 'lava', '0,60,-1': 'lava' })
+  const w = p => (p.x === 1 && p.y === 64 && p.z === 0 ? { name: 'stone', boundingBox: 'block' } : walled(p))
+  assert.deepEqual(shelterPlan(w, feet), { action: 'pillar' })
+})

@@ -843,3 +843,154 @@ test('dig(bp5) / build(bp4) pickaxe top-up: the legacy pickaxe options, the teac
     })
   })
 })
+
+// Live stress session (item 3): sheltered at night at low health, a pushed goal's plugin options (go_to_player,
+// mine(<block>)) would take the bot out as surely as return_to_base.
+test('sheltered at night at health <= 6: no plugin options under a pushed goal', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  s.push({ kind: 'go_to', arg: 'player:Steve', source: 'leader', t: 0 })
+  const o = chain({ phase: 'night', health: 3, underground: true, skyLight: 0, inventory: { iron_pickaxe: 1, cobblestone: 4 } })
+  withProvider(['go_to_player(Steve)'], () => {
+    assert.ok(!s.filter(o, options(o)).map(x => x.id).includes('go_to_player(Steve)'))
+    assert.ok(s.filter({ ...o, health: 12 }, options({ ...o, health: 12 })).map(x => x.id).includes('go_to_player(Steve)'))
+  })
+})
+
+// Live retry session (2026-09-27): a step's target was the inventory at push time plus the need computed when the plan
+// was made, so "smelt 2 iron" with 3 held asked for 5 and the white bed plan redid work. refreshPlanStep recomputes a
+// step's need with the expander against the inventory now (the plan's item and count); a step no longer needed skips.
+import { refreshPlanStep } from '../agent/goals.js'
+test('refreshPlanStep: a plan step\'s need is recomputed from the inventory when it is pushed', () => {
+  const plan = { id: 3, item: 'shears', count: 1, steps: [] }
+  const smelt = { kind: 'gather', arg: 'iron_ingot', count: 2 }
+  const table = { kind: 'craft_item', arg: 'crafting_table', count: 1 }
+  // 3 ingots held: shears need 2, nothing to smelt
+  assert.deepEqual(refreshPlanStep(smelt, plan, baseObs({ inventory: { iron_ingot: 3, crafting_table: 1 } })), { ...smelt, count: 0, skip: true })
+  // 1 held with a stone pickaxe: 1 more
+  assert.deepEqual(refreshPlanStep(smelt, plan, baseObs({ inventory: { iron_ingot: 1, stone_pickaxe: 1, crafting_table: 1 } })), { ...smelt, count: 1 })
+  // a crafting table held: the table step is skipped
+  assert.equal(refreshPlanStep(table, plan, baseObs({ inventory: { iron_ingot: 1, crafting_table: 1, stone_pickaxe: 1 } })).skip, true)
+  // plans without an item (plan_steps) and uncounted kinds are unchanged
+  assert.deepEqual(refreshPlanStep(smelt, { id: 1, title: 'x', steps: [] }, baseObs({ inventory: { iron_ingot: 3 } })), smelt)
+  const go = { kind: 'go_to', arg: 'base', count: null }
+  assert.deepEqual(refreshPlanStep(go, plan, baseObs({ inventory: {} })), go)
+  // a push routed as n MORE (plan.more): the held ones of the plan's own item do not count
+  const more = { id: 4, item: 'iron_ingot', count: 2, more: true, base: 3, steps: [] }
+  const kit = { raw_iron: 2, stone_pickaxe: 1, furnace: 1, coal: 2 }
+  assert.deepEqual(refreshPlanStep(smelt, more, baseObs({ inventory: { iron_ingot: 3, ...kit } })), { ...smelt, count: 2 })
+  assert.deepEqual(refreshPlanStep(smelt, more, baseObs({ inventory: { iron_ingot: 4, ...kit } })), { ...smelt, count: 1 }, 'one gained since')
+})
+
+// Live retry session: go_to(player) popped as stuck after 120 s on a 200 m walk (the step buckets are 16-64 m wide).
+// A distance to the player that shrank by 4 m or more since the last progress mark counts as progress.
+test('go_to(player): a distance decrease of 4 m since the last progress mark resets the stuck clock', () => {
+  const s = new GoalStack({ goal: 'nether' })
+  const at = d => baseObs({ goal: 'nether', players: { Steve: { dist: d, dir: 'north', reported: true } } })
+  s.push({ kind: 'go_to', arg: 'player:Steve', source: 'audience:Steve', t: 0, obs: at(200) })
+  let d = 200, t = 0
+  for (; t <= 400; t += 10) { d -= 3.5; assert.deepEqual(s.update(at(d), t), [], `t ${t}, ${d} m`) }   // 0.35 m/s: slow but closing
+  assert.equal(s.depth(), 1, 'still on the stack after 400 s of closing in')
+  // no progress (standing still at the same distance) pops it after 120 s
+  const e = []
+  for (let u = t; u <= t + 130; u += 10) e.push(...s.update(at(d), u))
+  assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_failed')
+})
+
+// Live retry session: "come here" ended at 3 m and the bot walked off before the player could hand anything over. On
+// arrival the goal lingers LINGER_S (20 s) with the bot near the player, offering linger(<name>) (stay close, pick up
+// item drops within 6 m); then done. The player moving well away (over 8 m) restarts the approach.
+import { LINGER_S } from '../agent/goals.js'
+test('go_to(player): arrival lingers 20 s offering linger(<name>), then done; the player leaving restarts the approach', () => {
+  assert.equal(LINGER_S, 20)
+  const s = new GoalStack({ goal: 'nether' })
+  const at = (d, t) => chain({ t, players: { Steve: { dist: d, dir: 'north' } } })
+  s.push({ kind: 'go_to', arg: 'player:Steve', source: 'audience:Steve', t: 0, obs: at(30, 0) })
+  withProvider(['go_to_player(Steve)', 'linger(Steve)'], () => {
+    assert.deepEqual(s.update(at(30, 0), 0), [])
+    assert.ok(s.filter(at(30, 0), options(at(30, 0))).some(o => o.id === 'go_to_player(Steve)'))
+    assert.deepEqual(s.update(at(2.5, 10), 10), [], 'arrived: lingering, not done')
+    const o = at(2.5, 11)
+    const kept = s.filter(o, options(o)).map(x => x.id)
+    assert.ok(kept.includes('linger(Steve)') && !kept.includes('go_to_player(Steve)'), kept.join(' '))
+    assert.equal(s.teacher(o), 'linger(Steve)')
+    assert.match(s.step(o).text, /with Steve/)
+    assert.deepEqual(s.update(at(3.5, 20), 20), [], 'within 4 m still lingering')
+    assert.deepEqual(s.update(at(12, 25), 25), [], 'the player walked off: approach again')
+    assert.ok(s.filter(at(12, 26), options(at(12, 26))).some(o => o.id === 'go_to_player(Steve)'))
+    assert.deepEqual(s.update(at(2, 30), 30), [])
+    assert.deepEqual(s.update(at(2, 45), 45), [])
+    const e = s.update(at(2, 50), 50)
+    assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_done')
+  })
+})
+
+// Item 19 (the user, 2026-09-27): "wait over here". stay(player:<name>) holds the spot where that player was when the
+// bot reached them; stay(here) the bot's own spot. Never done, never stuck, not paused by the night rule; only the
+// holding option stay(<name|here>), eat, wait and the threat responses are offered. The leader pops it on release.
+test('stay: validate, never done or stuck, filter keeps only the hold, eat, wait and threat responses, teacher', () => {
+  assert.deepEqual(validateGoal({ kind: 'stay', arg: 'player:Steve' }), { ok: true })
+  assert.deepEqual(validateGoal({ kind: 'stay', arg: 'here' }), { ok: true })
+  assert.equal(validateGoal({ kind: 'stay', arg: 'base' }).ok, false)
+  assert.equal(validateGoal({ kind: 'stay', arg: null }).ok, false)
+  const K = GOAL_KINDS.stay
+  assert.equal(K.done(chain({ players: { Steve: { dist: 1 } } }), 'player:Steve'), false)
+  assert.equal(K.stuckS, Infinity)
+  const s = new GoalStack({ goal: 'nether' })
+  const o = chain({ inventory: { iron_pickaxe: 1, cobblestone: 20, bread: 2 }, food: 10, blocks: [...stone, ...logs], phase: 'night', underground: false,
+    base: { crafting_table: { dist: 30 }, furnace: null }, players: { Steve: { dist: 2 } }, nearestHostile: { name: 'zombie', dist: 6, dir: 'north' } })
+  s.push({ kind: 'stay', arg: 'player:Steve', source: 'audience:Steve', t: 0, obs: o })
+  withProvider(['stay(Steve)', 'stay(here)', 'go_to_player(Steve)', 'hunt(sheep)'], () => {
+    const kept = s.filter(o, options(o)).map(x => x.id).sort()
+    assert.deepEqual(kept, ['eat', 'fight(threat)', 'flee(threat)', 'pillar_up', 'stay(Steve)', 'wait'].sort())
+    assert.equal(s.teacher(o), 'fight(threat)', 'threats first')
+    const calm = { ...o, nearestHostile: null, food: 18 }
+    assert.equal(s.teacher(calm), 'stay(Steve)')
+    assert.deepEqual(s.filter(calm, options(calm)).map(x => x.id).sort(), ['stay(Steve)', 'wait'])
+  })
+  assert.match(s.step(o).text, /^Staying with Steve until you say I can go/)
+  for (let t = 0; t <= 3600; t += 300) assert.deepEqual(s.update(o, t), [], `never done or stuck (t ${t})`)
+  const h = new GoalStack({ goal: 'nether' })
+  h.push({ kind: 'stay', arg: 'here', source: 'leader', t: 0, obs: o })
+  assert.match(h.step(o).text, /^Staying here until you say I can go/)
+  withProvider(['stay(Steve)', 'stay(here)'], () => assert.equal(h.teacher({ ...o, nearestHostile: null, food: 18 }), 'stay(here)'))
+})
+
+// Live retry session: the unpack step "craft redstone" (from a held redstone block) failed validation ("cannot craft
+// redstone"): redstone is mined, so producerOf calls it a gather. Any item with a crafting recipe may be a craft_item
+// goal; every step the expander emits for a held storage block validates.
+import { expandItem as expandItem2 } from '../agent/recipes.js'
+test('validateGoal: unpacking crafts from storage blocks validate; every expander step for a held block is accepted', () => {
+  assert.deepEqual(validateGoal({ kind: 'craft_item', arg: 'redstone', count: 9 }), { ok: true })
+  assert.deepEqual(validateGoal({ kind: 'craft_item', arg: 'iron_ingot', count: 9 }), { ok: true })
+  assert.equal(validateGoal({ kind: 'craft_item', arg: 'dirt', count: 1 }).ok, false, 'no recipe makes dirt')
+  for (const [block, item] of [['redstone_block', 'redstone'], ['iron_block', 'iron_ingot'], ['coal_block', 'coal'], ['gold_block', 'gold_ingot'],
+    ['diamond_block', 'diamond'], ['lapis_block', 'lapis_lazuli'], ['emerald_block', 'emerald'], ['copper_block', 'copper_ingot']]) {
+    const inv = { [block]: 2, crafting_table: 1 }
+    const ex = expandItem2(item, 9, inv)
+    assert.equal(ex.missing.length, 0, `${item}: ${ex.missing}`)
+    assert.ok(ex.steps.some(s => s.kind === 'craft_item' && s.arg === item), `${item}: unpacked (${JSON.stringify(ex.steps)})`)
+    assert.equal(checkPlanGates(ex.steps, chain({ inventory: inv })), null, `${item}: every step validates`)
+  }
+  const compass = expandItem2('compass', 1, { redstone_block: 2, iron_ingot: 4, crafting_table: 1 })
+  assert.equal(checkPlanGates(compass.steps, chain({ inventory: { redstone_block: 2, iron_ingot: 4, crafting_table: 1 } })), null)
+})
+
+// Item 16: "Im so scared, there is a skeleton next to me" got a refusal. protect(player:<name>) follows the player and
+// fights hostiles within 8 m of them for PROTECT_S (120 s); only the protect option, eat, wait and the threat responses.
+import { PROTECT_S } from '../agent/goals.js'
+test('protect: validate, done after 120 s, filter keeps the protect option and the threat responses, teacher', () => {
+  assert.equal(PROTECT_S, 120)
+  assert.deepEqual(validateGoal({ kind: 'protect', arg: 'player:Steve' }), { ok: true })
+  assert.equal(validateGoal({ kind: 'protect', arg: 'here' }).ok, false)
+  const s = new GoalStack({ goal: 'nether' })
+  const o = t => chain({ t, inventory: { iron_sword: 1, cobblestone: 5 }, blocks: [...stone, ...logs], players: { Steve: { dist: 3 } } })
+  s.push({ kind: 'protect', arg: 'player:Steve', source: 'audience:Steve', t: 10, obs: o(10) })
+  withProvider(['protect(Steve)', 'go_to_player(Steve)', 'stay(Steve)'], () => {
+    assert.deepEqual(s.filter(o(11), options(o(11))).map(x => x.id).sort(), ['protect(Steve)', 'wait'])
+    assert.equal(s.teacher(o(11)), 'protect(Steve)')
+  })
+  assert.match(s.step(o(40)).text, /^protect Steve \(90 s left\)/)
+  assert.deepEqual(s.update(o(100), 100), [])
+  const e = s.update(o(131), 131)
+  assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_done')
+})

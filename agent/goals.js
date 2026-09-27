@@ -8,9 +8,9 @@
 import { stageOf, chainStep, describeChain, INGOTS, DIAMONDS, STICKS } from './stages.js'
 import { techStep, teacherSubtask, teacherThreat } from './teacher.js'
 import { counts, options, optionId, canCraft, hasFuel, tableNear, furnaceNear, nightOnSurface, shelterSoon, TABLE_ITEMS,
-  NIGHT_REFUGES, LOW_AIR, stuckOn, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
+  NIGHT_REFUGES, LOW_AIR, stuckOn, shelteredLow, isLog, isStone, isCoal, isIron, isDiamond, isGravel, isObsidian, isWater, isLava } from './subtasks.js'
 // A cycle (recipes.js imports this module's tables): recipes' exports are read only inside functions here.
-import { MINE, SMELT, HUNT, producerOf, isItem, expandItem, tierHeld } from './recipes.js'
+import { MINE, SMELT, HUNT, producerOf, isItem, expandItem, expandMaterials, hasCraftRecipe, tierHeld } from './recipes.js'
 
 // Ingredient tables for every item the option layer can craft (CRAFTABLE + CHAIN_CRAFTABLE); keys are the option
 // args (planks, sticks), values the ingredients per craft. YIELD: items one craft makes (planks 4 per log, sticks 4).
@@ -52,6 +52,21 @@ const FIND_MATCH = {
 export const FIND_RANGE = 16
 export const NEAR_BASE = 6
 export const DIAMOND_LEVEL_Y = -50
+// go_to(player) lingers on arrival (live retry session: the bot left before a hand-off): LINGER_S seconds offering
+// linger(<name>) (stay close, pick up drops), then done; the player moving past LEFT_M restarts the approach.
+export const LINGER_S = 20, ARRIVE_M = 3, LEFT_M = 8
+// The linger state lives on the stack entry g (arrivedT). Without an entry (a pure caller) it is plain arrival.
+function arrivedFor(obs, who, g) {
+  const d = obs.players?.[who]?.dist
+  if (!g) return d != null && d <= ARRIVE_M
+  const t = obs.t ?? 0
+  if (g.arrivedT == null) { if (d != null && d <= ARRIVE_M) g.arrivedT = t; return false }
+  if (d == null || d > LEFT_M) { g.arrivedT = null; return false }
+  return t - g.arrivedT >= LINGER_S
+}
+const lingering = g => g?.arrivedT != null
+export const PROTECT_S = 120   // protect(player:<name>) lasts this long
+export const CLOSING_M = 4   // go_to(player): a distance decrease this large is progress for the stuck clock
 
 const humanize = s => s.replace(/_/g, ' ')
 const THREAT = new Set(['fight(threat)', 'flee(threat)', 'pillar_up'])
@@ -76,6 +91,7 @@ function keepWithPlugins(obs, goal, opts, keep, relevant) {
   const own = new Set(opts.map(o => o.id))
   if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
   const kept = keepOnly(opts, new Set([...keep, ...opts.map(o => o.id).filter(relevant), ...(nightOnSurface(obs) ? NIGHT_REFUGES : [])]))
+  if (shelteredLow(obs)) return kept   // sheltered at night at low health: no plugin work leaves the shelter (subtasks.js)
   const night = nightSurface(obs)
   // the livelock breaker and the supervisor's withhold apply to plugin options as options() applies them to its own
   // (plans_smoke: go_to_player(Steve) -> player_gone 13 times in 13 s under a go_to(player:Steve) goal)
@@ -88,6 +104,18 @@ function surfaceWork(id) {
   if (id.startsWith('hunt(')) return true
   const m = /^mine\((\w+)\)$/.exec(id)
   return !!m && Object.values(MINE).some(e => e?.where === 'surface' && e.blocks.includes(m[1]))
+}
+// stay: the option arg is the player's name or 'here'
+const stayKey = arg => playerOf(arg) ?? 'here'
+// stay and protect: the threat responses, eat and wait, plus the kind's own plugin option (stay(<name|here>),
+// protect(<name>)); no night refuges (staying with the player is the point), under low air only the way out.
+const HOLD_KEEP = new Set([...THREAT, 'eat', 'wait'])
+function holdFilter(obs, kind, arg, opts, count, g) {
+  if ((obs.oxygen ?? 20) <= LOW_AIR) return keepOnly(opts, new Set(['explore_toward(surface)']))
+  const stuck = stuckOn(obs)
+  for (const id of obs.withhold || []) if (id !== 'wait') stuck.add(id)
+  const own = kind === 'stay' ? `stay(${stayKey(arg)})` : `${kind}(${playerOf(arg)})`
+  return [...opts.filter(o => HOLD_KEEP.has(o.id)), ...pluginOptions(obs, goalOf(kind, arg, count, g)).filter(o => o.id === own && !stuck.has(o.id))]
 }
 const firstPlugin = (obs, goal, relevant) => pluginOptions(obs, goal).map(o => o.id).find(relevant) ?? null
 const fifths = (n, count) => 1 + Math.floor(5 * Math.min(n, count) / count)
@@ -338,9 +366,9 @@ export const GOAL_KINDS = {
   },
   // go_to(player:<name>): walk to a player (the plugin's go_to_player(<name>)), done within 3 m (obs.players).
   go_to: {
-    done: (obs, place) => {
+    done: (obs, place, count, g) => {
       const who = playerOf(place)
-      if (who) return (obs.players?.[who]?.dist ?? Infinity) <= 3
+      if (who) return arrivedFor(obs, who, g)
       const y = goToY(place)
       if (y != null) return Math.abs((obs.pos?.y ?? 0) - y) <= 2
       return place === 'base' ? nearBase(obs) : place === 'surface' ? !obs.underground : (obs.pos?.y ?? 0) <= DIAMOND_LEVEL_Y
@@ -349,17 +377,18 @@ export const GOAL_KINDS = {
     // and explore_toward(surface) stays under low air (it is the way out of the water): never only wait.
     filter: (obs, place, opts, count, g) => {
       const who = playerOf(place)
-      if (who) return keepWithPlugins(obs, goalOf('go_to', place, count, g), opts, new Set(), id => id === `go_to_player(${who})`)
+      if (who) return keepWithPlugins(obs, goalOf('go_to', place, count, g), opts, new Set(), id => id === `${lingering(g) ? 'linger' : 'go_to_player'}(${who})`)
       const y = goToY(place)
       const above = y != null ? (obs.pos?.y ?? 0) > y : place !== 'surface'
       return keepOnly(opts, new Set(place === 'base' ? opts.map(o => o.id).filter(isMove)
         : [...(above ? ['explore_toward(deep)', 'explore_toward(down)'] : ['explore_toward(surface)']),
           ...(nightOnSurface(obs) ? NIGHT_REFUGES : []), ...((obs.oxygen ?? 20) <= LOW_AIR ? ['explore_toward(surface)'] : [])]))
     },
-    step: (obs, place) => {
+    step: (obs, place, count, g) => {
       const who = playerOf(place)
       if (who) {
         const d = obs.players?.[who]?.dist
+        if (lingering(g)) return { index: 5, of: 4, text: `with ${who}, waiting ${LINGER_S} s for anything to pick up` }
         if (d != null && d <= 3) return { index: 5, of: 4, text: `with ${who}` }
         return { index: d == null || d > 64 ? 1 : d > 32 ? 2 : d > 16 ? 3 : 4, of: 4, text: d == null ? `go to ${who} (not in sight)` : `go to ${who} (${Math.round(d)} m away)` }
       }
@@ -375,8 +404,8 @@ export const GOAL_KINDS = {
       if (cur <= DIAMOND_LEVEL_Y) return { index: 9, of: 8, text: 'at diamond level' }
       return { index: 1 + Math.max(0, Math.min(7, Math.floor((64 - cur) / 16))), of: 8, text: `go down to diamond level (y -58), now at y ${Math.round(cur)}` }
     },
-    teacher: (obs, place) => {
-      if (playerOf(place)) return `go_to_player(${playerOf(place)})`
+    teacher: (obs, place, count, g) => {
+      if (playerOf(place)) return `${lingering(g) ? 'linger' : 'go_to_player'}(${playerOf(place)})`
       const y = goToY(place)
       if (y != null) return (obs.pos?.y ?? 0) > y ? (counts(obs).hasIronPickaxe ? 'explore_toward(deep)' : 'explore_toward(down)') : 'explore_toward(surface)'
       return place === 'base' ? 'return_to_base' : place === 'surface' ? 'explore_toward(surface)'
@@ -389,6 +418,15 @@ export const GOAL_KINDS = {
       return place === 'diamond_level' ? 'go to diamond level' : place === 'base' ? 'go to base' : 'go to the surface'
     },
     stuckS: place => playerOf(place) ? 120 : 240,
+    // go_to(player): the distance shrinking by CLOSING_M since the last mark is progress (a 200 m walk spends minutes
+    // in one step bucket); a growing distance moves the mark up, so closing in again counts
+    progressed: (obs, place, g) => {
+      const who = playerOf(place), d = who ? obs.players?.[who]?.dist : null
+      if (d == null || !g) return false
+      if (g.markD == null || d > g.markD) { g.markD = d; return false }
+      if (g.markD - d >= CLOSING_M) { g.markD = d; return true }
+      return false
+    },
   },
   survive_night: {
     done: obs => DAY.has(obs.phase),
@@ -480,6 +518,29 @@ export const GOAL_KINDS = {
     describe: (obs, item, count) => `smelt ${count} ${humanize(item)} (have ${have(obs, item)})`,
     stuckS: 300,
   },
+  // stay(player:<name> | here) (the user's "wait over here", 2026-09-27): the plugin's stay(<name|here>) walks to the
+  // player (or stays where the bot is), then holds that spot, picking up drops and walking back when pushed away. Never
+  // done and never stuck (the leader pops it: "you can go"); the night rule does not pause it (staying put is the safe
+  // choice); only the hold, eat, wait and the threat responses are offered.
+  stay: {
+    done: () => false,
+    filter: (obs, arg, opts, count, g) => holdFilter(obs, 'stay', arg, opts, count, g),
+    step: (obs, arg) => ({ index: 1, of: 1, text: GOAL_KINDS.stay.describe(obs, arg) }),
+    teacher: (obs, arg) => `stay(${stayKey(arg)})`,
+    describe: (obs, arg) => `${playerOf(arg) ? `Staying with ${playerOf(arg)}` : 'Staying here'} until you say I can go`,
+    stuckS: Infinity,
+  },
+  // protect(player:<name>) (live retry session: "there is a skeleton next to me" was refused): the plugin's
+  // protect(<name>) follows the player and fights hostile mobs within 8 m of them (never a player, never a passive mob).
+  // Done PROTECT_S seconds after the push; a new request or "stop" ends it earlier (the runner, the leader's pop_goal).
+  protect: {
+    done: (obs, arg, count, g) => (obs.t ?? 0) - (g?.t ?? obs.t ?? 0) >= PROTECT_S,
+    filter: (obs, arg, opts, count, g) => holdFilter(obs, 'protect', arg, opts, count, g),
+    step: (obs, arg, count, g) => ({ index: 1, of: 1, text: `${GOAL_KINDS.protect.describe(obs, arg)} (${Math.max(0, Math.round(PROTECT_S - ((obs.t ?? 0) - (g?.t ?? obs.t ?? 0))))} s left)` }),
+    teacher: (obs, arg) => `protect(${playerOf(arg)})`,
+    describe: (obs, arg) => `protect ${playerOf(arg)}`,
+    stuckS: Infinity,
+  },
   // receive(<item>, n) from a player (goal.from): the plugin's receive(<item>) waits for the drop and picks it up.
   receive: {
     done: (obs, item, count) => have(obs, item) >= count,
@@ -518,7 +579,7 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null, { plan
     case 'craft_item':
       if (RECIPES[arg]) return { ok: true }
       if (!isItem(arg)) return { ok: false, reason: `unknown item ${arg}` }
-      if (producerOf(arg)?.kind !== 'craft_item') return { ok: false, reason: `cannot craft ${humanize(arg)}` }
+      if (producerOf(arg)?.kind !== 'craft_item' && !hasCraftRecipe(arg)) return { ok: false, reason: `cannot craft ${humanize(arg)}` }
       return count == null || countOk(count) ? { ok: true } : BAD_COUNT
     case 'gather': {
       if (!PRODUCERS[arg] && producerOf(arg)?.kind !== 'gather') return { ok: false, reason: `cannot gather ${arg}` }
@@ -552,6 +613,10 @@ export function validateGoal({ kind, arg, count, from } = {}, obs = null, { plan
       if (!isItem(arg)) return { ok: false, reason: `unknown item ${arg}` }
       if (!countOk(count)) return BAD_COUNT
       return typeof from === 'string' && /^\w{1,16}$/.test(from) ? { ok: true } : { ok: false, reason: 'receive needs the name of the player giving it' }
+    case 'stay':
+      return arg === 'here' || playerOf(arg) ? { ok: true } : { ok: false, reason: 'stay needs player:<name> or here' }
+    case 'protect':
+      return playerOf(arg) ? { ok: true } : { ok: false, reason: 'protect needs player:<name>' }
     case 'go_to': {
       if (PLACES.includes(arg) || playerOf(arg)) return { ok: true }
       const y = goToY(arg)
@@ -600,6 +665,22 @@ export function planStepGoal(step, obs) {
   if (cap != null && Number.isInteger(count)) goal.count = goalHave(obs, kind, arg) + Math.min(count, cap)
   else if (COUNTED_KINDS.has(kind) && Number.isInteger(count)) goal.count = Math.min(64, goalHave(obs, kind, arg) + count)
   return goal
+}
+
+// A plan step's need recomputed when it is pushed (live retry session: "smelt 2 iron" with 3 held asked for 5): an item
+// plan ({item, count[, more, base]}) is expanded again against the inventory now, and the step's count becomes the need of the
+// matching step (same kind and arg) of that fresh expansion; a step the fresh expansion no longer has is {count: 0,
+// skip: true} (the runner advances past it). Plans without an item (plan_steps), uncounted kinds and an expansion with
+// a missing leaf keep the step as it is. A plan for n MORE (more: a routed push_goal) counts only what was gained since
+// it was made (base: the item held then). Pure.
+export function refreshPlanStep(step, plan, obs) {
+  if (!plan?.item || !COUNTED_KINDS.has(step?.kind) || !Number.isInteger(step.count)) return step
+  const inv = { ...(obs?.inventory || {}) }
+  if (plan.more) inv[plan.item] = Math.max(0, (inv[plan.item] || 0) - (plan.base ?? inv[plan.item] ?? 0))
+  const ex = (plan.materials_only ? expandMaterials : expandItem)(plan.item, plan.count ?? 1, inv, { placed: placedStations(obs) })
+  if (ex.missing.length) return step
+  const fresh = ex.steps.find(s => s.kind === step.kind && s.arg === step.arg)
+  return fresh ? { ...step, count: fresh.count } : { ...step, count: 0, skip: true }
 }
 
 // The stations a plan may count as placed: a remembered crafting table or furnace within 32 m (the motor walks to a
@@ -675,7 +756,8 @@ export class GoalStack {
       const g = this.top(), K = GOAL_KINDS[g.kind]
       if (K.done(obs, g.arg, g.count, g)) { this.pop('done'); events.push({ kind: 'goal_done', goal: pub(g), t }); continue }
       const s = K.step(obs, g.arg, g.count, g).index
-      if (g.best == null || s > g.best || g.progressT == null) {
+      const moved = !!K.progressed?.(obs, g.arg, g)   // a kind's own progress besides the step index (go_to(player): closing in)
+      if (g.best == null || s > g.best || g.progressT == null || moved) {
         if (g.best == null || s > g.best) g.best = s
         g.progressT = t
       } else if (g.lastT != null && (K.paused?.(obs, g.arg, g) || nightPaused(obs, K.filter(obs, g.arg, options(obs), g.count, g)))) g.progressT += t - g.lastT   // the night rule: the clock stands still

@@ -252,3 +252,65 @@ test('stepStartText: the step line, with the blueprint\'s progress when it has o
   assert.equal(stepStartText({ kind: 'build', arg: 'bp1', title: 'hut (5x5x3)', where: 'in front of you' }, 1, 2, 'layer 1 of 4, 0 of 71 blocks'),
     'Step 2/2: build hut (5x5x3) in front of you (layer 1 of 4, 0 of 71 blocks)')
 })
+
+// Live stress session: a player typed "plan" and saw "no plans" while the bot worked on the chain. The chat word prints
+// the pushed goals (top first, with progress), the plans, then the chain's step: at most 3 chat lines.
+import { planChatLines } from '../agent/plans.js'
+test('planChatLines: pushed goals, plans, the chain step; at most 3 lines of at most 200 characters', () => {
+  const chain = { stage: 'iron_tools', index: 12, of: 47, text: 'craft an iron sword (2 ingots)' }
+  assert.deepEqual(planChatLines({ pushed: [], planLines: ['no plans'], chain }), ['No plans.', 'Chain: iron tools, step 12 of 47: craft an iron sword (2 ingots)'])
+  const pushed = [{ id: 7, progress: 'go to y 12 (at y 40)' }, { id: 6, progress: 'gather 27 dirt (have 5)' }]
+  const planLines = ['Plan #1 compass: ✓ mine 1 redstone ▶ craft compass', 'then: #2 4 torch']
+  const out = planChatLines({ pushed, planLines, chain })
+  assert.deepEqual(out, ['Goals: #7 go to y 12 (at y 40); then #6 gather 27 dirt (have 5)', 'Plan #1 compass: ✓ mine 1 redstone ▶ craft compass; then: #2 4 torch',
+    'Chain: iron tools, step 12 of 47: craft an iron sword (2 ingots)'])
+  const long = planChatLines({ pushed: [{ id: 1, progress: 'x'.repeat(300) }], planLines: ['y'.repeat(300)], chain })
+  assert.equal(long.length, 3); for (const l of long) assert.ok(l.length <= 200, l.length)
+  assert.deepEqual(planChatLines({ pushed: [], planLines: ['no plans'], chain: null }), ['No plans.'])
+})
+
+// Live stress session: "On it: go to player:Spacers Choice" and "On it: receive redstone block". goalPhrase speaks to the
+// requester: "come to you" / "take the 2 redstone block from you" (a name when the player is someone else).
+import { goalPhrase } from '../agent/plans.js'
+test('goalPhrase: go_to(player) and receive address the requester; the other kinds as before', () => {
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Spacers_Choice', source: 'audience:Spacers_Choice' }), 'come to you')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Steve', source: 'audience:Spacers_Choice' }), 'come to Steve')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Steve', source: 'leader' }), 'come to Steve')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'player:Steve' }, 'Steve'), 'come to you')
+  assert.equal(goalPhrase({ kind: 'receive', arg: 'redstone_block', count: 2, from: 'Spacers_Choice', source: 'audience:Spacers_Choice' }), 'take the 2 redstone block from you')
+  assert.equal(goalPhrase({ kind: 'receive', arg: 'redstone_block', count: 2, from: 'Steve', source: 'audience:Spacers_Choice' }), 'take the 2 redstone block from Steve')
+  assert.equal(goalPhrase({ kind: 'go_to', arg: 'y:12' }), 'go to y:12')
+  assert.equal(goalPhrase({ kind: 'gather', arg: 'cobblestone', count: 8 }), 'gather 8 cobblestone')
+  assert.equal(goalPhrase({ kind: 'craft_item', arg: 'iron_pickaxe' }), 'craft iron pickaxe')
+  assert.equal(goalPhrase({ kind: 'survive_night' }), 'survive the night')
+  assert.equal(goalPhrase({ kind: 'hunt', arg: 'white_wool', count: 3 }), 'hunt white wool')
+})
+
+test('PlanBook.add keeps an item plan\'s item and count (refreshPlanStep), more/base only for n MORE; plain plans unchanged', () => {
+  const b = new PlanBook()
+  const plain = b.add({ title: 'trip', steps: [{ kind: 'go_to', arg: 'base' }], source: 'leader', t: 1 })
+  assert.deepEqual(Object.keys(plain).sort(), ['cursor', 'end_t', 'id', 'reason', 'source', 'status', 'steps', 't', 'title'])
+  const it = b.add({ title: 'shears', steps: [{ kind: 'craft_item', arg: 'shears', count: 1 }], source: 'leader', t: 2, item: 'shears', count: 1 })
+  assert.equal(it.item, 'shears'); assert.equal(it.count, 1); assert.equal(it.more, undefined)
+  const more = b.add({ title: '2 iron ingot', steps: [{ kind: 'gather', arg: 'iron_ingot', count: 2 }], source: 'leader', t: 3, item: 'iron_ingot', count: 2, more: true, base: 3 })
+  assert.equal(more.more, true); assert.equal(more.base, 3)
+})
+
+// Live retry session: "I want two white beds total" was refused as a duplicate of the 1-bed plan. A plan_item for an
+// item an active plan already makes: a larger count raises that plan (the runner re-expands its remaining steps), an
+// equal or smaller one is a duplicate ("Already on it").
+test('guardPlanAnswer / PlanBook.raise: a larger count raises the active plan for the item; the remaining steps are replaced', () => {
+  const b = new PlanBook()
+  const p = b.add({ title: 'white bed', steps: [{ kind: 'hunt', arg: 'white_wool', count: 3 }, { kind: 'craft_item', arg: 'white_bed', count: 1 }], source: 'audience:A', t: 1, item: 'white_bed', count: 1 })
+  const ask = count => ({ kind: 'plan_item', id: null, item: 'white_bed', count, why: '' })
+  assert.equal(guardPlanAnswer(ask(2), b, 5).raise, p.id)
+  assert.equal(guardPlanAnswer(ask(1), b, 5).duplicate, p.id)
+  assert.equal(guardPlanAnswer({ ...ask(3), item: 'red_bed' }, b, 5).raise, undefined, 'another item')
+  b.currentGoal()   // running, cursor 0
+  p.cursor = 1      // the wool is done
+  const msg = b.raise(p.id, 2, [{ kind: 'hunt', arg: 'white_wool', count: 3 }, { kind: 'craft_item', arg: 'white_bed', count: 2 }], 9)
+  assert.equal(msg, 'updated plan #1: 2 white bed')
+  assert.equal(p.count, 2); assert.equal(p.title, '2 white bed'); assert.equal(p.cursor, 1)
+  assert.deepEqual(p.steps.map(s => `${s.kind} ${s.arg} ${s.count}`), ['hunt white_wool 3', 'hunt white_wool 3', 'craft_item white_bed 2'])
+  assert.equal(b.raise(99, 2, [], 9), null)
+})

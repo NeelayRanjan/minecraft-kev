@@ -7,6 +7,7 @@
 //       step); with cobblestone it places the floor and steps onto it. No damage.
 //   (c) the climb (explore_toward(surface)) from a sealed cell 40 m down under a sand layer, with no step ahead
 //       (a 4-deep hole) and no blocks: turns instead of stepping, no suffocation, climbs.
+//   (g) build_shelter over lava: never digs into or beside it (an adjacent dry column, else a pillar).
 //   (d) explore_toward(down) from a sand beach at the edge of deep water, three times as a driver would: no damage,
 //       dry at the end (a wait swims out if a run ended in the water).
 // Usage: node tests/integration/safety_check.mjs [--port 25574] [--seed safety-1]. Prints PASS/FAIL; exit 0 on PASS.
@@ -186,6 +187,37 @@ check(damage === 0, `no damage fleeing (${damage})`)
   check(p.x < X - 6, `moved west along the dry heading (x ${p.x.toFixed(1)}, start ${X})`)
 }
 await cmd('/kill @e[type=zombie]'); await cmd('/difficulty peaceful')
+
+// (g) build_shelter over lava (live retry session 2026-09-27: the bot dug its shelter straight into lava at 1 hp).
+// The shelter digs 3 cells and seals one below the ground. (g1) one lava cell 2 blocks under the flat spot the bot
+// stands on: the shelter must not open into it (every column within reach touches it, so it pillars up).
+// (g2) a lava layer 2 blocks under the whole area: pillars up. (g3) lava under the floor of this spot only: it moves
+// to an adjacent dry column, digs there and seals.
+const shelterOver = async (fill, label) => {
+  await arena()
+  await cmd('/clear kev_smoke'); await cmd('/give kev_smoke stone_pickaxe 1'); await cmd('/give kev_smoke cobblestone 8')
+  await cmd(fill)
+  await tp(X, Y, Z)
+  damage = 0
+  const r = await step('build_shelter')
+  log(`(${label}) build_shelter -> ${r.result} (${r.detail ?? ''}) at ${pos().floored()}`)
+  check(damage === 0, `no damage from the lava (${damage})`)
+  return r
+}
+const nm = (dx, dy, dz) => bot.blockAt(new Vec3(X + dx, Y + dy, Z + dz))?.name
+const r7 = await shelterOver(`/setblock ${X} ${Y - 3} ${Z} lava`, 'g1')
+check(r7.result === 'ok', `sheltered (${r7.result} ${r7.detail ?? ''})`)
+check(nm(0, -3, 0) === 'lava' && [[1, 0], [-1, 0], [0, 1], [0, -1]].every(([dx, dz]) => nm(dx, -3, dz) === 'stone') && nm(0, -2, 0) === 'stone',
+  `never opened a cell beside or over the lava (${nm(0, -2, 0)}; sides ${[[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => nm(dx, -3, dz)).join(' ')})`)
+const r8 = await shelterOver(`/fill ${X - 4} ${Y - 3} ${Z - 4} ${X + 4} ${Y - 3} ${Z + 4} lava`, 'g2')
+check(r8.result === 'ok' && /^pillared/.test(r8.detail ?? ''), `pillared up instead of digging (${r8.result} ${r8.detail ?? ''})`)
+check(pos().y >= Y + 1.9, `stands 2 blocks up (y ${pos().y.toFixed(2)})`)
+check(nm(0, -1, 0) === 'stone' && nm(0, -2, 0) === 'stone', 'the ground over the lava is untouched')
+const r9 = await shelterOver(`/setblock ${X} ${Y - 4} ${Z} lava`, 'g3')
+const moved = Math.floor(pos().x) !== X || Math.floor(pos().z) !== Z
+check(r9.result === 'ok' && r9.detail === 'sealed in', `sealed in (${r9.result} ${r9.detail ?? ''})`)
+check(moved && pos().y <= Y - 2.99, `in an adjacent column, 3 down (at ${pos().floored()})`)
+check(nm(0, -1, 0) === 'stone' && nm(0, -3, 0) === 'stone', 'the column over the lava is untouched')
 
 log(pass ? 'PASS' : 'FAIL')
 clearTimeout(deadline)

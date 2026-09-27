@@ -35,7 +35,7 @@ say "Join 127.0.0.1:25580 with a 1.20.4 client (offline mode, any name), press T
 say "Status page (plans, goal stack, forecasts, chat, leader, plugins): http://127.0.0.1:3008"
 say "running $name"
 node agent/run_episode.mjs --seed "$seed" --port 25580 --policy kev --kev-url http://127.0.0.1:8009 --goal nether \
-  --leader subgoals --leader-model "$LEADER_MODEL" --leader-url "$LEADER_URL" --minutes "$minutes" --out "$name" --video --live-view 3007 --status-port 3008
+  --leader subgoals --leader-model "$LEADER_MODEL" --leader-url "$LEADER_URL" --minutes "$minutes" --out "$name" --video --live-view 3007 --status-port 3008 --name Kevin
 say "$name run done (exit $?)"
 
 node scripts/leader_report.mjs "$name"

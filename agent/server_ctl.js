@@ -17,6 +17,14 @@ export function renderProperties(template, { port, seed }) {
   return set(set(template, 'server-port', port), 'level-seed', seed)
 }
 
+// The bot's username: `name` (run_episode --name; the live bot is "Kevin") when given, a valid Minecraft name (3-16
+// letters, digits, underscores), else kev_<port % 100> as always (data generation and the scripts are unchanged).
+export function botUsername({ port, name = null } = {}) {
+  if (name == null) return `kev_${port % 100}`
+  if (!/^\w{3,16}$/.test(name) || /[^\x00-\x7f]/.test(name)) throw new Error(`bad bot name ${JSON.stringify(name)} (3-16 letters, digits or _)`)
+  return name
+}
+
 export function javaBin() {
   const tools = path.join(ROOT, 'tools')
   const jdk = fs.existsSync(tools) && fs.readdirSync(tools).find(d => d.startsWith('jdk-21'))

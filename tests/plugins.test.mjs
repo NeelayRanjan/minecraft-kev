@@ -72,7 +72,7 @@ test('the shipped agent/plugins directory loads without failures: every shipped 
   const reg = new PluginRegistry({ dir })
   const r = await reg.load()
   assert.deepEqual(r.failed, [])
-  assert.deepEqual(r.loaded.sort(), ['build_blueprint', 'craft_item', 'dig_blueprint', 'go_to_player', 'hunt', 'mine', 'receive', 'smelt_item'])
+  assert.deepEqual(r.loaded.sort(), ['build_blueprint', 'craft_item', 'dig_blueprint', 'go_to_player', 'hunt', 'linger', 'mine', 'protect', 'receive', 'smelt_item', 'stay'])
   for (const id of r.loaded) assert.equal(reg.enabled(id), true, id)
 })
 

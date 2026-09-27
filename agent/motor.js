@@ -2,7 +2,7 @@
 // result, has a hard timeout, and can be interrupted by the runner (threat, damage, death). Never learned.
 import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
-import { parseOption, FOOD, TABLE_ITEMS, counts } from './subtasks.js'
+import { parseOption, FOOD, TABLE_ITEMS, counts, SHELTER_DEPTH } from './subtasks.js'
 import { portalLayout } from './stages.js'
 import { reachSpots, faces, bestFace, scaffoldPlan, occupiedCells, clearSpots, lineOfSight, isSolid, standsOn, key as cellKey, at as cellAt, REACH, EYE } from './reach.js'
 
@@ -71,6 +71,44 @@ export function liquidAround(blockAt, ahead) {
     if (b && (b.name === 'lava' || b.name === 'water')) return b.name
   }
   return null
+}
+
+// Lava in the cell, the four beside it (at its level and the floor's) or under it: the dry walk (dryMovements, used by
+// flee and explore_toward(down)) never steps there (live stress session: the bot at 1 hp fled into lava). Pure.
+export const LAVA_STEP_COST = 1000   // past the pathfinder's give-up cost (100): the move is dropped
+export function lavaAdjacent(blockAt, pos) {
+  for (const [dx, dy, dz] of [[0, 0, 0], [0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [1, -1, 0], [-1, -1, 0], [0, -1, 1], [0, -1, -1]]) {
+    if (blockAt(pos.offset(dx, dy, dz))?.name === 'lava') return true
+  }
+  return false
+}
+
+// build_shelter's dig-down (live retry session: the bot dug into lava at 1 hp): it digs the SHELTER_DEPTH cells under
+// the feet and ends standing on the next one; the seal goes 2 above its feet, one cell below the ground it started on,
+// where the ground beside the hole gives it something to be placed against (on flat ground a seal at the surface level
+// has no neighbour). Lava or water in a dug cell or beside one (the staircase digger's liquidAround idea), or in the
+// floor it ends on, means not here. The liquid's name, else null. Pure.
+export { SHELTER_DEPTH }
+const LIQUID = n => n === 'lava' || n === 'water'
+export function shelterColumnLiquid(blockAt, feet) {
+  for (let dy = -1; dy >= -SHELTER_DEPTH; dy--) for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const n = blockAt(feet.offset(dx, dy, dz))?.name
+    if (LIQUID(n)) return n
+  }
+  const n = blockAt(feet.offset(0, -SHELTER_DEPTH - 1, 0))?.name
+  return LIQUID(n) ? n : null
+}
+// Where to shelter from `feet`: dig here; else move to an adjacent cell the bot can stand in (feet and head open, no
+// liquid, solid ground) whose column is dry; else pillar up (no column is safe). Pure.
+export function shelterPlan(blockAt, feet) {
+  if (!shelterColumnLiquid(blockAt, feet)) return { action: 'dig', at: feet }
+  const open = b => !!b && b.boundingBox === 'empty' && !LIQUID(b.name)
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const n = feet.offset(dx, 0, dz), ground = blockAt(n.offset(0, -1, 0))
+    if (!open(blockAt(n)) || !open(blockAt(n.offset(0, 1, 0))) || !ground || ground.boundingBox !== 'block') continue
+    if (!shelterColumnLiquid(blockAt, n)) return { action: 'move', to: n }
+  }
+  return { action: 'pillar' }
 }
 
 // Standing blocks a bot in water swims to (motor.leaveWater). A shore cell is one of them with two passable cells above
@@ -190,6 +228,9 @@ export class Motor {
     this.dryMovements = new Movements(bot, mcData)
     Object.assign(this.dryMovements, { canDig: true, allow1by1towers: true, maxDropDown: 3, liquidCost: 25 })
     for (const n of ['crafting_table', 'furnace']) this.dryMovements.blocksCantBreak.add(mcData.blocksByName[n].id)
+    // lava (source or flowing: one block name) is in blocksToAvoid by default; a cell next to it is excluded too
+    this.dryMovements.blocksToAvoid.add(mcData.blocksByName.lava.id)
+    this.dryMovements.exclusionAreasStep.push(b => b?.position && lavaAdjacent(p => bot.blockAt(p), b.position) ? LAVA_STEP_COST : 0)
     // Short approaches next to a frame or a pool: no digging, no scaffolding (the pathfinder would tower with the
     // corner cobblestone, inside the frame), no parkour.
     this.walkMovements = new Movements(bot, mcData)
@@ -811,21 +852,32 @@ export class Motor {
         if (r !== 'left') return fail('failed', 'in water, could not reach the shore')
         this.check()
       }
+      // Never dig into lava or water (shelterPlan): an adjacent dry column, else pillar up 2 and seal if anything is
+      // there to seal against (a 2-high pillar is out of a zombie's reach either way).
+      const at = p => b.blockAt(p)
+      let plan = shelterPlan(at, b.entity.position.floored())
+      if (plan.action === 'move') {
+        this.log(`shelter: liquid under ${b.entity.position.floored()}, moving to ${plan.to}`)
+        try { await this.goto(new goals.GoalBlock(plan.to.x, plan.to.y, plan.to.z), this.walkMovements) } catch (e) { this.log(`shelter: move failed (${e.message})`) }
+        this.check()
+        plan = shelterPlan(at, b.entity.position.floored())
+        if (plan.action === 'move') plan = { action: 'pillar' }
+      }
+      if (plan.action === 'pillar') {
+        this.log(`shelter: liquid under every nearby column, pillaring up instead`)
+        const r = await this.exec.pillar_up.call(this, 2)
+        if (r.result !== 'ok') return fail('failed', `liquid below, pillar failed (${r.detail ?? r.result})`)
+        return (await this.sealTop(blockItem)) ? ok('pillared up and sealed (liquid below)') : ok('pillared up (liquid below)')
+      }
       await this.equipBestPickaxe()
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < SHELTER_DEPTH; i++) {
         this.check()
         const below = b.blockAt(b.entity.position.offset(0, -1, 0).floored())
         if (!below || below.boundingBox !== 'block') break
         await this.digSafe(below)
         await sleep(700)
       }
-      const head = b.entity.position.floored().offset(0, 2, 0)
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const ref = b.blockAt(head.offset(dx, 0, dz))
-        if (!ref || ref.boundingBox !== 'block') continue
-        try { await b.equip(blockItem(), 'hand'); await b.placeBlock(ref, new Vec3(-dx, 0, -dz)); return ok('sealed in') } catch (e) { this.log(`seal: ${e.message}`) }
-      }
-      return fail('failed', 'could not seal the top')
+      return (await this.sealTop(blockItem)) ? ok('sealed in') : fail('failed', 'could not seal the top')
     },
 
     async fight() {
@@ -875,11 +927,12 @@ export class Motor {
       return ok('out of range')
     },
 
-    async pillar_up() {
+    // n: how many blocks (3 as a subtask; build_shelter asks for 2 over liquid)
+    async pillar_up(n) {
       const b = this.bot
       const blockItem = () => b.inventory.items().find(i => i.name === 'cobblestone' || i.name === 'dirt' || i.name === 'cobbled_deepslate')
       let placed = 0
-      for (let i = 0; i < 3 && blockItem(); i++) {
+      for (let i = 0; i < (Number.isInteger(n) ? n : 3) && blockItem(); i++) {
         this.check()
         const feet = b.entity.position.floored()
         const below = b.blockAt(feet.offset(0, -1, 0))
@@ -1218,12 +1271,25 @@ export class Motor {
     return this.bot.blockAt(cands[0])
   }
 
+  // Place a block over the head against any solid side at head+1 level (build_shelter's seal). true when placed.
+  async sealTop(blockItem) {
+    const b = this.bot
+    const head = b.entity.position.floored().offset(0, 2, 0)
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ref = b.blockAt(head.offset(dx, 0, dz))
+      if (!ref || ref.boundingBox !== 'block' || !blockItem()) continue
+      try { await b.equip(blockItem(), 'hand'); await b.placeBlock(ref, new Vec3(-dx, 0, -dz)); return true } catch (e) { this.log(`seal: ${e.message}`) }
+    }
+    return false
+  }
+
   unsafeToStep(ahead) { return liquidAround(p => this.bot.blockAt(p), ahead) }
 
-  // Water in the 3 x 4 x 3 cells around `c` (dy -1..2).
+  // Water or lava in the 3 x 4 x 3 cells around `c` (dy -1..2): flee, the surface walk and the descent turn away from it.
   wetNear(c) {
     for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 2; dy++) {
-      if (this.bot.blockAt(c.offset(dx, dy, dz))?.name === 'water') return true
+      const n = this.bot.blockAt(c.offset(dx, dy, dz))?.name
+      if (n === 'water' || n === 'lava') return true
     }
     return false
   }

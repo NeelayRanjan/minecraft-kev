@@ -224,3 +224,26 @@ test('low air (10/20 or less) offers only the ways out and the threat responses 
   assert.ok(ids({ blocks: [log] }).includes('gather_wood'))   // no reading: full air (stored records)
   assert.ok(ids({ goal: 'nether', oxygen: 8, blocks: [log] }).every(id => ['wait', 'explore_toward(surface)'].includes(id)))
 })
+
+// Live stress session: sealed in by build_shelter at night with 1/20 health, kev picked return_to_base and died. At
+// dusk/night, enclosed (underground, or just sealed in) and at health <= 6, only the ways to stay put are offered.
+test('chain mode, night, enclosed and at health <= 6: nothing that leaves the shelter is offered', () => {
+  const inv = { iron_pickaxe: 1, cobblestone: 4, bread: 2, oak_log: 2 }
+  const base = { x: 0, y: 64, z: 0 }
+  const sealed = chain({ phase: 'night', health: 1, food: 10, underground: true, skyLight: 0, inventory: inv, blocks: [logSeen, ironSeenB, stoneSeen],
+    base: { crafting_table: { dist: 40, dir: 'east', dy: 0 } }, last: { id: 'build_shelter', result: 'ok', repeats: 1, recent: [] } })
+  const i = ids(sealed)
+  for (const id of ['return_to_base', 'explore_toward(surface)', 'gather_wood', 'mine_iron', 'mine_stone', 'explore_toward(down)', 'craft(planks)'])
+    assert.ok(!i.includes(id), `${id} offered while sheltered at 1 hp`)
+  for (const id of ['eat', 'wait', 'build_shelter']) assert.ok(i.includes(id), `${id} not offered`)
+  const t = ids({ ...sealed, nearestHostile: { name: 'zombie', dist: 5, dir: 'west', dy: 0 } })
+  for (const id of ['fight(threat)', 'flee(threat)', 'pillar_up']) assert.ok(t.includes(id), `${id} not offered`)
+  // sealed in on the surface (sky light still high): the last result build_shelter -> ok counts as enclosed
+  const open = ids({ ...sealed, underground: false, skyLight: 15 })
+  assert.ok(!open.includes('return_to_base') && open.includes('wait'))
+  // health above 6, daytime, or experiment 1: unchanged
+  assert.ok(ids({ ...sealed, health: 7 }).includes('return_to_base'))
+  assert.ok(ids({ ...sealed, phase: 'morning' }).includes('return_to_base'))
+  const e1 = baseObs({ phase: 'night', health: 1, underground: true, skyLight: 0, inventory: inv, pos: base, base: { crafting_table: { dist: 40, dir: 'east', dy: 0 } } })
+  assert.ok(ids(e1).includes('return_to_base'), 'experiment 1 unchanged')
+})

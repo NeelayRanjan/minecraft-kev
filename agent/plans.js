@@ -15,6 +15,8 @@ const live = p => ACTIVE.has(p.status) && p.cursor < p.steps.length
 export function planTitle(item, count = 1) {
   return count > 1 ? `${count} ${humanize(item)}` : humanize(item)
 }
+// An item plan's title: planTitle, or "materials for <title>" for a materials_only plan.
+export const itemPlanTitle = (item, count = 1, materialsOnly = false) => `${materialsOnly ? 'materials for ' : ''}${planTitle(item, count)}`
 
 // A step in chat words: "mine 4 raw iron", "smelt 4 iron", "craft compass", "shear 3 white wool", "build hut (5x5x3) in
 // front of you" (a blueprint step carries its title and where it goes).
@@ -59,8 +61,11 @@ export class PlanBook {
     b.nextId = 1 + b.plans.reduce((m, p) => Math.max(m, p.id), 0)
     return b
   }
-  add({ title, steps, source, t = null }) {
-    const plan = { id: this.nextId++, title, source, steps: steps.map(s => ({ ...s })), cursor: 0, status: 'pending', t, end_t: null, reason: null }
+  // item/count (an item plan: goals.refreshPlanStep re-expands it when a step is pushed), more/base (n MORE of it) and
+  // materials_only are kept only when given.
+  add({ title, steps, source, t = null, item = null, count = null, more = false, base = null, materials_only = false }) {
+    const plan = { id: this.nextId++, title, source, steps: steps.map(s => ({ ...s })), cursor: 0, status: 'pending', t, end_t: null, reason: null,
+      ...(item ? { item, count: count ?? 1 } : {}), ...(item && more ? { more: true, base: base ?? 0 } : {}), ...(item && materials_only ? { materials_only: true } : {}) }
     if (!plan.steps.length) { plan.status = 'done'; plan.end_t = t }
     this.plans.push(plan)
     return plan
@@ -159,6 +164,23 @@ export class PlanBook {
     const lines = this.render(), bl = this.blockedLines(t)
     return bl.length ? [...(this.active().length ? lines : []), ...bl] : lines
   }
+  // A running or pending item plan for this item (materials_only plans apart), else null.
+  activeByItem(item, materialsOnly = false) {
+    return this.plans.find(p => ACTIVE.has(p.status) && p.item === item && !!p.materials_only === !!materialsOnly) ?? null
+  }
+  // A larger count for an active item plan (live retry session: "two white beds total"): the count and title change and
+  // the steps after the cursor are replaced by `steps` (the runner's fresh expansion against the inventory now). The
+  // reply line, or null when there is no such active plan.
+  raise(id, count, steps, t = null) {
+    const p = this.plans.find(q => q.id === id)
+    if (!p || !ACTIVE.has(p.status) || !p.item) return null
+    p.count = count
+    p.title = itemPlanTitle(p.item, count, p.materials_only)
+    p.steps = [...p.steps.slice(0, p.cursor), ...steps.map(s => ({ ...s }))]
+    p.raised_t = t
+    if (p.cursor >= p.steps.length) { p.status = 'done'; p.end_t = t }
+    return `updated plan #${p.id}: ${p.title}`
+  }
   // A running or pending plan with this title (a duplicate request adds nothing), else null.
   activeByTitle(title) {
     const key = normTitle(title)
@@ -169,6 +191,7 @@ export class PlanBook {
 }
 
 // The code guards on a plan answer (plan_item or plan_steps), before the runner acts on it (pure):
+// - its item is an active item plan's (plan_item): a larger count is {raise: <plan id>}, else {duplicate: <plan id>};
 // - its title equals a running or pending plan's: marked {duplicate: <plan id>} (the runner replies "Already on it"
 //   and adds nothing);
 // - its title equals a plan blocked within BLOCKED_WINDOW_S and no request in `requests` ({t}) arrived after the block:
@@ -177,10 +200,60 @@ export class PlanBook {
 // Any other answer is returned unchanged.
 export function guardPlanAnswer(res, book, t, requests = []) {
   if (res?.kind !== 'plan_item' && res?.kind !== 'plan_steps') return res
-  const title = res.kind === 'plan_item' ? planTitle(res.item, res.count) : res.title
+  // the same item as an active item plan: a larger count raises it ({raise: id}), else a duplicate
+  const same = res.kind === 'plan_item' ? book.activeByItem(res.item, !!res.materials_only) : null
+  if (same) return res.count > (same.count ?? 1) ? { ...res, raise: same.id } : { ...res, duplicate: same.id }
+  const title = res.kind === 'plan_item' ? itemPlanTitle(res.item, res.count, res.materials_only) : res.title
   const dup = book.activeByTitle(title)
   if (dup) return { ...res, duplicate: dup.id }
   const b = book.stillBlocked(title, t, requests)
   if (b) return { kind: 'cannot', id: null, why: `still blocked: ${b.reason ?? 'stuck'}`, guard: 'blocked_plan', plan_id: b.id, title: b.title }
   return res
+}
+
+// The chat word `plan` (live stress session: a player saw "no plans" while the bot worked on the chain): the pushed
+// goals, top first with their progress (goalStackView's pushed), the plans (PlanBook.render, joined on one line), then
+// the default chain's step ({stage, index, of, text}: chainStep, or techStep with stage iron_pickaxe). At most 3 lines,
+// each cut to CHAT_LINE characters so none splits.
+const CHAT_LINE = 200
+export function planChatLines({ pushed = [], planLines = [], chain = null } = {}) {
+  const cut = s => s.length > CHAT_LINE ? `${s.slice(0, CHAT_LINE - 3)}...` : s
+  const out = []
+  if (pushed.length) out.push(cut(`Goals: ${pushed.map((g, i) => `${i ? 'then ' : ''}#${g.id} ${g.progress}`).join('; ')}`))
+  const plans = planLines.filter(l => l && l !== 'no plans')
+  out.push(cut(plans.length ? plans.join('; ') : 'No plans.'))
+  if (chain) out.push(cut(`Chain: ${String(chain.stage).replace(/_/g, ' ')}, step ${chain.index} of ${chain.of}: ${chain.text}`))
+  return out
+}
+
+// A goal as the bot says it in chat ("On it: ...", "Done: ...", "Gave up on ..."). go_to(player:<name>) and receive
+// speak to the requester (live stress session: "On it: go to player:Spacers Choice"): "come to you" and "take the <n>
+// <item> from you", or the player's name when it is someone else. requester: the requesting player (default: the name
+// in the goal's source 'audience:<name>').
+export function goalPhrase(g, requester = null) {
+  const h = x => String(x ?? '').replace(/_/g, ' ')
+  const who = requester ?? (typeof g.source === 'string' && g.source.startsWith('audience:') ? g.source.slice(9) : null)
+  const you = name => (name && name === who ? 'you' : name)
+  switch (g.kind) {
+    case 'gather': return `gather ${g.count ?? ''} ${h(g.arg)}`.replace(/\s+/g, ' ')
+    case 'craft_item': return `craft ${h(g.arg)}`
+    case 'find': return `find ${h(g.arg)}`
+    case 'go_to': {
+      const m = /^player:(\w{1,16})$/.exec(g.arg ?? '')
+      return m ? `come to ${you(m[1])}` : `go to ${h(g.arg)}`
+    }
+    case 'receive': return `take the ${g.count != null ? `${g.count} ` : ''}${h(g.arg)} from ${g.from ? you(g.from) : 'you'}`
+    case 'protect': {
+      const m = /^player:(\w{1,16})$/.exec(g.arg ?? '')
+      return `protect ${m ? you(m[1]) : 'you'}`
+    }
+    case 'stay': {
+      const m = /^player:(\w{1,16})$/.exec(g.arg ?? '')
+      return m ? `wait here with ${you(m[1])}` : 'wait here'
+    }
+    case 'build': return `build ${h(g.arg)}`
+    case 'survive_night': return 'survive the night'
+    case 'return_to_base': return 'return to base'
+    default: return `${h(g.kind)}${g.arg ? ` ${h(g.arg)}` : ''}`
+  }
 }
