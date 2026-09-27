@@ -24,7 +24,7 @@ import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
 import { stageOf, describeChain, needs, chainStep } from './stages.js'
 import { techStep } from './teacher.js'
-import { counts, REPEAT_WINDOW } from './subtasks.js'
+import { counts, REPEAT_WINDOW, progressMark } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev, onceEvery } from './logger.js'
 import { ask } from './kev_client.js'
@@ -239,6 +239,12 @@ bot.on('health', () => { if (bot.health <= 0) dead = true })
 // who hit the bot (1.20.4 damage_event: the source entity, or none for fall/drowning/lava); summarize() attributes the drop
 bot._client.on('damage_event', p => { if (bot.entity && p.entityId === bot.entity.id) mem.noteHurt(hurtFromDamageEvent(p, bot.entities)) })
 
+// The progress mark of an attempt that just ended: now, the bot's position, the latest tick's inventory and goal step.
+function markNow() {
+  const p = bot.entity?.position
+  return { ...progressMark(lastObs), t: +now().toFixed(1), ...(p ? { x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) } : {}) }
+}
+
 function startSubtask(id, source, obs) {
   subtaskStartHealth = bot.health
   withhold = []; supervisor.onSubtaskStart(now())
@@ -250,7 +256,8 @@ function startSubtask(id, source, obs) {
     // window and its repeat count (repeats 0), else three leader interrupts would withhold it from kev and the leader.
     const byLeader = r.result === 'interrupted' && r.detail === 'leader'
     const repeats = byLeader ? 0 : lastResult && lastResult.id === id && lastResult.result === r.result ? lastResult.repeats + 1 : 1
-    if (!byLeader) recent = [...recent, { id, result: r.result }].slice(-REPEAT_WINDOW)
+    // each attempt carries its detail and a progress mark (subtasks.okLoop: an ok repeated without progress is a livelock)
+    if (!byLeader) recent = [...recent, { id, result: r.result, detail: r.detail ?? null, ...markNow() }].slice(-REPEAT_WINDOW)
     lastResult = { id, result: r.result, repeats, recent }
     elog.event({ t: now(), kind: 'subtask_done', id, result: r.result, detail: r.detail ?? null })
     if (r.detail !== 'leader') { leaderNote('subtask_done'); if (goalsOn && r.result !== 'ok') leaderNote('subtask_failed') }   // the leader's own interrupt is not news to it

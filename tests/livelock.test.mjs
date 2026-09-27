@@ -84,3 +84,31 @@ test('table crafts are offered when the remembered table is within 16 m, and the
   assert.ok(!ids(baseObs({ inventory: inv, base: { crafting_table: { dist: 20, dir: 'east', dy: 6 }, furnace: null } })).includes('craft(wooden_pickaxe)'))
   assert.equal(teacherSubtask(baseObs({ inventory: inv, base: { crafting_table: { dist: 20, dir: 'east', dy: 6 }, furnace: null } })), 'return_to_base')
 })
+
+// Live retry session (2026-09-27): explore_toward(cave) -> ok (at the cave) 7 times in 7 s while health drained near
+// lava; the breaker counted only failures. An ok with the same detail OK_LOOP_N times within OK_LOOP_S seconds with no
+// progress between the first and the last (the same inventory, within OK_LOOP_M metres, the same goal step) is a loop.
+import { okLoop, progressMark, OK_LOOP_N, OK_LOOP_S, OK_LOOP_M } from '../agent/subtasks.js'
+test('okLoop: an ok result repeated without progress is withheld; any inventory, position or step change is progress', () => {
+  assert.equal(OK_LOOP_N, 5); assert.equal(OK_LOOP_S, 10); assert.equal(OK_LOOP_M, 2)
+  const cave = { name: 'cave', dist: 3, dir: 'north', dy: 0 }
+  const mark = (t, extra = {}) => ({ t, x: 10, y: 64, z: 10, inv: 'cobblestone:4', step: 3, ...extra })
+  const at = (t, extra, detail = 'at the cave') => ({ id: 'explore_toward(cave)', result: 'ok', detail, ...mark(t, extra) })
+  const loop = [1, 2, 3, 4, 5].map(t => at(t))
+  assert.deepEqual([...okLoop(loop)], ['explore_toward(cave)'])
+  const obsWith = recent => baseObs({ inventory: { wooden_pickaxe: 1 }, blocks: [cave], last: { ...recent.at(-1), repeats: 1, recent } })
+  assert.ok(!ids(obsWith(loop)).includes('explore_toward(cave)'), 'withheld from the options')
+  assert.ok(ids(obsWith(loop.slice(1))).includes('explore_toward(cave)'), 'four times is not yet a loop')
+  assert.equal(okLoop([...loop.slice(0, 4), at(12)]).size, 0, 'spread over more than 10 s')
+  assert.equal(okLoop([...loop.slice(0, 4), at(5, { inv: 'cobblestone:5' })]).size, 0, 'the inventory changed')
+  assert.equal(okLoop([...loop.slice(0, 4), at(5, { x: 12.5 })]).size, 0, 'moved more than 2 m')
+  assert.equal(okLoop([...loop.slice(0, 4), at(5, { x: 11.5 })]).size, 1, 'moved 1.5 m: still no progress')
+  assert.equal(okLoop([...loop.slice(0, 4), at(5, { step: 4 })]).size, 0, 'the goal step moved on')
+  assert.equal(okLoop([...loop.slice(0, 4), at(5, {}, 'other detail')]).size, 0, 'a different detail')
+  assert.equal(okLoop(loop.map(e => ({ ...e, id: 'wait' }))).size, 0, 'wait is never withheld')
+  assert.equal(okLoop([{ id: 'mine_stone', result: 'ok' }, { id: 'mine_stone', result: 'ok' }, { id: 'mine_stone', result: 'ok' }, { id: 'mine_stone', result: 'ok' }, { id: 'mine_stone', result: 'ok' }]).size, 0,
+    'entries without marks (older logs) never count')
+  // the mark the runner records
+  const m = progressMark({ t: 7, pos: { x: 1.26, y: 64, z: -3.5 }, inventory: { stick: 2, cobblestone: 4, dirt: 0 }, goalStep: { index: 105 } })
+  assert.deepEqual(m, { t: 7, x: 1.26, y: 64, z: -3.5, inv: 'cobblestone:4,stick:2', step: 105 })
+})

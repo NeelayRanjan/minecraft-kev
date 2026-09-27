@@ -11,6 +11,7 @@ export const HOSTILE_RANGE = 16
 export const TABLE_NEAR = 16      // a remembered table/furnace within this many metres counts as usable (the motor walks to it)
 export const REPEAT_LIMIT = 3     // lesson 7: an option that failed the same way this many times in a row is withheld
 export const REPEAT_WINDOW = 6    // ... or this many times among the last REPEAT_WINDOW attempts (a leader alternated coal with other tries 51 times)
+// (okLoop below: an ok result repeated without progress is a livelock too)
 export const CHAIN_CRAFTABLE = ['iron_sword', 'iron_axe', 'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots',
   'bucket', 'flint_and_steel', 'diamond_pickaxe', 'diamond_sword', 'diamond_axe']
 export const TABLE_ITEMS = new Set(['wooden_pickaxe', 'stone_pickaxe', 'furnace', 'iron_pickaxe', ...CHAIN_CRAFTABLE])
@@ -93,8 +94,34 @@ export function stuckOn(obs) {
     n.set(k, (n.get(k) || 0) + 1)
     if (n.get(k) >= REPEAT_LIMIT) out.add(a.id)
   }
+  for (const id of okLoop(l.recent)) out.add(id)
   out.delete('wait')
   return out
+}
+
+// A livelock of successes (live retry session: explore_toward(cave) -> ok (at the cave) 7 times in 7 s): the last
+// OK_LOOP_N attempts of an id among `recent` all ok with the same detail, the first and last within OK_LOOP_S seconds,
+// and no progress between them: the same inventory, within OK_LOOP_M metres, the same goal step (progressMark, recorded
+// by the runner on each attempt; entries without a mark never count). The ids to withhold. wait never is.
+export const OK_LOOP_N = 5, OK_LOOP_S = 10, OK_LOOP_M = 2
+export function okLoop(recent = []) {
+  const out = new Set()
+  for (const id of new Set((recent || []).map(a => a?.id))) {
+    if (id === 'wait') continue
+    const mine = recent.filter(a => a?.id === id).slice(-OK_LOOP_N)
+    if (mine.length < OK_LOOP_N || !mine.every(a => a.result === 'ok' && typeof a.t === 'number' && a.detail === mine[0].detail)) continue
+    const a = mine[0], b = mine[mine.length - 1]
+    if (b.t - a.t > OK_LOOP_S || a.inv !== b.inv || a.step !== b.step) continue
+    if (Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > OK_LOOP_M) continue
+    out.add(id)
+  }
+  return out
+}
+// The progress mark of an attempt (the runner adds it to each entry of `recent`): time, position, the inventory as a
+// sorted key (zero counts dropped), the goal step index.
+export function progressMark(obs) {
+  const inv = Object.entries(obs?.inventory || {}).filter(([, n]) => n > 0).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, n]) => `${k}:${n}`).join(',')
+  return { t: obs?.t ?? null, x: obs?.pos?.x ?? 0, y: obs?.pos?.y ?? 0, z: obs?.pos?.z ?? 0, inv, step: obs?.goalStep?.index ?? null }
 }
 const seen = (obs, pred, maxDist) => (obs.blocks || []).some(b => pred(b.name) && b.dist <= maxDist)
 export const isLog = n => n.endsWith('_log')
