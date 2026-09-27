@@ -411,7 +411,7 @@ function leaderTick(obs, t) {
       minutesLeft: Math.max(0, minutes - t / 60), deaths, recentResults: recent,
       // blueprints: false until the runner wires the blueprint book (the blueprint plan's Task 7 passes true)
       ...(goalsOn ? { goals: true, blueprints: false, goalStack: goalStackView(goalStack, obs), plans: planBook.leaderLines(t), requests: requests.map(r => ({ t: r.t, name: r.name, text: r.text })),
-        feedback: leaderFeedbackNext, conversation: chatLines.slice(-8), inventory: { ...(obs.inventory || {}) }, botName: me } : {}),
+        feedback: leaderFeedbackNext, conversation: chatLines.slice(-8), inventory: { ...(obs.inventory || {}) }, botName: me, players: { ...(obs.players || {}) } } : {}),
     }
     leaderFeedbackNext = null
     requestBook.shown(shownReqs.map(r => r.id))

@@ -227,3 +227,14 @@ test('item 16: protect in the prompt, pushed through the leader; a new goal or p
   assert.equal(goalPhrase({ kind: 'protect', arg: 'player:Steve' }, 'Steve'), 'protect you')
   assert.equal(endsProtect({ kind: 'push_goal', goal: { kind: 'gather', arg: 'log', count: 8 } }, { kind: 'chain' }), false)
 })
+
+// 18: "where are you" was answered with 36 m against 14 m in the goal line: the leader gets the players' distances
+// from obs.players (entity, else the server-reported position), with the inventory line, when there is chat.
+test('item 18: PLAYERS (exact) from obs.players beside INVENTORY (exact), only with chat', () => {
+  const players = { Steve: { dist: 14.2, dir: 'north-east' }, Alex: { dist: 120, dir: 'south', reported: true } }
+  const withChat = buildLeaderMessages({ ...goalCtx, inventory: { dirt: 3 }, players, requests: [{ t: 5, name: 'Steve', text: 'where are you' }] })[1].content
+  assert.match(withChat, /INVENTORY \(exact\): dirt x3\nPLAYERS \(exact\): Steve 14 m north-east of you, Alex 120 m south of you \(last reported position\)\n/)
+  assert.doesNotMatch(buildLeaderMessages({ ...goalCtx, inventory: { dirt: 3 }, players, requests: [], conversation: [] })[1].content, /PLAYERS/)
+  const none = buildLeaderMessages({ ...goalCtx, inventory: { dirt: 3 }, players: {}, requests: [{ t: 5, name: 'Steve', text: 'where are you' }] })[1].content
+  assert.match(none, /PLAYERS \(exact\): none within 64 m/)
+})
