@@ -217,13 +217,32 @@ function applyTemplateAnswer(action, answer, why) {
   return { kind: action, id: null, template: a.template, params: chk.params, at_y: atY, why }
 }
 
+// What the model writes for a legend, as the blueprint format wants it (live probe: {"S": "stone", ".": "air"}): entries
+// keyed '.' or ' ' dropped; values lowercased, "minecraft:" stripped, spaces to underscores; a single-character key
+// whose value means air has its cells rewritten to '.' and the entry dropped. Malformed layers pass through for
+// validate to refuse.
+const AIR_WORDS = new Set(['air', 'cave_air', 'void_air', 'empty', 'nothing'])
+export function normalizeShape(rawLegend, rawLayers) {
+  const legend = {}
+  const air = new Set()
+  const src = rawLegend && typeof rawLegend === 'object' && !Array.isArray(rawLegend) ? rawLegend : {}
+  for (const [k, v] of Object.entries(src)) {
+    if (k === '.' || k === ' ') continue
+    const name = typeof v === 'string' ? v.trim().toLowerCase().replace(/^minecraft:/, '').replace(/\s+/g, '_') : v
+    if (k.length === 1 && AIR_WORDS.has(name)) { air.add(k); continue }
+    legend[k] = name
+  }
+  const wellFormed = Array.isArray(rawLayers) && rawLayers.every(l => Array.isArray(l) && l.every(r => typeof r === 'string'))
+  const layers = wellFormed && air.size ? rawLayers.map(l => l.map(r => [...r].map(ch => air.has(ch) ? '.' : ch).join(''))) : rawLayers
+  return { legend, layers }
+}
+
 function applyBlueprintAnswer(answer, why) {
   const b = answer.blueprint
   if (!b || typeof b !== 'object') return { kind: 'invalid', id: 'plan_blueprint', reason: 'plan_blueprint without a blueprint' }
   const title = sanitizeChat(b.title, 60).trim() || 'blueprint'
   const bad = reason => ({ kind: 'invalid', id: 'plan_blueprint', reason, title })
-  const legend = b.legend && typeof b.legend === 'object' && !Array.isArray(b.legend) ? b.legend : {}
-  const bp = { title, kind: b.kind, legend, layers: b.layers, source: 'leader' }
+  const bp = { title, kind: b.kind, ...normalizeShape(b.legend, b.layers), source: 'leader' }
   const v = validate(bp, FREE_FORM)
   if (!v.ok) return bad(v.reason)
   if (bp.kind === 'dig' && cells(bp).some(c => c.want !== 'air')) return bad('a dig blueprint can only contain . (dig) and spaces')

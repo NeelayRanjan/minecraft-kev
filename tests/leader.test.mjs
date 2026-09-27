@@ -898,3 +898,15 @@ test('buildLeaderMessages: the blueprint cut after PLANS and the feedback line, 
   assert.doesNotMatch(fb, /^BLUEPRINT cloud/m)
   assert.doesNotMatch(u, /BLUEPRINT FEEDBACK/)
 })
+
+test('plan_blueprint: the legend is normalized first (live probe: "." keyed to air, minecraft: prefixes, spaces, air values)', () => {
+  // the exact live answer: a closed 3x3x2 stone ring with an air core; it passes the legend and is refused by the door rule only
+  const live = JSON.parse('{"action":"plan_blueprint","blueprint":{"kind":"build","title":"...","legend":{"S":"stone",".":"air"},"layers":[["SSS","S.S","SSS"],["SSS","S.S","SSS"]]}}')
+  assert.deepEqual(ga(live), { kind: 'invalid', id: 'plan_blueprint', reason: 'no way in (needs a door gap)', title: '...' })
+  // the same ring with a door gap is accepted, and the answer holds the normalized blueprint
+  const door = { title: 'ring', kind: 'build', legend: { S: 'stone', '.': 'air', A: 'Cave Air', p: 'minecraft:Oak Planks' }, layers: [['SAS', 'S.S', 'SpS'], ['S S', 'S.S', 'SSS']] }
+  const r = ga({ action: 'plan_blueprint', blueprint: door })
+  assert.equal(r.kind, 'plan_blueprint', r.reason)
+  assert.deepEqual(r.blueprint.legend, { S: 'stone', p: 'oak_planks' })
+  assert.deepEqual(r.blueprint.layers, [['S.S', 'S.S', 'SpS'], ['S S', 'S.S', 'SSS']])
+})
