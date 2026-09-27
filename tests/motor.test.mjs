@@ -315,3 +315,33 @@ test('planksLog: the most-held log, unless the top goal wants one species and it
   assert.equal(planksLog({ birch_log: 5, oak_log: 1 }, { kind: 'chain', arg: null }), 'birch_log')
   assert.equal(planksLog({}, null), undefined)
 })
+
+// Live stress session: at 1 hp the bot fled into lava ("kev_80 tried to swim in lava"). Lava counts as wet for the flee
+// heading, the surface walk and the descent (wetNear), and the dry walk (dryMovements) never steps next to lava.
+import { lavaAdjacent, LAVA_STEP_COST } from '../agent/motor.js'
+test('wetNear: lava (source or flowing) counts like water', () => {
+  const bot = { ...fakeBot(), entities: {} }
+  const motor = new Motor(bot, mcDataFor('1.20.4'), new EpisodeMemory())
+  const c = new V3(10, 64, 10)
+  bot.blockAt = p => (p.x === 11 && p.y === 64 && p.z === 10 ? { name: 'lava', boundingBox: 'empty' } : { name: 'air', boundingBox: 'empty' })
+  assert.equal(motor.wetNear(c), true)
+  bot.blockAt = () => ({ name: 'air', boundingBox: 'empty' })
+  assert.equal(motor.wetNear(c), false)
+})
+test('lavaAdjacent / dryMovements: a cell next to (or over) lava costs LAVA_STEP_COST; lava stays in blocksToAvoid', () => {
+  const lavaAt = new Set(['5,63,5'])
+  const at = p => ({ name: lavaAt.has(`${p.x},${p.y},${p.z}`) ? 'lava' : 'air' })
+  assert.equal(lavaAdjacent(at, new V3(6, 63, 5)), true, 'beside it')
+  assert.equal(lavaAdjacent(at, new V3(5, 64, 5)), true, 'standing over it')
+  assert.equal(lavaAdjacent(at, new V3(5, 63, 5)), true, 'in it')
+  assert.equal(lavaAdjacent(at, new V3(8, 63, 5)), false, 'three cells away')
+  const bot = { ...fakeBot(), entities: {} }
+  bot.blockAt = at
+  const md = mcDataFor('1.20.4')
+  const motor = new Motor(bot, md, new EpisodeMemory())
+  assert.ok(motor.dryMovements.blocksToAvoid.has(md.blocksByName.lava.id))
+  assert.equal(motor.dryMovements.exclusionStep({ position: new V3(6, 63, 5) }), LAVA_STEP_COST)
+  assert.equal(motor.dryMovements.exclusionStep({ position: new V3(9, 63, 5) }), 0)
+  assert.ok(LAVA_STEP_COST > 100, 'more than the pathfinder\'s give-up cost')
+  assert.equal(motor.movements.exclusionStep({ position: new V3(6, 63, 5) }), 0, 'the ordinary movements are unchanged')
+})

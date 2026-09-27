@@ -72,6 +72,16 @@ export function liquidAround(blockAt, ahead) {
   return null
 }
 
+// Lava in the cell, the four beside it (at its level and the floor's) or under it: the dry walk (dryMovements, used by
+// flee and explore_toward(down)) never steps there (live stress session: the bot at 1 hp fled into lava). Pure.
+export const LAVA_STEP_COST = 1000   // past the pathfinder's give-up cost (100): the move is dropped
+export function lavaAdjacent(blockAt, pos) {
+  for (const [dx, dy, dz] of [[0, 0, 0], [0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [1, -1, 0], [-1, -1, 0], [0, -1, 1], [0, -1, -1]]) {
+    if (blockAt(pos.offset(dx, dy, dz))?.name === 'lava') return true
+  }
+  return false
+}
+
 // Standing blocks a bot in water swims to (motor.leaveWater). A shore cell is one of them with two passable cells above
 // (no water, lava or water plants): its top is above the water line.
 export const SHORE_BLOCKS = ['grass_block', 'sand', 'dirt', 'stone', 'gravel', 'coarse_dirt', 'podzol', 'red_sand', 'sandstone',
@@ -189,6 +199,9 @@ export class Motor {
     this.dryMovements = new Movements(bot, mcData)
     Object.assign(this.dryMovements, { canDig: true, allow1by1towers: true, maxDropDown: 3, liquidCost: 25 })
     for (const n of ['crafting_table', 'furnace']) this.dryMovements.blocksCantBreak.add(mcData.blocksByName[n].id)
+    // lava (source or flowing: one block name) is in blocksToAvoid by default; a cell next to it is excluded too
+    this.dryMovements.blocksToAvoid.add(mcData.blocksByName.lava.id)
+    this.dryMovements.exclusionAreasStep.push(b => b?.position && lavaAdjacent(p => bot.blockAt(p), b.position) ? LAVA_STEP_COST : 0)
     // Short approaches next to a frame or a pool: no digging, no scaffolding (the pathfinder would tower with the
     // corner cobblestone, inside the frame), no parkour.
     this.walkMovements = new Movements(bot, mcData)
@@ -1212,10 +1225,11 @@ export class Motor {
 
   unsafeToStep(ahead) { return liquidAround(p => this.bot.blockAt(p), ahead) }
 
-  // Water in the 3 x 4 x 3 cells around `c` (dy -1..2).
+  // Water or lava in the 3 x 4 x 3 cells around `c` (dy -1..2): flee, the surface walk and the descent turn away from it.
   wetNear(c) {
     for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 2; dy++) {
-      if (this.bot.blockAt(c.offset(dx, dy, dz))?.name === 'water') return true
+      const n = this.bot.blockAt(c.offset(dx, dy, dz))?.name
+      if (n === 'water' || n === 'lava') return true
     }
     return false
   }
