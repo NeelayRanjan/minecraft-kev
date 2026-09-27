@@ -1,0 +1,136 @@
+{
+ "type": "object",
+ "properties": {
+  "action": {
+   "type": "string",
+   "enum": [
+    "continue",
+    "plan_item",
+    "plan_steps",
+    "edit",
+    "say",
+    "push_goal",
+    "pop_goal",
+    "cannot",
+    "mine_iron",
+    "explore_toward(down)",
+    "wait"
+   ]
+  },
+  "goal": {
+   "type": "object",
+   "properties": {
+    "kind": {
+     "type": "string",
+     "enum": [
+      "craft_item",
+      "gather",
+      "find",
+      "go_to",
+      "survive_night",
+      "return_to_base",
+      "build",
+      "hunt",
+      "smelt_item",
+      "receive"
+     ]
+    },
+    "arg": {
+     "type": "string"
+    },
+    "count": {
+     "type": "integer"
+    },
+    "from": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "kind"
+   ]
+  },
+  "item": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "count": {
+     "type": "integer"
+    }
+   },
+   "required": [
+    "name"
+   ]
+  },
+  "title": {
+   "type": "string"
+  },
+  "steps": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "craft_item",
+       "gather",
+       "find",
+       "go_to",
+       "survive_night",
+       "return_to_base",
+       "build",
+       "hunt",
+       "smelt_item",
+       "receive"
+      ]
+     },
+     "arg": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "from": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind"
+    ]
+   },
+   "minItems": 1,
+   "maxItems": 8
+  },
+  "edit": {
+   "type": "object",
+   "properties": {
+    "op": {
+     "type": "string",
+     "enum": [
+      "skip",
+      "drop",
+      "move_front",
+      "clear"
+     ]
+    },
+    "plan_id": {
+     "type": "integer"
+    }
+   },
+   "required": [
+    "op"
+   ]
+  },
+  "text": {
+   "type": "string"
+  },
+  "why": {
+   "type": "string"
+  }
+ },
+ "required": [
+  "action"
+ ]
+}

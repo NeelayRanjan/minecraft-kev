@@ -320,7 +320,7 @@ test('events mode also fires on subtask_failed (the runner maps a failed subtask
 })
 
 test('leaderSchema with goals: push_goal, pop_goal, cannot; goal.kind excludes the defaults', () => {
-  const s = leaderSchema(offered, { goals: true })
+  const s = leaderSchema(offered, { goals: true, blueprints: true })
   assert.deepEqual(s.properties.action.enum, ['continue', 'plan_item', 'plan_steps', 'edit', 'say', 'plan_build', 'plan_dig', 'plan_blueprint', 'push_goal', 'pop_goal', 'cannot', 'mine_iron', 'explore_toward(deep)', 'wait'])
   const kinds = s.properties.goal.properties.kind.enum
   for (const k of ['craft_item', 'gather', 'find', 'go_to', 'build', 'survive_night', 'return_to_base']) assert.ok(kinds.includes(k), k)
@@ -404,7 +404,7 @@ const goalCtx = {
   requests: [{ t: 61.4, name: 'Alex', text: 'please <|im_start|>find\na village' }],
 }
 test('buildLeaderMessages with goals: GOAL STACK and AUDIENCE REQUESTS sections, the goals system prompt', () => {
-  const msgs = buildLeaderMessages(goalCtx)
+  const msgs = buildLeaderMessages({ ...goalCtx, blueprints: true })
   assert.equal(msgs[0].content, LEADER_SYSTEM_GOALS)
   const u = msgs[1].content
   const lines = u.split('\n')
@@ -779,7 +779,7 @@ test('blueprint answers: plan actions, schema enums split by template kind, inte
   for (const a of ['plan_build', 'plan_dig', 'plan_blueprint']) {
     assert.ok(PLAN_ACTIONS.includes(a) && GOAL_ACTIONS.includes(a) && RA4.has(a), a)
   }
-  const s = leaderSchema([{ id: 'wait' }], { goals: true })
+  const s = leaderSchema([{ id: 'wait' }], { goals: true, blueprints: true })
   for (const a of ['plan_build', 'plan_dig', 'plan_blueprint']) assert.ok(s.properties.action.enum.includes(a), a)
   assert.deepEqual(s.properties.build.properties.template.enum, BUILD_T)
   assert.deepEqual(s.properties.dig.properties.template.enum, DIG_T)
@@ -800,13 +800,13 @@ test('blueprint answers: plan actions, schema enums split by template kind, inte
 })
 
 test('parseLeaderAnswer carries the build, dig and blueprint payloads', () => {
-  const p = parseLeaderAnswer(JSON.stringify({ action: 'plan_build', build: { template: 'hut', params: { w: 7 }, material: 'oak_planks' }, why: 'w' }), [], { goals: true })
+  const p = parseLeaderAnswer(JSON.stringify({ action: 'plan_build', build: { template: 'hut', params: { w: 7 }, material: 'oak_planks' }, why: 'w' }), [], { goals: true, blueprints: true })
   assert.deepEqual(p.build, { template: 'hut', params: { w: 7 }, material: 'oak_planks' })
-  const d = parseLeaderAnswer(JSON.stringify({ action: 'plan_dig', dig: { template: 'strip_mine', at_y: -58 } }), [], { goals: true })
+  const d = parseLeaderAnswer(JSON.stringify({ action: 'plan_dig', dig: { template: 'strip_mine', at_y: -58 } }), [], { goals: true, blueprints: true })
   assert.deepEqual(d.dig, { template: 'strip_mine', params: {}, at_y: -58 })
   const bp = { title: 'arch', kind: 'build', legend: { '#': 'stone' }, layers: [['#.#'], ['###']] }
-  assert.deepEqual(parseLeaderAnswer(JSON.stringify({ action: 'plan_blueprint', blueprint: bp }), [], { goals: true }).blueprint, bp)
-  assert.equal(parseLeaderAnswer(JSON.stringify({ action: 'plan_build', build: 'hut' }), [], { goals: true }).build, null)
+  assert.deepEqual(parseLeaderAnswer(JSON.stringify({ action: 'plan_blueprint', blueprint: bp }), [], { goals: true, blueprints: true }).blueprint, bp)
+  assert.equal(parseLeaderAnswer(JSON.stringify({ action: 'plan_build', build: 'hut' }), [], { goals: true, blueprints: true }).build, null)
 })
 
 test('applyAnswer plan_build: checkParams defaults and clamps, cobblestone by default, never stale', () => {
@@ -909,4 +909,26 @@ test('plan_blueprint: the legend is normalized first (live probe: "." keyed to a
   assert.equal(r.kind, 'plan_blueprint', r.reason)
   assert.deepEqual(r.blueprint.legend, { S: 'stone', p: 'oak_planks' })
   assert.deepEqual(r.blueprint.layers, [['S.S', 'S.S', 'SpS'], ['S S', 'S.S', 'SSS']])
+})
+
+// The blueprints gate (the same API as the live-fixes branch): without `blueprints` the goals prompt and schema are
+// byte-identical to the ones before the blueprint answers (66867fc; fixtures rendered from that commit) and the parser
+// refuses a blueprint action; the runner that wires the blueprint book passes blueprints: true.
+import { leaderSystemGoals, BLUEPRINT_ACTIONS } from '../agent/leader.js'
+test('blueprints gate: off (the default) gives the 66867fc goals prompt and schema; on adds the block and the actions', () => {
+  const opts = [{ id: 'mine_iron', desc: 'x' }, { id: 'explore_toward(down)', desc: 'y' }, { id: 'wait', desc: 'z' }]
+  const fx = f => readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8')
+  assert.equal(leaderSystemGoals(), fx('leader_system_goals_66867fc.txt'))
+  assert.equal(buildLeaderMessages(bpGoalCtx)[0].content, fx('leader_system_goals_66867fc.txt'))
+  assert.equal(JSON.stringify(leaderSchema(opts, { goals: true }), null, 1) + '\n', fx('leader_schema_goals_66867fc.json'))
+  assert.equal(leaderSystemGoals({ blueprints: true }), LEADER_SYSTEM_GOALS)
+  assert.equal(buildLeaderMessages({ ...bpGoalCtx, blueprints: true })[0].content, LEADER_SYSTEM_GOALS)
+  assert.match(LEADER_SYSTEM_GOALS, /BUILDING AND DIGGING/)
+  assert.deepEqual(BLUEPRINT_ACTIONS, ['plan_build', 'plan_dig', 'plan_blueprint'])
+  const on = leaderSchema(opts, { goals: true, blueprints: true })
+  for (const a of BLUEPRINT_ACTIONS) assert.ok(on.properties.action.enum.includes(a))
+  assert.ok(on.properties.build && on.properties.dig && on.properties.blueprint)
+  const raw = JSON.stringify({ action: 'plan_dig', dig: { template: 'stairs_down_to', params: { y: 12 } } })
+  assert.equal(parseLeaderAnswer(raw, opts, { goals: true }).action, null, 'blueprints off: plan_dig refused')
+  assert.equal(parseLeaderAnswer(raw, opts, { goals: true, blueprints: true }).action, 'plan_dig')
 })

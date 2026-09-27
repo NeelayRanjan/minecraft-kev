@@ -268,19 +268,21 @@ const BLUEPRINT_SCHEMA = {
   required: ['title', 'kind', 'layers'],
 }
 
-export const leaderSchema = (options, { goals = false } = {}) => goals ? {
+// blueprints (default false): the plan_build / plan_dig / plan_blueprint answers and their payloads; without, the
+// schema is the one before the blueprint answers (66867fc). The runner that wires the blueprint book passes true.
+export const BLUEPRINT_ACTIONS = ['plan_build', 'plan_dig', 'plan_blueprint']
+const goalActionsFor = ({ blueprints = false } = {}) => blueprints ? GOAL_ACTIONS : GOAL_ACTIONS.filter(a => !BLUEPRINT_ACTIONS.includes(a))
+export const leaderSchema = (options, { goals = false, blueprints = false } = {}) => goals ? {
   type: 'object',
   properties: {
-    action: { type: 'string', enum: ['continue', ...GOAL_ACTIONS, ...options.map(o => o.id)] },
+    action: { type: 'string', enum: ['continue', ...goalActionsFor({ blueprints }), ...options.map(o => o.id)] },
     goal: STEP_SCHEMA,
     item: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' } }, required: ['name'] },
     title: { type: 'string' },
     steps: { type: 'array', items: STEP_SCHEMA, minItems: 1, maxItems: MAX_PLAN_STEPS },
     edit: { type: 'object', properties: { op: { type: 'string', enum: EDIT_OPS }, plan_id: { type: 'integer' } }, required: ['op'] },
     text: { type: 'string' },
-    build: BUILD_SCHEMA,
-    dig: DIG_SCHEMA,
-    blueprint: BLUEPRINT_SCHEMA,
+    ...(blueprints ? { build: BUILD_SCHEMA, dig: DIG_SCHEMA, blueprint: BLUEPRINT_SCHEMA } : {}),
     why: { type: 'string' },
   },
   required: ['action'],
@@ -293,7 +295,7 @@ export const leaderSchema = (options, { goals = false } = {}) => goals ? {
 // With goals, the goal actions are accepted and `goal` ({kind, arg, count[, from]} as sent, or null) is returned for
 // applyAnswer to validate, plus the plan answer's payload (item, title + steps, edit, text) when the action is one of
 // PLAN_ACTIONS; without, the result is {action, why} exactly as before.
-export function parseLeaderAnswer(text, options, { goals = false } = {}) {
+export function parseLeaderAnswer(text, options, { goals = false, blueprints = false } = {}) {
   if (typeof text !== 'string') return { action: null, why: '' }
   let s = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(s)
@@ -304,7 +306,7 @@ export function parseLeaderAnswer(text, options, { goals = false } = {}) {
   try { obj = JSON.parse(s.slice(start, end + 1)) } catch { return { action: null, why: '' } }
   const why = typeof obj.why === 'string' ? obj.why.slice(0, 300) : ''
   const a = typeof obj.action === 'string' ? obj.action.trim() : null
-  const ok = a === 'continue' || options.some(o => o.id === a) || (goals && GOAL_ACTIONS.includes(a))
+  const ok = a === 'continue' || options.some(o => o.id === a) || (goals && goalActionsFor({ blueprints }).includes(a))
   if (!goals) return { action: ok ? a : null, why }
   const goal = obj.goal && typeof obj.goal === 'object' ? parsedGoal(obj.goal) : null
   const out = { action: ok ? a : null, why, goal }
@@ -368,7 +370,22 @@ Answer with JSON only: {"action": "continue" | "<subtask id>", "why": "<one sent
 
 // Goal mode: the same rules, then the goal rules with the declared vocabularies (from goals.js), then the answer format.
 const list = xs => xs.join(', ')
-export const LEADER_SYSTEM_GOALS = `${LEADER_RULES}
+// The BUILDING AND DIGGING block and the plan_build / plan_dig / plan_blueprint answers are offered only with blueprints
+// (the runner wires the blueprint book); without, the prompt is byte-identical to the one before the blueprint answers
+// (66867fc, tests/fixtures/leader_system_goals_66867fc.txt).
+const BLUEPRINT_RULES = `BUILDING AND DIGGING. A shape is built or dug from the requesting player's feet, facing where they look. Templates, name(param min-max [default], ...) kind: what it is:
+${describeTemplates()}
+- plan_build: {"action": "plan_build", "build": {"template": "hut", "params": {"w": 5, "d": 5, "h": 3}, "material": "cobblestone"}, "why": ...}; material a full block (default cobblestone);
+- plan_dig: {"action": "plan_dig", "dig": {"template": "strip_mine", "params": {}, "at_y": -58}, "why": ...}; at_y (optional) walks down or up to that level first;
+- plan_blueprint: {"action": "plan_blueprint", "blueprint": {"title": "arch", "kind": "build", "legend": {"#": "stone_bricks"}, "layers": [["#.#"], ["###"]]}, "why": ...}; layers bottom first, rows nearest first, one legend character per block, '.' air, ' ' any.
+Use a template whenever one fits; write your own blueprint (plan_blueprint) only for a shape no template covers, full blocks only, at most 9x9x9.
+Examples: "build me a small stone hut" -> plan_build hut w 5 d 5 h 3 material cobblestone; "stairs up 6 blocks" -> plan_build staircase_up height 6; "dig a 3x3x2 cave here" -> plan_dig room w 3 d 3 h 2; "mine down to y 12" -> plan_dig stairs_down_to y 12; "strip mine for diamonds" -> plan_dig strip_mine at_y -58.
+`
+export function leaderSystemGoals({ blueprints = false } = {}) {
+  const bpActions = blueprints ? ', plan_build, plan_dig, plan_blueprint' : ''
+  const bpFormat = blueprints ? ' | "plan_build" | "plan_dig" | "plan_blueprint"' : ''
+  const bpFields = blueprints ? ', "build" (plan_build only), "dig" (plan_dig only), "blueprint" (plan_blueprint only)' : ''
+  return `${LEADER_RULES}
 
 Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and on top any goals pushed by you or asked for by the audience (players chatting with the bot). kev works on the top goal until it is done or stuck, then the one below resumes. Plans: the PLANS section lists the bot's plans, ordered goal steps it works through one at a time, the front plan first (numbered #1, #2, ...), then any plan blocked in the last 10 minutes ("blocked #n ...: reason"; the code refuses to plan it again until a new request asks). Besides "continue" and a subtask id you can answer:
 - plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};
@@ -388,19 +405,14 @@ Goal kinds and their arguments (nothing else is accepted):
 - survive_night, return_to_base: no arg.
 For a request that names an item, answer plan_item with the item's minecraft-data name and a count (default 1; 'some' = 8); the code expands it into steps and announces them, so never list the steps yourself. plan_steps only for requests that are not an item (a trip, a sequence of goals). edit changes the plans on request ('skip that', 'forget the compass', 'do the stairs first', 'stop everything'). say answers a question or acknowledges; it is not an action. cannot only for things outside every list.
 The split between plan_item and push_goal: an item the bot has to craft or smelt is plan_item, a raw material it gathers is one push_goal gather. Examples: "make me a compass" -> plan_item compass count 1; "some torches" -> plan_item torch count 8; "make me an iron sword" -> plan_item iron_sword count 1; "get me some logs" -> push_goal gather log count 8; "grab a bit of stone" -> push_goal gather cobblestone count 8; "can you find diamonds" -> push_goal find diamond_ore; "come home" -> push_goal return_to_base; Steve says "come here" -> push_goal go_to, arg player:Steve; Steve says "I have 4 redstone for you" -> push_goal receive, arg redstone, count 4, from Steve.
-BUILDING AND DIGGING. A shape is built or dug from the requesting player's feet, facing where they look. Templates, name(param min-max [default], ...) kind: what it is:
-${describeTemplates()}
-- plan_build: {"action": "plan_build", "build": {"template": "hut", "params": {"w": 5, "d": 5, "h": 3}, "material": "cobblestone"}, "why": ...}; material a full block (default cobblestone);
-- plan_dig: {"action": "plan_dig", "dig": {"template": "strip_mine", "params": {}, "at_y": -58}, "why": ...}; at_y (optional) walks down or up to that level first;
-- plan_blueprint: {"action": "plan_blueprint", "blueprint": {"title": "arch", "kind": "build", "legend": {"#": "stone_bricks"}, "layers": [["#.#"], ["###"]]}, "why": ...}; layers bottom first, rows nearest first, one legend character per block, '.' air, ' ' any.
-Use a template whenever one fits; write your own blueprint (plan_blueprint) only for a shape no template covers, full blocks only, at most 9x9x9.
-Examples: "build me a small stone hut" -> plan_build hut w 5 d 5 h 3 material cobblestone; "stairs up 6 blocks" -> plan_build staircase_up height 6; "dig a 3x3x2 cave here" -> plan_dig room w 3 d 3 h 2; "mine down to y 12" -> plan_dig stairs_down_to y 12; "strip mine for diamonds" -> plan_dig strip_mine at_y -58.
-Answer every audience request with exactly one of plan_item, plan_steps, plan_build, plan_dig, plan_blueprint, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
+${blueprints ? BLUEPRINT_RULES : ''}Answer every audience request with exactly one of plan_item, plan_steps${bpActions}, edit, say, push_goal, pop_goal or cannot, whatever the current subtask is. Without a number, gather uses count 8. When you answer cannot, name what the bot can do instead (an item, a trip, the goal kinds above), not the current subtasks.
 Prefer goals to subtask overrides: push a goal and let kev choose the subtasks.
 Never push a goal that sends the bot to the surface at night (go_to surface, gather wood, find water or a cave on the surface): the night protocol comes first; push it in the morning or answer cannot.
 "continue" remains the default when there is no request and the goals make progress.
 
-Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say" | "plan_build" | "plan_dig" | "plan_blueprint" | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only), "build" (plan_build only), "dig" (plan_dig only), "blueprint" (plan_blueprint only), "why": "<one sentence>"}`
+Answer with JSON only: {"action": "continue" | "push_goal" | "pop_goal" | "cannot" | "plan_item" | "plan_steps" | "edit" | "say"${bpFormat} | "<subtask id>", "goal": {"kind": "<goal kind>", "arg": "<argument>", "count": <integer>, "from": "<player>"} (push_goal only), "item": {"name": "<item>", "count": <integer>} (plan_item only), "title": "<title>", "steps": [<goal>, ...] (plan_steps only), "edit": {"op": "skip" | "drop" | "move_front" | "clear", "plan_id": <integer>} (edit only), "text": "<line>" (say only)${bpFields}, "why": "<one sentence>"}`
+}
+export const LEADER_SYSTEM_GOALS = leaderSystemGoals({ blueprints: true })
 
 const humanize = s => String(s).replace(/_/g, ' ')
 const STAGE_NAMES = ['iron pickaxe', 'iron tools', 'iron armor', 'diamond tools', 'lit nether portal']
@@ -652,7 +664,7 @@ function renderBlueprint(cut, feedback) {
 
 export function buildLeaderMessages({ stateText, chainText, need = null, options, current = null, history = [], forecasts = {}, forecastTrend = {}, kevPick = null,
   subtaskStats: stats = {}, ownHistory = [], minutesLeft = null, deaths = 0, recentResults = [], goalStack = null, requests = [], plans = null,
-  blueprintCut = null, blueprintFeedback = null }) {
+  blueprintCut = null, blueprintFeedback = null, blueprints = false }) {
   const goals = goalStack != null
   const none = xs => xs.length ? xs.join('\n') : '(none yet)'
   const events = history.filter(e => SHOWN_EVENTS.has(e.kind)).slice(-30).map(renderEvent)
@@ -676,5 +688,5 @@ export function buildLeaderMessages({ stateText, chainText, need = null, options
     goals ? 'Reply with JSON only: {"action": "continue" | "plan_item" | "plan_steps" | "edit" | "say" | "push_goal" | "pop_goal" | "cannot" | "<subtask id from the list>", "goal" (push_goal), "item" (plan_item), "title" and "steps" (plan_steps), "edit" (edit), "text" (say), "why": "<one sentence>"}'
       : 'Reply with JSON only: {"action": "continue" | "<subtask id from the list>", "why": "<one sentence>"}',
   ].join('\n')
-  return [{ role: 'system', content: goals ? LEADER_SYSTEM_GOALS : LEADER_SYSTEM }, { role: 'user', content: user }]
+  return [{ role: 'system', content: goals ? leaderSystemGoals({ blueprints }) : LEADER_SYSTEM }, { role: 'user', content: user }]
 }
