@@ -10,6 +10,12 @@ The acceptance criterion: **every decision comes with a calibrated probability t
 
 Repo: https://github.com/NeelayRanjan/minecraft-kev (private). Trained checkpoint and data are release assets, not in git (see Setup).
 
+## Status (2026-09-27, day 7: blueprints, building and digging from chat)
+
+**Built on branch `building`** (spec `docs/superpowers/specs/2026-09-26-blueprints-building-mining-design.md`, plan `docs/superpowers/plans/2026-09-26-blueprints.md`, 7 tasks, subagent-driven): one blueprint format for building and digging (`agent/blueprints.js`: a legend and ASCII layers, anchored and faced in the world), parametric templates (`agent/templates.js`: hut, wall, floor, tower, pillar, bridge, staircase_up/down; room, tunnel, strip_mine, stairs_down_to/up_to, shaft_down, pit; long patterns streamed in segments of 8), the `BlueprintBook` (ids `bp<n>`, progress, the state line), goal kinds `build(bp<n>)`/`dig(bp<n>)`, the leader's `plan_build`/`plan_dig`/`plan_blueprint` answers (behind a `blueprints` gate, default off; the runner turns it on), and two executor plugins with arena checks (`build_blueprint`: foundation, far-first order, scaffold columns removed afterwards; `dig_blueprint`: liquid checks with one right turn, vein mining). The runner (Task 7) anchors a shape at the requesting player's floored feet and look direction (the server-reported position when the player is out of view, the bot when nobody asked), prices it with the recipe expander, announces "Plan #n hut (5x5x3): ...", adds the progress to step lines and `plan`, shows the active blueprint as a per-layer grid on the status page, gives the leader a 9x9 cut while a blueprint goal is active or blocked and one BLUEPRINT FEEDBACK retry for a refused free-form shape.
+
+**The smoke** (`out/blueprint_smoke.*`, `reports/leader/blueprint_smoke.md`; 12 min, seed 3000, `qwen38-27b-iq2s`, a scripted player "tester"): the leader answered `plan_build hut {w 5}`, `plan_dig room {w 3}` and `plan_dig stairs_down_to {y 40}`; the hut was anchored 2 blocks in front of tester (no flat ground nearby: a wooded slope) but never built (two `unreachable (80 cells)` from a pit, then kev picked `explore_toward(surface)` 34 times, the goal was given up as stuck after 300 s); the 3x3x2 room was dug to completion; the staircase reached segment 2 of 4 before the stone pickaxe wore out and `dig_blueprint` answered `needs_tool` to the end. Open: kev (mc-v3) was never trained on these options and prefers a move over `build_blueprint`/`dig_blueprint` (the leader's overrides did the digging); a dig goal does not replace a broken pickaxe; a gather step is capped at 32 absolute, so the hut's "mine 8 cobblestone" step was done at once with 64 held (the build goal tops up instead).
+
 ## Status (2026-09-26, day 6: first live chat session; plans, full crafting menu, plugins)
 
 **The first live chat session** (`out/live_s3000_1422.*`, `reports/leader/live_s3000_1422.md`; the day-5 goal-stack leader, seed 3000, 60 min, the user joined the Paper server as a player and typed requests) found three problems before any of this branch's code existed. Paper 1.20.4 sends player chat with the translate key `'<%s> %s'`, not `chat.type.text`, so every `<name> text` line the user typed was silently dropped until `parseChatMessage` accepted that key too. The 2-bit `qwen38-27b-iq2s` leader answered `cannot` with a boilerplate list of subtasks for a plainly gatherable request ("get me some logs") until the prompt mapped request phrasing to goal kinds with worked examples. And the run itself died 3 times, per the Paper server log: once "slain by Spacers_Choice" (the user hit the bot while it kept walking and waiting, since a player was not a threat then), then twice "impaled by Drowned" at night on the beach near spawn, after `flee` had carried the bot into deep water where `leaveWater` gave up beyond 12 m. Those three findings are what this branch was built to fix (plan `docs/superpowers/plans/2026-09-26-plans-crafting-plugins.md`, 9 tasks, subagent-driven with a review per task).
@@ -123,12 +129,24 @@ agent/
                    net of what is held, tools hoisted first                                                                                     (pure)
   plans.js         PlanBook: ordered multi-step plans (add/front/advance/skip/drop/moveFront/clear/render), stepText                            (pure)
   plugins.js       PluginRegistry: hot-reloadable executors from agent/plugins/*.mjs (500 ms debounce, three-bugs disable), appendRequestLog
+  blueprints.js    the blueprint format (legend + ASCII layers, anchor, facing): toWorld, cells, materials, diff, validate, foundation,
+                   liquidBlocked, facingFromYaw, layerCut (the leader's 9x9 cut)                                                              (pure)
+  templates.js     parametric blueprints: hut, wall, floor, tower, pillar, bridge, staircase_up/down (build); room, tunnel, strip_mine,
+                   stairs_down_to/up_to, shaft_down, pit (dig); checkParams, makeBlueprint, nextSegment (streamed), turnSegment      (pure)
+  blueprint_book.js BlueprintBook (ids bp<n>): progress, the state line, scaffold records, advance; bookAccessor = the accessor
+                   {get, progress, advance, update, scaffold} the runner gives to goals.registerBlueprintAccessor and motor.blueprints  (pure)
+  blueprint_plans.js the runner's helpers for blueprint plans: anchorFor (player feet + facing), parseDataPos, splitGatherSteps,
+                   blueprintTitle, progressText, blueprintGrid (the status page)                                                         (pure)
+  blueprint_exec.js loadBlueprint and the time budget shared by the two blueprint executors
+  reach.js         where to stand to place or dig a cell (reachSpots, bestFace, line of sight), build order, scaffold plans      (pure)
   status_page.js   startStatusServer({port, getState}) for --status-port: one static page polling /state.json every second
   kev_client.js    POST /v1/systemone
   recorder.js      first-person video at a fixed fps over prismarine-viewer's headless internals (entity whitelist)
   server_ctl.js    startServer({port, seed}) -> one Paper instance per bot (servers/<port>/, shared libraries)
   run_episode.mjs  one episode; gen_data.mjs many in parallel; rebuild_data.mjs records from raw logs
   plugins/         one file per motor primitive (mine, smelt_item, craft_item, hunt, go_to_player, receive) + README.md (the plugin contract)
+  plugins/build_blueprint.mjs  build(bp<n>): layer by layer, far cells first, digs wrong blocks, foundation, scaffold columns (removed after), 30 placements a call
+  plugins/dig_blueprint.mjs    dig(bp<n>): top layer down, near cells first, liquid checks (a tunnel turns right once), vein-mines exposed ore, 40 digs a call
 docker/            Dockerfile, compose.yml, setup.sh, README.md: the whole pipeline in one CUDA container (the Windows machine)
 tests/             node --test tests/*.test.mjs ; tests/integration/{motor_check,chain_check,climb_check,mem_probe}.mjs start their own server (no GPU);
                    chain_check builds an arena with /fill and proves every chain executor (armor, diamonds, gravel, obsidian casting, the portal, lighting);
@@ -197,7 +215,8 @@ LEADER_MODEL=<ollama model> scripts/leader_runs.sh 3000 60     # the six configu
 scripts/leader_live.sh 3000 120                  # foreground: kev + the subgoals leader, --live-view 3007, --status-port 3008, video on; join 127.0.0.1:25580 (offline, any
      # name), press T to type a request, watch at http://127.0.0.1:3007, the plans/goal-stack/chat status page at http://127.0.0.1:3008;
      # chat words "plan"/"plans"/"stack" print the plan book with no leader call; example requests: "make a compass", "come here",
-     # "I have 4 redstone for you", "skip that"
+     # "I have 4 redstone for you", "skip that"; building and digging: "build me a small stone hut" (in front of you), "stairs up 6 blocks",
+     # "dig a 3x3x2 cave here", "strip mine for diamonds" (walks down to y -58 first), "mine down to y 12"; the status page shows the blueprint's layers
 node agent/gen_data.mjs --seeds 40 --seed0 0 --procs 5 --minutes 22 --eps-action 0.1 --thin 8 --out data/x.jsonl --prefix x [--video --video-seeds 3]
 node agent/rebuild_data.mjs --prefix x --seed0 0 --seeds 40 --thin 8 [--drop survive_until_morning] --out data/x.jsonl   # relabel from out/x_s*.json
 python3 scripts/base_rates.py data/x.jsonl       # every noul should sit between 20% and 80% true; rare labels teach nothing
@@ -223,7 +242,7 @@ What generalizes and what does not: the LLM generalizes at the plan level for fr
 1. ~~Leader round two~~ done (day 5): both arms measured with the milestone-2 line; the motor safety fixes followed.
 2. ~~Milestone 2 with the leader at the right cadence~~ done (day 5): passed once with the goal-stack leader (subgoal-level triggers, not every subtask boundary).
 3. ~~A goal stack fed from chat~~ built (day 5) and extended this branch (day 6) with plans, the full crafting menu (`agent/recipes.js`) and hot-reloadable plugins, then run live once (`reports/leader/plans_smoke.md`, `reports/leader/live_s3000_1422.md`).
-4. **The building round**, next: a spec (to write) for blueprints (ASCII layers for a fixed design, parametric templates for a sized one — a wall length, a room count) and a `build_blueprint` executor that owns its own reach and scaffolding (pillar up, place-behind-a-wall, never trap the bot inside what it is building), offered as a plugin like the six already built. This is what "build a house" needs before it can be a `plan_item`/`plan_steps` target instead of a `cannot`.
+4. ~~The building round~~ built (day 7, branch `building`): blueprints, templates, the two executors and the runner wiring; smoked once (`reports/leader/blueprint_smoke.md`). Next for it: DAgger labels for `build_blueprint`/`dig_blueprint` so kev picks them, a pickaxe top-up in the dig goal, a live session with a player.
 5. **Randomised starting states and DAgger with LLM labels** (design in `docs/superpowers/plans/2026-09-25-randomised-starts.md`, now noting that plan steps and the six plugins are goal kinds the start spec can draw), after the building round lands so its spec can draw building requests too: draw inventory, time of day, spawn offset and a goal; replay a state captured from a hand-played session; label the states kev visits with the teacher where one exists and with the LLM (k samples, vote fractions as soft labels) where none does; retrain. This is what gives kev breadth under arbitrary subgoals.
 6. **One or two more demo primitives** beyond building: biome-directed exploration plus a village detector for "find a village". Then a held-out test: tasks never in training, scored on completion.
 7. Shelved until a nether run works: **kev steers** (`docs/superpowers/plans/2026-09-25-kev-steers.md`, Tasks 1-2 landed), the **vision** side quest (a qwen3-vl leader smoke on the recorder's frames), the supervisor rerun with mc-v3 on 40+ seeds.
