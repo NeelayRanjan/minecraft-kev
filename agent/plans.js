@@ -6,6 +6,8 @@ import { MINE, HUNT } from './recipes.js'
 
 const humanize = s => String(s).replace(/_/g, ' ')
 const ACTIVE = new Set(['pending', 'running'])
+export const BLOCKED_WINDOW_S = 600
+const normTitle = s => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
 // Active with a step left: a plan with no steps (expandItem of a held item) is done at add, and one whose cursor ran
 // past its steps (a restored book) is never the front.
 const live = p => ACTIVE.has(p.status) && p.cursor < p.steps.length
@@ -123,6 +125,47 @@ export class PlanBook {
     if (rest.length) lines.push(`then: ${rest.map(q => `#${q.id} ${q.title}`).join(', ')}`)
     return lines
   }
+  // A blocked plan with this title (case and spaces ignored) that ended within windowS of t, unless one of `requests`
+  // ({t}) arrived after it was blocked: the leader may not plan it again yet (final review: blocked plans were re-planned
+  // every ~300 s). The newest such plan, or null.
+  stillBlocked(title, t, requests = [], windowS = BLOCKED_WINDOW_S) {
+    const key = normTitle(title)
+    const p = [...this.plans].reverse().find(q => q.status === 'blocked' && normTitle(q.title) === key && q.end_t != null && t - q.end_t <= windowS)
+    if (!p) return null
+    return requests.some(r => r.t > p.end_t) ? null : p
+  }
+  // The leader's PLANS lines for plans blocked within windowS: "blocked #3 compass (120 s ago): stuck".
+  blockedLines(t, windowS = BLOCKED_WINDOW_S) {
+    return this.plans.filter(p => p.status === 'blocked' && p.end_t != null && t - p.end_t <= windowS)
+      .map(p => `blocked #${p.id} ${p.title} (${Math.round(t - p.end_t)} s ago): ${p.reason ?? 'stuck'}`)
+  }
+  // The leader's PLANS section: render() and then the recently blocked plans (with no active plan, only those).
+  leaderLines(t) {
+    const lines = this.render(), bl = this.blockedLines(t)
+    return bl.length ? [...(this.active().length ? lines : []), ...bl] : lines
+  }
+  // A running or pending plan with this title (a duplicate request adds nothing), else null.
+  activeByTitle(title) {
+    const key = normTitle(title)
+    return this.plans.find(p => ACTIVE.has(p.status) && normTitle(p.title) === key) ?? null
+  }
   toJSON() { return { plans: this.plans.map(p => ({ ...p, steps: p.steps.map(s => ({ ...s })) })) } }
   list() { return [...this.plans] }
+}
+
+// The code guards on a plan answer (plan_item or plan_steps), before the runner acts on it (pure):
+// - its title equals a running or pending plan's: marked {duplicate: <plan id>} (the runner replies "Already on it"
+//   and adds nothing);
+// - its title equals a plan blocked within BLOCKED_WINDOW_S and no request in `requests` ({t}) arrived after the block:
+//   refused as {kind: 'cannot', why: 'still blocked: <reason>'} (final review: render() hid blocked plans, so the leader
+//   planned the same blocked item again every ~300 s).
+// Any other answer is returned unchanged.
+export function guardPlanAnswer(res, book, t, requests = []) {
+  if (res?.kind !== 'plan_item' && res?.kind !== 'plan_steps') return res
+  const title = res.kind === 'plan_item' ? planTitle(res.item, res.count) : res.title
+  const dup = book.activeByTitle(title)
+  if (dup) return { ...res, duplicate: dup.id }
+  const b = book.stillBlocked(title, t, requests)
+  if (b) return { kind: 'cannot', id: null, why: `still blocked: ${b.reason ?? 'stuck'}`, guard: 'blocked_plan', plan_id: b.id, title: b.title }
+  return res
 }

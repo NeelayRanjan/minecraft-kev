@@ -593,6 +593,8 @@ test('applyAnswer plan_item: a minecraft-data item and a count (default 1)', () 
   assert.deepEqual(applyAnswer({ ...g4, answer: { action: 'plan_item', item: { name: 'grass', count: 1 } } }), { kind: 'invalid', id: 'plan_item', reason: 'unknown item grass' })
   assert.equal(applyAnswer({ ...g4, answer: { action: 'plan_item' } }).kind, 'invalid')
   assert.equal(applyAnswer({ ...g4, answer: { action: 'plan_item', item: { name: 'compass', count: 0 } } }).kind, 'invalid')
+  // final review minor: clamped to 64 (the expander's cap) so the title matches the plan
+  assert.equal(applyAnswer({ ...g4, answer: { action: 'plan_item', item: { name: 'torch', count: 500 } } }).count, 64)
   // goal-level: never stale
   assert.equal(applyAnswer({ ...g4, currentId: 'wait', answer: { action: 'plan_item', item: { name: 'torch', count: 8 } } }).kind, 'plan_item')
 })

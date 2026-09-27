@@ -145,7 +145,7 @@ function applyPlanAnswer(action, answer, why, obs) {
     if (!isItem(it.name)) return bad(`unknown item ${it.name}`)
     const count = it.count ?? 1
     if (!Number.isInteger(count) || count < 1) return bad(`bad count ${count}`)
-    return { kind: 'plan_item', id: null, item: it.name, count, why }
+    return { kind: 'plan_item', id: null, item: it.name, count: Math.min(64, count), why }   // the expander's cap: the title matches the plan
   }
   if (action === 'plan_steps') {
     const raw = answer.steps
@@ -271,7 +271,7 @@ Answer with JSON only: {"action": "continue" | "<subtask id>", "why": "<one sent
 const list = xs => xs.join(', ')
 export const LEADER_SYSTEM_GOALS = `${LEADER_RULES}
 
-Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and on top any goals pushed by you or asked for by the audience (players chatting with the bot). kev works on the top goal until it is done or stuck, then the one below resumes. Plans: the PLANS section lists the bot's plans, ordered goal steps it works through one at a time, the front plan first (numbered #1, #2, ...). Besides "continue" and a subtask id you can answer:
+Goals. Above kev's subtasks there is a goal stack: the chain at the bottom, and on top any goals pushed by you or asked for by the audience (players chatting with the bot). kev works on the top goal until it is done or stuck, then the one below resumes. Plans: the PLANS section lists the bot's plans, ordered goal steps it works through one at a time, the front plan first (numbered #1, #2, ...), then any plan blocked in the last 10 minutes ("blocked #n ...: reason"; the code refuses to plan it again until a new request asks). Besides "continue" and a subtask id you can answer:
 - plan_item with an item: {"action": "plan_item", "item": {"name": "compass", "count": 1}, "why": ...};
 - plan_steps with a title and 1 to 8 goal steps: {"action": "plan_steps", "title": "stone from home", "steps": [{"kind": "go_to", "arg": "base"}, {"kind": "gather", "arg": "cobblestone", "count": 8}], "why": ...};
 - edit with an op (skip, drop, move_front, clear) and, for drop and move_front, the plan number from PLANS: {"action": "edit", "edit": {"op": "drop", "plan_id": 3}, "why": ...};

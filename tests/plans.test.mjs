@@ -173,3 +173,59 @@ test('advance only moves the running (front) plan; a demoted plan resumes its st
   b.drop(2, 7)
   assert.deepEqual(b.currentGoal(), { kind: 'gather', arg: 'raw_iron', count: 4, plan_id: 1, step_index: 0 }, 'plan 1 resumes its step')
 })
+
+// Final review, Important 6: a blocked plan is not planned again for 10 minutes unless a newer audience request asks.
+test('stillBlocked and blockedLines: 10 minutes, unless a request arrived after the block', () => {
+  const b = new PlanBook()
+  const p = b.add({ title: 'compass', steps: COMPASS, source: 'leader', t: 0 })
+  const g = b.currentGoal()
+  b.advance({ kind: 'goal_failed', plan_id: g.plan_id, step_index: g.step_index, reason: 'stuck' }, 100)
+  assert.equal(b.stillBlocked('compass', 200, [])?.id, p.id)
+  assert.equal(b.stillBlocked('Compass ', 200, [{ t: 50 }])?.id, p.id, 'a request from before the block does not lift it')
+  assert.equal(b.stillBlocked('compass', 200, [{ t: 150 }]), null, 'a newer request asks again')
+  assert.equal(b.stillBlocked('compass', 701, []), null, 'after 10 minutes')
+  assert.equal(b.stillBlocked('4 torch', 200, []), null)
+  assert.deepEqual(b.blockedLines(200), ['blocked #1 compass (100 s ago): stuck'])
+  assert.deepEqual(b.blockedLines(800), [])
+})
+
+test('activeByTitle: a running or pending plan with the same title (duplicate requests)', () => {
+  const b = new PlanBook()
+  const p = b.add({ title: 'compass', steps: COMPASS, source: 'leader', t: 0 })
+  b.add({ title: '4 oak stairs', steps: STAIRS, source: 'leader', t: 0 })
+  assert.equal(b.activeByTitle('compass')?.id, p.id)
+  assert.equal(b.activeByTitle('4 oak stairs')?.id, 2)
+  b.drop(p.id, 5)
+  assert.equal(b.activeByTitle('compass'), null)
+})
+
+import { guardPlanAnswer } from '../agent/plans.js'
+test('guardPlanAnswer: a duplicate title is marked; a recently blocked title is refused as cannot unless a newer request asks', () => {
+  const b = new PlanBook()
+  b.add({ title: '4 oak stairs', steps: STAIRS, source: 'leader', t: 0 })
+  const blocked = b.add({ title: 'compass', steps: COMPASS, source: 'leader', t: 0 })
+  b.moveFront(blocked.id)
+  const g = b.currentGoal()
+  b.advance({ kind: 'goal_failed', plan_id: g.plan_id, step_index: g.step_index, reason: 'needs an iron pickaxe first' }, 100)
+  const item = { kind: 'plan_item', id: null, item: 'oak_stairs', count: 4, why: '' }
+  assert.deepEqual(guardPlanAnswer(item, b, 120, []), { ...item, duplicate: 1 })
+  const again = { kind: 'plan_item', id: null, item: 'compass', count: 1, why: 'asked' }
+  assert.deepEqual(guardPlanAnswer(again, b, 200, []), { kind: 'cannot', id: null, why: 'still blocked: needs an iron pickaxe first', guard: 'blocked_plan', plan_id: blocked.id, title: 'compass' })
+  assert.deepEqual(guardPlanAnswer(again, b, 200, [{ t: 150 }]), again, 'a newer request asks for it again')
+  const steps = { kind: 'plan_steps', id: null, title: 'Compass', steps: COMPASS, why: '' }
+  assert.equal(guardPlanAnswer(steps, b, 200, []).kind, 'cannot')
+  const other = { kind: 'push_goal', id: null, goal: { kind: 'find', arg: 'lava' } }
+  assert.equal(guardPlanAnswer(other, b, 200, []), other)
+})
+
+test('leaderLines: render() plus the plans blocked within 10 minutes', () => {
+  const b = new PlanBook()
+  assert.deepEqual(b.leaderLines(0), ['no plans'])
+  b.add({ title: 'compass', steps: COMPASS, source: 'leader', t: 0 })
+  const g = b.currentGoal()
+  b.advance({ kind: 'goal_failed', plan_id: g.plan_id, step_index: g.step_index, reason: 'stuck' }, 10)
+  assert.deepEqual(b.leaderLines(40), ['blocked #1 compass (30 s ago): stuck'])
+  b.add({ title: '4 oak stairs', steps: STAIRS, source: 'leader', t: 20 })
+  assert.deepEqual(b.leaderLines(40), [...b.render(), 'blocked #1 compass (30 s ago): stuck'])
+  assert.deepEqual(b.leaderLines(700), b.render())
+})
