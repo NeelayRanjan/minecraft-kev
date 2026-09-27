@@ -113,8 +113,14 @@ const FREE_FORM = { maxSize: 9, maxBlocks: 150 }
 const DEFAULT_MATERIAL = 'cobblestone'
 const goalText = ({ kind, arg, count } = {}) => `${kind}${arg != null || count != null ? `(${[arg, count].filter(x => x != null).join(', ')})` : ''}`
 // A goal object as the model sent it -> {kind, arg, count} plus from only when given (a receive goal's giver).
+// A bare player name where a player goal wants player:<name> (live probe: protect arg "Spacers_Choice"): go_to (unless a
+// place or y:<n>), stay (unless here) and protect.
+const PLAYER_ARG_KINDS = new Set(['go_to', 'stay', 'protect'])
+const playerArg = (kind, arg) => PLAYER_ARG_KINDS.has(kind) && typeof arg === 'string' && /^\w{1,16}$/.test(arg) && !PLACES.includes(arg)
+  && arg !== 'here' && !/^y:/.test(arg) ? `player:${arg}` : arg
 const goalOf = raw => {
-  const goal = { kind: raw.kind ?? null, arg: raw.arg == null || raw.arg === '' ? null : raw.arg, count: raw.count ?? null }
+  const arg = raw.arg == null || raw.arg === '' ? null : playerArg(raw.kind, raw.arg)
+  const goal = { kind: raw.kind ?? null, arg, count: raw.count ?? null }
   if (typeof raw.from === 'string' && raw.from !== '') goal.from = raw.from
   return goal
 }
@@ -239,6 +245,8 @@ function guardSay(res, requests, recentSays, botName = null) {
   const bad = reason => ({ kind: 'invalid', id: 'say', reason })
   if (!requests?.length) return bad('nothing to reply to')
   if (!hasQuestion(requests, botName)) return bad('say only answers a question; nobody asked one')
+  // a first-person refusal through say (live probe: "I can't come to you" to "are you coming to me?")
+  if (/\bI\s+(can't|can’t|cannot|can not|am unable to|won't be able to)\b/i.test(res.text)) return bad('say never refuses; act on the request or answer cannot')
   if ((recentSays || []).slice(-SAY_MEMORY).some(t => sameText(t, res.text))) return bad('repeated reply')
   return res
 }

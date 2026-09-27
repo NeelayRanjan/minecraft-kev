@@ -238,3 +238,24 @@ test('item 18: PLAYERS (exact) from obs.players beside INVENTORY (exact), only w
   const none = buildLeaderMessages({ ...goalCtx, inventory: { dirt: 3 }, players: {}, requests: [{ t: 5, name: 'Steve', text: 'where are you' }] })[1].content
   assert.match(none, /PLAYERS \(exact\): none within 64 m/)
 })
+
+// Probe follow-ups: the 27B sent protect with a bare player name, and refused "are you coming to me?" through say.
+test('probe: a bare player name for go_to, stay and protect becomes player:<name>; places, y: and here are kept', () => {
+  const push = goal => applyAnswer({ answer: { action: 'push_goal', goal }, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true })
+  assert.deepEqual(push({ kind: 'protect', arg: 'Spacers_Choice' }).goal, { kind: 'protect', arg: 'player:Spacers_Choice', count: null })
+  assert.deepEqual(push({ kind: 'stay', arg: 'Steve' }).goal, { kind: 'stay', arg: 'player:Steve', count: null })
+  assert.deepEqual(push({ kind: 'stay', arg: 'here' }).goal, { kind: 'stay', arg: 'here', count: null })
+  assert.deepEqual(push({ kind: 'go_to', arg: 'Steve' }).goal, { kind: 'go_to', arg: 'player:Steve', count: null })
+  assert.deepEqual(push({ kind: 'go_to', arg: 'base' }).goal, { kind: 'go_to', arg: 'base', count: null })
+  assert.deepEqual(push({ kind: 'go_to', arg: 'y:12' }).goal, { kind: 'go_to', arg: 'y:12', count: null })
+})
+test('probe: a say that refuses ("I can\'t ...") is invalid with FEEDBACK: act on the request or answer cannot', () => {
+  const say = text => applyAnswer({ answer: { action: 'say', text }, currentId: null, askedCurrentId: null, offered: opts, goalsEnabled: true,
+    requests: [{ t: 1, name: 'A', text: 'are you coming to me at least?' }], recentSays: [] })
+  const r = say("I can't come to you, but I can craft items.")
+  assert.deepEqual(r, { kind: 'invalid', id: 'say', reason: 'say never refuses; act on the request or answer cannot' })
+  assert.match(leaderFeedback(r, true), /say never refuses/)
+  assert.equal(say('I cannot do that').kind, 'invalid')
+  assert.equal(say("I'm 14 m north-east of you, coming!").kind, 'say')
+  assert.equal(say("Can't wait to see it!").kind, 'say', 'only a first-person refusal')
+})
