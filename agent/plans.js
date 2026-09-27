@@ -169,3 +169,18 @@ export function guardPlanAnswer(res, book, t, requests = []) {
   if (b) return { kind: 'cannot', id: null, why: `still blocked: ${b.reason ?? 'stuck'}`, guard: 'blocked_plan', plan_id: b.id, title: b.title }
   return res
 }
+
+// The chat word `plan` (live stress session: a player saw "no plans" while the bot worked on the chain): the pushed
+// goals, top first with their progress (goalStackView's pushed), the plans (PlanBook.render, joined on one line), then
+// the default chain's step ({stage, index, of, text}: chainStep, or techStep with stage iron_pickaxe). At most 3 lines,
+// each cut to CHAT_LINE characters so none splits.
+const CHAT_LINE = 200
+export function planChatLines({ pushed = [], planLines = [], chain = null } = {}) {
+  const cut = s => s.length > CHAT_LINE ? `${s.slice(0, CHAT_LINE - 3)}...` : s
+  const out = []
+  if (pushed.length) out.push(cut(`Goals: ${pushed.map((g, i) => `${i ? 'then ' : ''}#${g.id} ${g.progress}`).join('; ')}`))
+  const plans = planLines.filter(l => l && l !== 'no plans')
+  out.push(cut(plans.length ? plans.join('; ') : 'No plans.'))
+  if (chain) out.push(cut(`Chain: ${String(chain.stage).replace(/_/g, ' ')}, step ${chain.index} of ${chain.of}: ${chain.text}`))
+  return out
+}

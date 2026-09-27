@@ -21,7 +21,8 @@ import { Motor } from './motor.js'
 import { EpisodeMemory, summarize, hurtFromDamageEvent } from './summary.js'
 import { serialize } from './serialize.js'
 import { buildQuestions, questionMeta, HORIZONS } from './questions.js'
-import { stageOf, describeChain, needs } from './stages.js'
+import { stageOf, describeChain, needs, chainStep } from './stages.js'
+import { techStep } from './teacher.js'
 import { counts, REPEAT_WINDOW } from './subtasks.js'
 import { chooseAction, interruptFor } from './policy.js'
 import { EpisodeLog, oneHot, fromKev, onceEvery } from './logger.js'
@@ -32,7 +33,7 @@ import { TRIGGERS, LeaderTrigger, applyAnswer, pickEvent, subtaskStats, goalStac
   snapshotFor, askedIdFor, TRANSPARENT, splitChat, settleKind, recentSayTexts, leaderFeedback, cannotBackstop } from './leader.js'
 import { options as optionsFor } from './subtasks.js'
 import { GoalStack, nightBlocksGoal, registerOptionProvider, planStepGoal, pubGoal, routePush, checkPlanGates, placedStations } from './goals.js'
-import { PlanBook, planTitle, stepText, guardPlanAnswer } from './plans.js'
+import { PlanBook, planTitle, stepText, guardPlanAnswer, planChatLines } from './plans.js'
 import { expandItem } from './recipes.js'
 import { PluginRegistry, appendRequestLog } from './plugins.js'
 import { startStatusServer } from './status_page.js'
@@ -222,10 +223,15 @@ bot.on('message', (jsonMsg, position) => {
   if (!c) return
   const t = +now().toFixed(1), text = c.text.slice(0, 200)
   noteChat(c.name, text)
-  if (PLAN_WORDS.has(text.trim().toLowerCase())) {   // "plan", "plans", "stack": the plan book's lines, no leader call
+  if (PLAN_WORDS.has(text.trim().toLowerCase())) {   // "plan", "plans", "stack": pushed goals, plans, the chain step (no leader call)
     elog.event({ t, kind: 'chat_command', name: c.name, text: text.trim().toLowerCase() })
     log(`chat <${c.name}> ${text} (answered by code)`)
-    for (const line of planBook.render()) say(line)
+    let lines
+    try {
+      lines = planChatLines({ pushed: lastObs ? goalStackView(goalStack, lastObs).pushed : [], planLines: planBook.render(),
+        chain: lastObs ? (goal === 'nether' ? chainStep(lastObs) : { ...techStep(lastObs), stage: 'iron_pickaxe' }) : null })
+    } catch (e) { lines = planBook.render(); log(`plan lines failed: ${e?.message || e}`) }
+    for (const line of lines) say(line)
     return
   }
   requestBook.add({ t, name: c.name, text })

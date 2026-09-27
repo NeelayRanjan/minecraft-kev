@@ -229,3 +229,19 @@ test('leaderLines: render() plus the plans blocked within 10 minutes', () => {
   assert.deepEqual(b.leaderLines(40), [...b.render(), 'blocked #1 compass (30 s ago): stuck'])
   assert.deepEqual(b.leaderLines(700), b.render())
 })
+
+// Live stress session: a player typed "plan" and saw "no plans" while the bot worked on the chain. The chat word prints
+// the pushed goals (top first, with progress), the plans, then the chain's step: at most 3 chat lines.
+import { planChatLines } from '../agent/plans.js'
+test('planChatLines: pushed goals, plans, the chain step; at most 3 lines of at most 200 characters', () => {
+  const chain = { stage: 'iron_tools', index: 12, of: 47, text: 'craft an iron sword (2 ingots)' }
+  assert.deepEqual(planChatLines({ pushed: [], planLines: ['no plans'], chain }), ['No plans.', 'Chain: iron tools, step 12 of 47: craft an iron sword (2 ingots)'])
+  const pushed = [{ id: 7, progress: 'go to y 12 (at y 40)' }, { id: 6, progress: 'gather 27 dirt (have 5)' }]
+  const planLines = ['Plan #1 compass: ✓ mine 1 redstone ▶ craft compass', 'then: #2 4 torch']
+  const out = planChatLines({ pushed, planLines, chain })
+  assert.deepEqual(out, ['Goals: #7 go to y 12 (at y 40); then #6 gather 27 dirt (have 5)', 'Plan #1 compass: ✓ mine 1 redstone ▶ craft compass; then: #2 4 torch',
+    'Chain: iron tools, step 12 of 47: craft an iron sword (2 ingots)'])
+  const long = planChatLines({ pushed: [{ id: 1, progress: 'x'.repeat(300) }], planLines: ['y'.repeat(300)], chain })
+  assert.equal(long.length, 3); for (const l of long) assert.ok(l.length <= 200, l.length)
+  assert.deepEqual(planChatLines({ pushed: [], planLines: ['no plans'], chain: null }), ['No plans.'])
+})
