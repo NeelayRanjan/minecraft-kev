@@ -8,6 +8,9 @@ import { baseObs } from './fixtures.mjs'
 import mine, { entryFor } from '../agent/plugins/mine.mjs'
 import smelt, { inputItem, MAX_PER_CALL } from '../agent/plugins/smelt_item.mjs'
 import craft, { heldRecipe } from '../agent/plugins/craft_item.mjs'
+import hunt, { huntDrop, huntable, isSheared, MOBS } from '../agent/plugins/hunt.mjs'
+import goToPlayer, { playerEntity } from '../agent/plugins/go_to_player.mjs'
+import receive, { droppedName, giverName } from '../agent/plugins/receive.mjs'
 import { PluginRegistry } from '../agent/plugins.js'
 import { GOAL_KINDS, registerOptionProvider } from '../agent/goals.js'
 import { options } from '../agent/subtasks.js'
@@ -87,5 +90,14 @@ test('the registry offers the shipped plugins\' options to the goal filters and 
     assert.ok(GOAL_KINDS.smelt_item.filter(sandObs, 'glass', options(sandObs), 3).some(o => o.id === 'smelt_item(glass)'))
     const plankObs = baseObs({ inventory: { oak_planks: 6, crafting_table: 1 } })
     assert.equal(GOAL_KINDS.craft_item.teacher(plankObs, 'oak_stairs', 4), 'craft_item(oak_stairs)')
+    const cowObs = baseObs({ entities: [{ name: 'cow', kind: 'passive', dist: 9 }] })
+    assert.equal(GOAL_KINDS.hunt.teacher(cowObs, 'leather', 2), 'hunt(cow)')
+    assert.ok(GOAL_KINDS.hunt.filter(cowObs, 'leather', options(cowObs), 2).some(o => o.id === 'hunt(cow)'))
+    const night = baseObs({ entities: [{ name: 'cow', kind: 'passive', dist: 9 }], phase: 'night', timeOfDay: 18000, secondsToDusk: null, secondsToMorning: 300 })
+    assert.ok(!GOAL_KINDS.hunt.filter(night, 'leather', options(night), 2).some(o => o.id === 'hunt(cow)'))   // the night rule
+    assert.equal(GOAL_KINDS.go_to.teacher(baseObs(), 'player:Steve'), 'go_to_player(Steve)')
+    assert.ok(GOAL_KINDS.go_to.filter(baseObs(), 'player:Steve', options(baseObs()), 1).some(o => o.id === 'go_to_player(Steve)'))
+    const rg = { kind: 'receive', arg: 'redstone', count: 4, from: 'Steve' }
+    assert.ok(GOAL_KINDS.receive.filter(baseObs(), 'redstone', options(baseObs()), 4, rg).some(o => o.id === 'receive(redstone)'))
   } finally { registerOptionProvider(null) }
 })
