@@ -994,3 +994,29 @@ test('protect: validate, done after 120 s, filter keeps the protect option and t
   const e = s.update(o(131), 131)
   assert.equal(e.length, 1); assert.equal(e[0].kind, 'goal_done')
 })
+
+// Merge of building (8d9f47c: a plan's capped gather clamps the NEED) with live-fixes (the step's need recomputed from
+// the inventory when it is pushed): the runner pushes planStepGoal(refreshPlanStep(step)), so the target is
+// held + min(recomputed need, cap), and the push with a plan_id keeps that target unclamped.
+import { refreshPlanStep as refreshStep } from '../agent/goals.js'
+test('merge: refreshPlanStep then planStepGoal aims at held + min(recomputed need, cap)', () => {
+  const plan = { item: 'furnace', count: 8 }   // 64 cobblestone; 10 held when the plan was made: step need 54
+  const step = { kind: 'gather', arg: 'cobblestone', count: 54 }
+  // 20 held at push: the fresh need is 44, capped at 32 -> target 52 (the stale 54 would also cap at 32 -> 52; see below)
+  const o = chain({ inventory: { cobblestone: 20, stone_pickaxe: 1 } })
+  const fresh = refreshStep(step, plan, o)
+  assert.deepEqual(fresh, { kind: 'gather', arg: 'cobblestone', count: 44 })
+  assert.deepEqual(planStepGoal(fresh, o), { kind: 'gather', arg: 'cobblestone', count: 52 })
+  // 50 held at push: the fresh need (14) is under the cap -> target 64, not 50 + 32 from the stale need
+  const o2 = chain({ inventory: { cobblestone: 50, stone_pickaxe: 1 } })
+  const fresh2 = refreshStep(step, plan, o2)
+  assert.equal(fresh2.count, 14)
+  assert.deepEqual(planStepGoal(fresh2, o2), { kind: 'gather', arg: 'cobblestone', count: 64 })
+  assert.equal(planStepGoal(step, o2).count, 82, 'the stale need would have aimed at 50 + 32')
+  // 64 held at push, 0 needed: the step is skipped (never pushed)
+  assert.equal(refreshStep(step, plan, chain({ inventory: { cobblestone: 64, stone_pickaxe: 1 } })).skip, true)
+  // pushed as a plan step: the target is kept above the absolute cap
+  const s = new GoalStack({ goal: 'nether' })
+  const g = s.push({ ...planStepGoal(fresh, o), source: 'audience:tester', t: 0, obs: o, plan_id: 1, step_index: 0 })
+  assert.equal(g.count, 52)
+})

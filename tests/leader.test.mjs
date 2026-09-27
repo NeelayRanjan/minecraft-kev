@@ -1142,3 +1142,21 @@ test('hasQuestion: a question mark, or a leading question word', () => {
   for (const t of ['come here kev', 'make me a compass', 'island hopping', 'whatever', 'dig to y=12'])
     assert.equal(hasQuestion([{ t: 1, name: 'A', text: t }]), false, t)
 })
+
+// Merge of building and live-fixes: with blueprints on (the runner's setting) the goals prompt carries both branches'
+// additions; the blueprint block sits before the answer rules, the persona and HOW I WORK before the answer format.
+test('merge: the goals prompt with blueprints has the templates block and the persona, HOW I WORK, reply and audience-first lines', () => {
+  const s = leaderSystemGoals({ blueprints: true, botName: 'Kevin' })
+  for (const x of ['BUILDING AND DIGGING.', '- plan_build: {', '- plan_dig: {', '- plan_blueprint: {', 'plan_item, plan_steps, plan_build, plan_dig, plan_blueprint, edit, say',
+    persona('Kevin'), HOW_I_WORK, 'Every answer may also carry "reply"', 'Audience requests always come before the default goal chain',
+    '"reply": "<short line for the player>" (optional, any action)', '| "plan_build" | "plan_dig" | "plan_blueprint" |', '- stay, arg player:<name> or here', '- protect, arg player:<name>'])
+    assert.ok(s.includes(x), x)
+  assert.ok(s.indexOf('BUILDING AND DIGGING.') < s.indexOf('Answer every audience request'))
+  assert.ok(s.indexOf(HOW_I_WORK) < s.indexOf('Answer with JSON only'))
+  const off = leaderSystemGoals({ botName: 'Kevin' })
+  assert.ok(!off.includes('BUILDING AND DIGGING') && !off.includes('plan_build') && off.includes(HOW_I_WORK))
+  const sch = leaderSchema(offered, { goals: true, blueprints: true })
+  assert.ok(sch.properties.reply && sch.properties.build && sch.properties.item.properties.materials_only)
+  for (const k of ['stay', 'protect', 'build']) assert.ok(sch.properties.goal.properties.kind.enum.includes(k), k)
+  assert.ok(!sch.properties.goal.properties.kind.enum.includes('dig'), 'dig only through plan_dig (PUSHABLE_KINDS)')
+})

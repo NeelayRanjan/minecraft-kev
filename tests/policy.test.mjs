@@ -110,3 +110,29 @@ test('goalGuard backs off when the teacher\'s plugin pick failed in 2 of its las
   assert.equal(g([a('dig_blueprint(bp3)', 'failed'), a('dig_blueprint(bp3)', 'failed'), a('dig_blueprint(bp3)', 'ok'), a('dig_blueprint(bp3)', 'ok'), a('dig_blueprint(bp3)', 'ok')]), 'dig_blueprint(bp3)')
   assert.equal(g([a('dig_blueprint(bp3)', 'interrupted'), a('dig_blueprint(bp3)', 'timeout')]), null, 'any non-ok result counts')
 })
+
+// Merge of building (the goal guard) with live-fixes (the stay and protect plugins, the ok-result livelock breaker):
+// the guard's plugin list is the registry's, so it includes stay and protect; entries of `recent` now carry the
+// runner's progress mark; an ok-looping plugin pick is withheld by stuckOn and then not offered, so the guard lets go.
+import { PluginRegistry } from '../agent/plugins.js'
+import { fileURLToPath } from 'node:url'
+import { stuckOn, progressMark } from '../agent/subtasks.js'
+test('merge: goalGuard covers the stay and protect plugins; with the ok-loop breaker it backs off', async () => {
+  const registry = new PluginRegistry({ dir: fileURLToPath(new URL('../agent/plugins/', import.meta.url)) })
+  await registry.load()
+  const plugins = new Set(registry.list().filter(p => p.enabled).map(p => p.id))
+  for (const id of ['stay', 'protect', 'linger', 'build_blueprint', 'dig_blueprint', 'go_to_player']) assert.ok(plugins.has(id), id)
+  const offered = ['stay(Steve)', 'protect(Steve)', 'eat', 'wait', 'flee(threat)']
+  assert.equal(goalGuard({ kevPick: 'wait', teacherPick: 'stay(Steve)', offered, depth: 1, plugins }), 'stay(Steve)')
+  assert.equal(goalGuard({ kevPick: 'wait', teacherPick: 'protect(Steve)', offered, depth: 1, plugins }), 'protect(Steve)')
+  assert.equal(goalGuard({ kevPick: 'flee(threat)', teacherPick: 'protect(Steve)', offered, depth: 1, plugins }), null, 'a threat response stays kev\'s')
+  // recent entries as the runner writes them now (detail + progress mark): the backoff still reads result only
+  const mark = progressMark({ t: 0, pos: { x: 0, y: 64, z: 0 }, inventory: {} })
+  const a = (id, result, t) => ({ id, result, detail: null, ...mark, t })
+  const failing = [a('dig_blueprint(bp1)', 'unreachable', 1), a('dig_blueprint(bp1)', 'no_path', 2)]
+  assert.equal(goalGuard({ kevPick: 'wait', teacherPick: 'dig_blueprint(bp1)', offered: ['dig_blueprint(bp1)', 'wait'], depth: 1, plugins, recent: failing }), null)
+  // five ok results in 4 s with no progress: stuckOn withholds the id (the ok-loop breaker)
+  const loop = [1, 2, 3, 4, 5].map(t => a('stay(Steve)', 'ok', t))
+  assert.ok(stuckOn({ last: { id: 'stay(Steve)', result: 'ok', repeats: 5, recent: loop } }).has('stay(Steve)'))
+  assert.equal(goalGuard({ kevPick: 'wait', teacherPick: 'stay(Steve)', offered: offered.filter(x => x !== 'stay(Steve)'), depth: 1, plugins, recent: loop }), null, 'withheld: not offered, not forced')
+})
